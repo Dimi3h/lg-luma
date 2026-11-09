@@ -26,28 +26,15 @@ if (decoded.error || decoded.status !== 0) {
   });
 }
 await fs.rm(font);
-const cjk = path.join(source, 'fonts/noto-sans-sc.ttf');
-const hangul = path.join(source, 'fonts/noto-sans-kr.ttf');
-try {
-  await fs.access(cjk);
-  await fs.access(hangul);
-} catch {
-  throw new Error('Prepare the bundled Chinese and Korean fonts with pnpm assets:fonts first.');
-}
-const weights = spawnSync(
-  'python3',
-  [path.join(import.meta.dirname, 'font-weights.py'), out, cjk, hangul],
-  {
-    encoding: 'utf8',
-  },
-);
+const weights = spawnSync('python3', [path.join(import.meta.dirname, 'font-weights.py'), out], {
+  encoding: 'utf8',
+});
 if (weights.error || weights.status !== 0) {
   throw new Error('Font weights need Python/fontTools. Run pnpm assets inside nix develop.', {
     cause: weights.error ?? new Error(weights.stderr),
   });
 }
 await fs.copyFile(path.join(source, 'fonts/ofl.txt'), path.join(out, 'font-license.txt'));
-await fs.copyFile(path.join(source, 'fonts/noto-ofl.txt'), path.join(out, 'font-cjk-license.txt'));
 
 for (const file of await fs.readdir(path.join(source, 'wallpapers'))) {
   if (!/\.(jpg|svg)$/.test(file)) continue;

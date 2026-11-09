@@ -64,8 +64,8 @@ indices, including offscreen rows, so headers cannot steal mid-grid navigation. 
 setting subpage parents and supports SDL-webOS Back. OK finishes move mode without launching.
 
 Vector icon/logo assets are standalone SVGs compiled to `.lvec` at build time. Font outlines
-are tessellated only as needed; text runs use bounded GPU caches, lazy CJK and no glyph bitmap
-atlas. Text AA prefers MSAA of intact outlines, with a narrow fringe fallback; keep physical
+are tessellated only as needed; text runs use bounded GPU caches, Inter only (no CJK fallback)
+and no glyph bitmap atlas. Text AA prefers MSAA of intact outlines, with a narrow fringe fallback; keep physical
 origin/baseline snapping and logical 1920×1080 layout. `--resolution 4k` is experimental, not a
 shipping-default claim. Profiles count presentations; ordinary `--frames` is event-loop iterations.
 

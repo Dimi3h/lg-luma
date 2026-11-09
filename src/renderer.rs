@@ -362,8 +362,7 @@ impl Renderer {
     pub fn new(font: &Path, gles: bool, text_embolden: f32) -> Result<Self, String> {
         let directory = font.parent().ok_or("Invalid font path")?;
         let mut fonts = HashMap::new();
-        // Open only the common face. Metrics and outlines stay lazy even when
-        // the much larger CJK fallback is needed later.
+        // Open only the common face; the other weights and optical sizes stay lazy.
         fonts.insert(400, load_font(directory, 400)?);
         let mut max_texture_size = 0;
         let mut max_viewport = [0; 2];
@@ -762,38 +761,13 @@ impl Renderer {
         }
         let rect = Rect::new(0., 0., rect.w, rect.h);
         let font_id = style.weight + if style.size >= 32. { 1000 } else { 0 };
-        let cjk_id = if style.weight >= 500 { 2500 } else { 2400 };
-        let hangul_id = cjk_id + 1000;
         if !self.ensure_font(font_id) {
             self.stats.glyph_failures += text.chars().count();
             return;
         }
-        let (mut needs_cjk, mut needs_hangul) = (false, false);
-        for c in text.chars() {
-            if !c.is_ascii_control() && self.fonts[&font_id].lookup_glyph_index(c) == 0 {
-                if is_hangul(c) {
-                    needs_hangul = true;
-                } else {
-                    needs_cjk = true;
-                }
-            }
-        }
-        // Each fallback loads only when a run needs it, so Korean text never
-        // pulls in the larger Chinese font and vice versa.
-        let cjk_ready = needs_cjk && self.ensure_font(cjk_id);
-        let hangul_ready = needs_hangul && self.ensure_font(hangul_id);
+        // Only Inter ships (English and Dutch UI); characters it lacks, such as CJK in an app
+        // title, draw as its missing-glyph box rather than loading a fallback font.
         let fonts = &self.fonts;
-        let choose_font = |c: char| {
-            if fonts[&font_id].lookup_glyph_index(c) != 0 {
-                font_id
-            } else if is_hangul(c) {
-                if hangul_ready { hangul_id } else { font_id }
-            } else if cjk_ready {
-                cjk_id
-            } else {
-                font_id
-            }
-        };
         let font = &fonts[&font_id];
         let line_height = size_f * style.line_height;
         let baseline = font.horizontal_line_metrics(size_f).map_or(size_f, |m| {
@@ -804,7 +778,7 @@ impl Renderer {
             if c == '\n' {
                 0.
             } else {
-                fonts[&choose_font(c)].metrics(c, size_f).advance_width + tracking
+                fonts[&font_id].metrics(c, size_f).advance_width + tracking
             }
         };
         let mut lines: Vec<String> = Vec::new();
@@ -868,17 +842,7 @@ impl Renderer {
                 if let Some(previous) = previous {
                     x += font.horizontal_kern(previous, c, size_f).unwrap_or(0.);
                 }
-                let selected = choose_font(c);
-                let baseline = if selected == font_id {
-                    baseline
-                } else {
-                    fonts[&selected]
-                        .horizontal_line_metrics(size_f)
-                        .map_or(baseline, |m| {
-                            (line_height - m.ascent + m.descent) / 2. + m.ascent
-                        })
-                };
-                placed.push((c, x, top + baseline, selected));
+                placed.push((c, x, top + baseline, font_id));
                 x += advance(c);
                 previous = Some(c);
             }
@@ -1754,25 +1718,8 @@ impl Renderer {
     }
 }
 
-// Noto Sans SC (font-cjk) has no Hangul syllables; these go to font-kr instead.
-// Keep in sync with is_hangul() in tools/font-weights.py, which builds font-kr.
-fn is_hangul(c: char) -> bool {
-    matches!(
-        c,
-        '\u{1100}'..='\u{11FF}'
-            | '\u{3130}'..='\u{318F}'
-            | '\u{A960}'..='\u{A97F}'
-            | '\u{AC00}'..='\u{D7A3}'
-            | '\u{D7B0}'..='\u{D7FF}'
-    )
-}
-
 fn load_font(directory: &Path, id: u16) -> Result<Font, String> {
-    let name = if id >= 3000 {
-        format!("font-kr-{}.ttf", id - 3000)
-    } else if id >= 2000 {
-        format!("font-cjk-{}.ttf", id - 2000)
-    } else if id >= 1000 {
+    let name = if id >= 1000 {
         format!("font-display-{}.ttf", id - 1000)
     } else {
         format!("font-{id}.ttf")

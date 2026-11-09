@@ -160,17 +160,11 @@ impl Assets {
             style.weight
         );
         let advances = self.metrics.get(&key);
-        let fallback = self.metrics.get(if style.weight >= 500 {
-            "fallback-500"
-        } else {
-            "fallback-400"
-        });
         value
             .chars()
             .map(|c| {
                 (advances
                     .and_then(|a| a.get(&c))
-                    .or_else(|| fallback.and_then(|a| a.get(&c)))
                     .copied()
                     .unwrap_or(if c == ' ' { 0.28 } else { 0.53 })
                     + style.tracking)
@@ -201,15 +195,9 @@ impl Assets {
             style.weight
         );
         let advances = self.metrics.get(&key);
-        let fallback = self.metrics.get(if style.weight >= 500 {
-            "fallback-500"
-        } else {
-            "fallback-400"
-        });
         let advance = |c: char| {
             (advances
                 .and_then(|a| a.get(&c))
-                .or_else(|| fallback.and_then(|a| a.get(&c)))
                 .copied()
                 .unwrap_or(if c == ' ' { 0.28 } else { 0.53 })
                 + style.tracking)
@@ -3931,10 +3919,6 @@ mod tests {
             metrics: BTreeMap::from([
                 ("display-500".into(), BTreeMap::from([('W', 1.)])),
                 ("500".into(), BTreeMap::from([('W', 1.2)])),
-                (
-                    "fallback-500".into(),
-                    BTreeMap::from([('界', 1.), ('한', 1.)]),
-                ),
             ]),
             artwork: crate::app_artwork::Service::new(false),
         }
@@ -4119,8 +4103,6 @@ mod tests {
             for hour in [2, 9, 15, 20] {
                 for name in [
                     "W".repeat(40),
-                    "界".repeat(40),
-                    "한".repeat(40),
                     "Alexandra Catherine Elizabeth Montgomery".into(),
                 ] {
                     let greeting = language.greeting(hour, &name);

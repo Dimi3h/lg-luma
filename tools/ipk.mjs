@@ -92,16 +92,11 @@ export function normalizeAndVerifyPackage(bytes, manifest) {
     'licenses/lucide.txt',
     'assets/font-metrics.json',
     'assets/font-license.txt',
-    'assets/font-cjk-license.txt',
     'assets/version.txt',
     ...[350, 400, 450, 500, 550, 600, 650, 800].flatMap((weight) => [
       `assets/font-${weight}.ttf`,
       `assets/font-display-${weight}.ttf`,
     ]),
-    'assets/font-cjk-400.ttf',
-    'assets/font-cjk-500.ttf',
-    'assets/font-kr-400.ttf',
-    'assets/font-kr-500.ttf',
     ...[
       'dunes',
       'midnight',

@@ -295,8 +295,6 @@ try {
     ['Bob', 'Bob'],
     ['long', 'Alexandra Catherine Elizabeth Montgomery'],
     ['wide', 'W'.repeat(40)],
-    ['cjk', '小明'.repeat(20)],
-    ['korean', '한글'.repeat(20)],
   ]) {
     const named = await scenario(
       `greeting-${id}`,

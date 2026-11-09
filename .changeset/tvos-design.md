@@ -19,4 +19,5 @@ Restyle the launcher after current Apple tvOS (tvOS 26/27, Liquid Glass) and tur
 - **Settings**: a glass sidebar with a title, rounded rows, and the section and subpage path as a title line above the content.
 - **Overlays**: the options popup becomes a context menu beside the lifted card, deletion a centred alert with side-by-side buttons, notices a banner that slides down at the top, and Recent apps a single row of cards with the focused one titled.
 
-The new **Search**, **Focus tilt** and **Favorite badges** labels are machine-translated for every language except English.
+- **Languages**: this fork ships English and Dutch only; a saved choice of another language loads as English. The Noto Chinese and Korean fallback fonts are gone with them, which makes the IPK about 28 MB smaller; characters Inter lacks draw as its missing-glyph box. The Dutch strings were reviewed by hand rather than machine-translated.
+- **Updates** come only from the `Dimi3h/lg-luma` fork's releases and Homebrew feed, never from upstream; until the fork publishes its first release the check quietly finds nothing newer.

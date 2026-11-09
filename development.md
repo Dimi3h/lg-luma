@@ -43,7 +43,6 @@ including `armv7-unknown-linux-gnueabi` for TV builds. No browser installation i
 | `pnpm assets [--4k]`      | Prepare fonts, vector artwork and raster backgrounds                        |
 | `pnpm screenshots`        | Capture the main screen, its scrolled grid, General and Inputs into `docs/` |
 | `pnpm assets:vector`      | Recompile bundled SVG icon/logo meshes                                      |
-| `pnpm assets:fonts`       | Restore checksum-pinned Noto font source if needed                          |
 | `pnpm sdk`                | Download/relocate a pinned host webOS SDK                                   |
 | `pnpm runtime`            | Prepare checksum-pinned SDL-webOS                                           |
 | `pnpm build`              | Release ARM cross-build using `WEBOS_NDK`                                   |
@@ -555,8 +554,9 @@ such as Hulu, Joyn and Plex closer to the visual weight of Apple TV, YouTube, Da
 
 Text reads the bundled TTF's advances, kerning and line metrics lazily. Only needed glyph outlines
 are tessellated in font-em coordinates. Complete text runs are cached in static GPU buffers,
-independent of position/color/drawable density, avoiding a draw call per letter. CJK fonts open
-only when needed; there are no glyph bitmap atlases or full-font mesh exports.
+independent of position/color/drawable density, avoiding a draw call per letter. Only Inter
+ships (no CJK fallback font, since the UI is English and Dutch); there are no glyph bitmap atlases
+or full-font mesh exports.
 
 MSAA mode requests 4× MSAA, with 2×/single-sample fallbacks if EGL rejects a configuration.
 Analytic mode requests a single-sample window. Multisampled text draws
@@ -915,9 +915,10 @@ failure retries after five minutes. Unit changes convert unrounded cached Celsiu
 Removing a city clears its cache. The `.weather.json` sidecar uses Unix-seconds timestamps.
 Mock servers accept only literal loopback HTTP origins and are refused in TV builds.
 
-`assets/messages.json` supplies Czech, Dutch, English, French, German, Italian, Polish, Portuguese (Brazil),
-Russian, Simplified Chinese, Spanish, Swedish, Traditional Chinese and Vietnamese, including locale formatting
-and weather labels. App/device names and saved city names remain real data. No geolocation,
+`assets/messages.json` supplies Dutch and English, including locale formatting and weather
+labels. This fork deliberately ships only these two; a saved choice of a language earlier versions
+offered loads as English. Dropping the others also removed the Noto CJK fonts (about 28 MB of the
+IPK) and the lazy CJK fallback. App/device names and saved city names remain real data. No geolocation,
 runtime font/translation services or telemetry are used. Weather attribution: Open-Meteo,
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 
@@ -981,7 +982,7 @@ prerelease than the pinned `.5` library, not a full Luma compatibility guarantee
 
 Rust behavior tests cover navigation, preferences, localization, rendering geometry and weather
 state without a TV. `tests/` scripts exercise actual desktop framebuffers and mock HTTP responses
-for navigation, persistence, pointer input, translations/CJK, weather limits/cache/races and
+for navigation, persistence, pointer input, English/Dutch translations, weather limits/cache/races and
 profiling. They contact no live weather APIs or television. On Linux:
 
 ```sh
