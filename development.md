@@ -458,14 +458,9 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   radial glint (`Draw::Glow`, one textured pass masked to the card) follows the tilt. Only the
   focused card draws it, only while it is tilted; the tilt settles exactly, so a still pointer
   and released keys stop redrawing. Hit regions never move.
-- **Sounds** (Settings › General, default On): soft clicks on focus moves, selection and Back,
-  synthesized at startup (short filtered sine and noise bursts in `src/sound.rs`, no audio files)
-  and played through an SDL audio queue, which SDL mixes on its own audio thread. The device opens
-  on the first click and closes while Luma is hidden or unfocused; without a device the clicks are
-  skipped silently. Scripted runs make no sounds.
 - **Favorite badges** (Settings › General, default Off): a heart on pinned favourites. tvOS has no
   badges; the favourites block is first in the grid either way.
-- Tilt, glass, sounds and the second optical size are unverified on TV hardware.
+- Tilt, glass and the second optical size are unverified on TV hardware.
 
 ## Vector rendering
 

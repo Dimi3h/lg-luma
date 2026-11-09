@@ -2664,17 +2664,6 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                     false,
                 ),
                 (
-                    9,
-                    "sounds",
-                    "volume",
-                    Some(if state.preferences.sounds {
-                        language.t("stateOn")
-                    } else {
-                        language.t("stateOff")
-                    }),
-                    false,
-                ),
-                (
                     10,
                     "favoriteBadges",
                     "heart",

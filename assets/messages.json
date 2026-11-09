@@ -1711,22 +1711,6 @@
     "sv": "Fokuslutning",
     "cs": "Naklonění při výběru"
   },
-  "sounds": {
-    "en": "Sounds",
-    "de": "Töne",
-    "es": "Sonidos",
-    "zh": "声音",
-    "zh-tw": "聲音",
-    "pt": "Sons",
-    "it": "Suoni",
-    "ru": "Звуки",
-    "pl": "Dźwięki",
-    "fr": "Sons",
-    "vi": "Âm thanh",
-    "nl": "Geluiden",
-    "sv": "Ljud",
-    "cs": "Zvuky"
-  },
   "favoriteBadges": {
     "en": "Favorite badges",
     "de": "Favoriten-Markierung",
@@ -3055,7 +3039,6 @@
     "sv": "Webbläsare",
     "cs": "Prohlížeč"
   },
-
   "clearSkies": {
     "zh-tw": "晴朗",
     "en": "Clear skies",

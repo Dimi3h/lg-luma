@@ -229,8 +229,6 @@ pub struct Preferences {
     pub favorite_badges: bool,
     /// The focused card tilts towards the pointer or a d-pad press, with a moving highlight.
     pub focus_tilt: bool,
-    /// Soft clicks on focus changes, selection and Back.
-    pub sounds: bool,
     pub hour_24: bool,
     pub reduced_motion: bool,
     pub show_seconds: bool,
@@ -273,7 +271,6 @@ impl Default for Preferences {
             show_inputs: false,
             favorite_badges: false,
             focus_tilt: true,
-            sounds: true,
             hour_24: false,
             reduced_motion: false,
             show_seconds: false,

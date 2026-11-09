@@ -2149,7 +2149,6 @@ impl State {
                     }
                     2 => self.preferences.reduced_motion = !self.preferences.reduced_motion,
                     8 => self.preferences.focus_tilt = !self.preferences.focus_tilt,
-                    9 => self.preferences.sounds = !self.preferences.sounds,
                     10 => self.preferences.favorite_badges = !self.preferences.favorite_badges,
                     4 => {
                         self.subpage = Some(Subpage::Language);

@@ -3233,12 +3233,20 @@ fn update_card_shows_progress_restores_retry_and_ignores_presses_while_busy() {
 }
 
 #[test]
-fn badge_tilt_and_sound_preferences_default_and_toggle_from_general() {
-    // Older preference files gain the defaults: no badges (tvOS has none), tilt and sounds on.
-    let old: Preferences = serde_json::from_value(json!({"favorites": ["netflix"]})).unwrap();
+fn badge_and_tilt_preferences_default_and_toggle_from_general() {
+    // Older preference files gain the defaults: no badges (tvOS has none), tilt on. A file still
+    // carrying the removed Sounds preference loads and drops it.
+    let old: Preferences =
+        serde_json::from_value(json!({"favorites": ["netflix"], "sounds": true})).unwrap();
     assert!(!old.favorite_badges);
     assert!(old.focus_tilt);
-    assert!(old.sounds);
+    assert!(
+        !serde_json::to_value(&old)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("sounds")
+    );
     let mut state = ready();
     let hearts = |state: &State| {
         scene(state)
@@ -3249,9 +3257,14 @@ fn badge_tilt_and_sound_preferences_default_and_toggle_from_general() {
     };
     assert_eq!(hearts(&state), 0);
     state.open(Page::Settings);
-    for (index, toggled) in [8, 9, 10].into_iter().zip([
+    // The removed Sounds row (Setting(9)) never comes back.
+    assert!(
+        !controls(&state)
+            .iter()
+            .any(|c| c.target == Target::Setting(9))
+    );
+    for (index, toggled) in [8, 10].into_iter().zip([
         |p: &Preferences| !p.focus_tilt,
-        |p: &Preferences| !p.sounds,
         |p: &Preferences| p.favorite_badges,
     ]) {
         assert!(
@@ -3263,7 +3276,6 @@ fn badge_tilt_and_sound_preferences_default_and_toggle_from_general() {
         assert_eq!(state.activate(), vec![Effect::Save]);
         assert!(toggled(&state.preferences), "Setting({index})");
     }
-    assert!(!crate::sound::enabled(&state.preferences));
     state.open(Page::Home);
     assert!(
         hearts(&state) > 0,
