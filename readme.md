@@ -117,8 +117,11 @@ https://github.com/user-attachments/assets/2156d640-b8fa-4ea4-a02c-0db4c93bcc5a
 ### Homebrew Channel
 
 ```text
-https://github.com/ecklf/lg-luma/releases/latest/download/repo.json
+https://github.com/Dimi3h/lg-luma/releases/latest/download/repo.json
 ```
+
+This is the `Dimi3h/lg-luma` fork's feed; Luma's in-app update check reads the same feed and
+never offers upstream releases.
 
 ### SSH
 

@@ -929,7 +929,9 @@ runtime font/translation services or telemetry are used. Weather attribution: Op
 ## Update availability
 
 On interactive desktop or TV startup a separate worker checks
-`https://github.com/ecklf/lg-luma/releases/latest/download/repo.json` once per process automatically.
+`https://github.com/Dimi3h/lg-luma/releases/latest/download/repo.json` once per process automatically.
+It reads only this fork's feed and never falls back to upstream; a 404 (no release published yet)
+counts as a successful check with nothing newer.
 **Settings → System → Check again** retries on the same worker, with one request in flight at a time.
 It only reads the `com.ecklf.luma` package/manifest version and compares numeric major/minor/patch
 components with the compiled version. Equal, older, malformed or prerelease versions do not offer
@@ -1031,6 +1033,12 @@ the existing Luma app. These builds are for manual TV verification; the ordinary
 run independently.
 
 ## Releases
+
+Releases, the Homebrew Channel feed and in-app updates come from this fork, `Dimi3h/lg-luma`,
+never from upstream `ecklf/lg-luma`. The fork's CI publishes them once GitHub Actions are enabled
+in its repository settings; until the first release exists the feed URL answers 404, which the
+update check treats as "no newer version" without a notice. The app ID stays `com.ecklf.luma`, so
+installed builds update in place instead of appearing as a second app.
 
 Add a changeset to feature/fix PRs that should be included in the next app release:
 
