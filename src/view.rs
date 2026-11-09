@@ -1359,7 +1359,15 @@ fn tile(
         state.focus_level(&target)
     };
     let tilt = card_tilt(state, &target, level);
-    let drawn = offset(grow(rect, CARD_LIFT * level), tilt, TILT_FACE);
+    // While a favourite is being moved, every favourite jiggles (tvOS): the same layer
+    // offsets as the tilt, oscillating, approximate a small rotation. Hit regions stay put.
+    let jiggle = if pinned {
+        jiggle(state, &app.id)
+    } else {
+        [0., 0.]
+    };
+    let moved = [tilt[0] + jiggle[0], tilt[1] + jiggle[1]];
+    let drawn = offset(grow(rect, CARD_LIFT * level), moved, TILT_FACE);
     let radius = CARD_RADIUS * drawn.h / rect.h;
     if !unavailable {
         out.lift_shadow(offset(drawn, tilt, -TILT_SHADOW), radius, level);
@@ -1371,7 +1379,7 @@ fn tile(
         drawn,
         state.preferences.language,
         radius,
-        [tilt[0] * TILT_LAYER, tilt[1] * TILT_LAYER],
+        [moved[0] * TILT_LAYER, moved[1] * TILT_LAYER],
     );
     card_glass(out, drawn, radius, level);
     glint(out, drawn, radius, tilt);
@@ -1554,6 +1562,23 @@ const TILT_LAYER: f32 = 6.;
 const TILT_SHADOW: f32 = 10.;
 
 /// The focused card's tilt, scaled by its lift; zero for every other card.
+/// A favourite's jiggle while move mode is active: a few hertz, each card out of phase, up to
+/// about 2 px for the face and 4 px more for its logo. Nothing under Reduced motion.
+pub fn jiggle(state: &State, id: &str) -> [f32; 2] {
+    let Some(since) = state.moving_since.filter(|_| state.moving.is_some()) else {
+        return [0., 0.];
+    };
+    if state.preferences.reduced_motion {
+        return [0., 0.];
+    }
+    let phase = id.bytes().fold(0u32, |hash, byte| {
+        hash.wrapping_mul(31).wrapping_add(byte as u32)
+    }) as f32
+        % std::f32::consts::TAU;
+    let t = since.elapsed().as_secs_f32() * std::f32::consts::TAU * 3.2 + phase;
+    [0.7 * t.sin(), 0.45 * (1.3 * t).cos()]
+}
+
 fn card_tilt(state: &State, target: &Target, level: f32) -> [f32; 2] {
     if state.focus != *target || level <= 0. {
         return [0., 0.];

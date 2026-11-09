@@ -3727,3 +3727,41 @@ fn forecasts_carry_todays_sunrise_and_sunset() {
     .unwrap();
     assert_eq!(polar.sun, None);
 }
+
+#[test]
+fn favourites_jiggle_while_one_is_moved_without_moving_hit_regions() {
+    let mut state = ready();
+    state.open(Page::Home);
+    let before = controls(&state);
+    assert_eq!(view::jiggle(&state, "netflix"), [0., 0.]);
+    state.focus = Target::App("netflix".into());
+    state.hold();
+    assert!(state.moving.is_some());
+    assert!(state.animating());
+    let ids = ["netflix", "youtube.leanback.v4", "com.apple.appletv"];
+    assert!(
+        ids.iter().any(|id| view::jiggle(&state, id) != [0., 0.]),
+        "Favourites wobble"
+    );
+    for id in ids {
+        let [x, y] = view::jiggle(&state, id);
+        assert!(x.abs() <= 0.7 && y.abs() <= 0.45);
+    }
+    let during = controls(&state);
+    for control in &before {
+        if let Some(other) = during.iter().find(|c| c.target == control.target) {
+            assert_eq!(
+                (control.rect.x, control.rect.y),
+                (other.rect.x, other.rect.y)
+            );
+        }
+    }
+    // Reduced motion: no jiggle and no continuous redraw.
+    state.preferences.reduced_motion = true;
+    assert_eq!(view::jiggle(&state, "netflix"), [0., 0.]);
+    assert!(!state.animating());
+    state.preferences.reduced_motion = false;
+    state.back();
+    assert!(state.moving.is_none());
+    assert_eq!(view::jiggle(&state, "netflix"), [0., 0.]);
+}

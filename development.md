@@ -488,6 +488,11 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   TV does not answer are left out; a refused change shows a quiet notice and re-reads the status.
   Back closes the panel. Desktop builds simulate the TV and never sleep. All of it is unverified on
   a TV.
+- **Jiggle**: while a favourite is being moved, every favourite wobbles a little, each out of
+  phase at about 3 Hz. As with the tilt there is no rotation primitive, so the face moves up to
+  about 2 px and its logo layer about 4 px more, which reads as a small rotation. Hit regions
+  stay put; Reduced motion snaps it off, and frames redraw continuously only while move mode is
+  active.
 - **Appearance** (Settings › General: Dark (default), Light or Automatic): Light brightens the
   finished scene in one pass (`light_appearance` in `src/view.rs`): a white scrim over the
   wallpaper, a white layer on each glass panel, near-black text and interface icons instead of

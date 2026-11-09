@@ -247,6 +247,8 @@ pub struct State {
     pub scroll: f32,
     pub overlay: Option<Overlay>,
     pub moving: Option<String>,
+    /// When move mode began, for the favourites' jiggle.
+    pub moving_since: Option<Instant>,
     pub loading: bool,
     /// Set by Refresh apps: the next inventory also reloads every app icon.
     pub reload_artwork: bool,
@@ -307,6 +309,7 @@ impl State {
             scroll: 0.,
             overlay: None,
             moving: None,
+            moving_since: None,
             loading: false,
             reload_artwork: false,
             launching: false,
@@ -757,6 +760,7 @@ impl State {
             || self.motion.animating()
             || self.wash_previous.is_some()
             || (self.screensaver.is_some() && !self.preferences.reduced_motion)
+            || (self.moving.is_some() && !self.preferences.reduced_motion)
             || self
                 .wash
                 .as_ref()
@@ -1997,6 +2001,7 @@ impl State {
                 .contains(id)
         {
             self.moving = Some(id.clone());
+            self.moving_since = Some(Instant::now());
             self.notice = None;
             self.dirty = true;
             return;
