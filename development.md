@@ -135,6 +135,10 @@ The **Clock** subpage contains **Clock format** (12-hour or 24-hour) and **Time 
 or `HH:MM:SS`, defaulting to `HH:MM`). Choosing a format returns to its row in Clock, and Back
 from Clock restores its General row. With seconds shown, the header clock redraws once per second
 instead of once per minute. Existing saved hour and seconds preferences are retained.
+Until a format is chosen there (stored as `clock_24`), Dutch uses 24 hours and English 12; an
+earlier saved `hour_24: true` still counts as a choice. On the main screen the localized date
+follows the clock inside the line, so Dutch keeps its lowercase ("maandag 9 november"); where a
+date starts a line (the screensaver) it is in sentence case.
 General has an **App names** row that toggles On/Off directly (stored in `show_app_names`, default
 On). As on tvOS, On shows the title beneath the focused grid card only, fading in with the focus
 lift; Off never shows titles. The former separate Home (`show_home_names`) preference is ignored

@@ -118,7 +118,9 @@ try {
   const dutch = await scenario('nl-home', `${picker},down,enter,home`);
   assert.equal(dutch.preferences.language, 'nl');
   for (const key of ['evening', 'setWeatherLocation']) contains(dutch, key, 'nl');
-  assert.ok(dutch.ui_text.includes('Woensdag 21 oktober'));
+  // After the clock, the Dutch date keeps Dutch lowercase.
+  assert.ok(dutch.ui_text.includes('woensdag 21 oktober'));
+  assert.ok(dutch.ui_text.includes('20:41'), 'Dutch defaults to a 24-hour clock');
   assert.ok(dutch.ui_text.includes('Netflix'), 'Installed app names stay intact');
   const persisted = await scenario('nl-settings', 'settings');
   assert.equal(persisted.preferences.language, 'nl', 'Dutch is restored after restart');

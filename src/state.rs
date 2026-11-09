@@ -2250,6 +2250,9 @@ impl State {
     }
     pub fn open_keyboard(&mut self, field: TextField) {
         self.keyboard_field = field;
+        // Suggestions follow what is typed now, not text already there when it opens.
+        self.suggested_query = self.weather.query.clone();
+        self.suggest_at = None;
         if field == TextField::Name {
             // SDL-webOS cannot pre-fill the system keyboard's text model.
             self.greeting_name_draft.clear();
@@ -2415,7 +2418,7 @@ impl State {
                     Subpage::TimeFormat
                 });
                 self.focus = Target::Choice(usize::from(if format {
-                    self.preferences.hour_24
+                    self.preferences.uses_24_hour()
                 } else {
                     self.preferences.show_seconds
                 }));
@@ -2695,7 +2698,7 @@ impl State {
             }
             Target::Choice(index) => {
                 match self.subpage.clone() {
-                    Some(Subpage::ClockFormat) => self.preferences.hour_24 = index == 1,
+                    Some(Subpage::ClockFormat) => self.preferences.set_24_hour(index == 1),
                     Some(Subpage::TimeFormat) => self.preferences.show_seconds = index == 1,
                     Some(Subpage::DateFormat) => {
                         self.preferences.date_format = crate::model::DateFormat::ALL[index.min(3)];

@@ -971,7 +971,7 @@ fn clock_choices_only_highlight_focus_while_preserving_saved_checkmarks() {
         assert_eq!(highlighted, vec![focused.rect.center().1]);
         let checks = scene.draw.iter().filter(|draw| matches!(draw, crate::renderer::Draw::TintedImage(path, ..) if path.ends_with("check.lvec"))).count();
         assert_eq!(checks, 1);
-        assert!(!state.preferences.hour_24);
+        assert!(!state.preferences.uses_24_hour());
         assert!(state.preferences.show_seconds);
     }
 }
@@ -997,7 +997,7 @@ fn clock_format_subpage_saves_and_restores_its_parent_row() {
     assert_eq!(state.focus, Target::Choice(0));
     state.direction(Direction::Down, &controls(&state));
     assert_eq!(state.activate(), vec![Effect::Save]);
-    assert!(state.preferences.hour_24);
+    assert!(state.preferences.uses_24_hour());
     assert!(!state.preferences.show_seconds);
     assert_eq!(state.subpage, Some(crate::state::Subpage::Clock));
     assert_eq!(state.focus, Target::ClockFormat);
@@ -1037,7 +1037,7 @@ fn time_format_selects_seconds_without_changing_the_hour_format() {
     assert_eq!(state.focus, Target::Choice(1));
     assert_eq!(state.activate(), vec![Effect::Save]);
     assert!(state.preferences.show_seconds);
-    assert!(state.preferences.hour_24);
+    assert!(state.preferences.uses_24_hour());
     assert_eq!(state.subpage, Some(crate::state::Subpage::Clock));
     assert_eq!(state.focus, Target::ClockTimeFormat);
     state.activate();
@@ -1049,7 +1049,7 @@ fn time_format_selects_seconds_without_changing_the_hour_format() {
     state.direction(Direction::Up, &controls(&state));
     assert_eq!(state.activate(), vec![Effect::Save]);
     assert!(!state.preferences.show_seconds);
-    assert!(state.preferences.hour_24);
+    assert!(state.preferences.uses_24_hour());
     state.back();
     assert!(state.subpage.is_none());
     assert_eq!(state.focus, Target::Setting(1));
@@ -2855,12 +2855,12 @@ fn clock_date_and_home_input_descriptions_use_tvos_text_styles() {
             (
                 language.clock(
                     now,
-                    state.preferences.hour_24,
+                    state.preferences.uses_24_hour(),
                     state.preferences.show_seconds,
                 ),
                 29.,
             ),
-            (language.date(now), 29.),
+            (language.date_inline(now), 29.),
         ] {
             assert!(rendered.draw.iter().any(|draw| matches!(draw,
                 Draw::Text(text, rect, style, ..) if text == &label && style.size == size && rect.h >= size
@@ -3605,7 +3605,7 @@ fn screensaver_defaults_to_ten_minutes_replaces_the_scene_and_any_input_ends_it(
         Draw::Image(path, rect, ..) if path.contains("wallpapers/") && rect.w > 1920.)));
     let clock = state.preferences.language.clock(
         time::OffsetDateTime::UNIX_EPOCH,
-        state.preferences.hour_24,
+        state.preferences.uses_24_hour(),
         false,
     );
     assert!(
@@ -3922,4 +3922,51 @@ fn the_location_keyboard_is_one_row_and_suggests_places_as_you_type() {
     assert_eq!(state.activate(), vec![Effect::Save]);
     assert!(state.overlay.is_none());
     assert_eq!(state.preferences.weather_location, Some(place));
+}
+
+#[test]
+fn dutch_defaults_to_a_24_hour_clock_and_a_lowercase_date_after_it() {
+    use crate::i18n::Language;
+    let at = time::OffsetDateTime::parse(
+        "2026-11-09T23:56:00+01:00",
+        &time::format_description::well_known::Rfc3339,
+    )
+    .unwrap();
+    // A Dutch file that never chose a format, including one that saved the old default.
+    for saved in [
+        json!({"language": "nl"}),
+        json!({"language": "nl", "hour_24": false}),
+    ] {
+        let preferences: Preferences = serde_json::from_value(saved).unwrap();
+        assert!(preferences.uses_24_hour());
+    }
+    // English keeps 12 hours; an earlier saved 24-hour choice stays.
+    let english: Preferences = serde_json::from_value(json!({"language": "en"})).unwrap();
+    assert!(!english.uses_24_hour());
+    let legacy: Preferences =
+        serde_json::from_value(json!({"language": "en", "hour_24": true})).unwrap();
+    assert!(legacy.uses_24_hour());
+    // A format chosen in Settings wins over the language, and survives saving.
+    let mut chosen: Preferences = serde_json::from_value(json!({"language": "nl"})).unwrap();
+    chosen.set_24_hour(false);
+    let reloaded: Preferences =
+        serde_json::from_value(serde_json::to_value(&chosen).unwrap()).unwrap();
+    assert!(!reloaded.uses_24_hour());
+    let mut state = ready();
+    state.preferences.language = Language::Nl;
+    state.open(Page::Settings);
+    state.focus = Target::ClockFormat;
+    state.subpage = Some(crate::state::Subpage::Clock);
+    state.activate();
+    assert_eq!(state.focus, Target::Choice(1), "24-hour is selected");
+    // The date after the clock is lowercase in Dutch; starting a line it is sentence case.
+    let format = crate::model::DateFormat::Localized;
+    assert_eq!(format.format_inline(Language::Nl, at), "maandag 9 november");
+    assert_eq!(format.format(Language::Nl, at), "Maandag 9 november");
+    assert_eq!(format.format_inline(Language::En, at), "Monday, November 9");
+    assert_eq!(
+        Language::Nl.clock(at, reloaded.uses_24_hour(), false),
+        "11:56 PM"
+    );
+    assert_eq!(Language::Nl.clock(at, true, false), "23:56");
 }

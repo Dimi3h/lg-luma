@@ -241,9 +241,20 @@ impl DateFormat {
     }
 
     pub fn format(self, language: Language, now: time::OffsetDateTime) -> String {
+        self.format_at(language, now, true)
+    }
+
+    /// Within a line (after the clock) the localized date keeps the language's own casing:
+    /// "maandag 9 november" in Dutch, rather than the sentence case that starts a line.
+    pub fn format_inline(self, language: Language, now: time::OffsetDateTime) -> String {
+        self.format_at(language, now, false)
+    }
+
+    fn format_at(self, language: Language, now: time::OffsetDateTime, line_start: bool) -> String {
         let (year, month, day) = (now.year(), now.month() as u8, now.day());
         match self {
-            Self::Localized => language.date(now),
+            Self::Localized if line_start => language.date(now),
+            Self::Localized => language.date_inline(now),
             Self::DayMonthYear => format!("{day:02}.{month:02}.{year:04}"),
             Self::MonthDayYear => format!("{month:02}/{day:02}/{year:04}"),
             Self::YearMonthDay => format!("{year:04}-{month:02}-{day:02}"),
@@ -282,7 +293,12 @@ pub struct Preferences {
     /// A second wallpaper shown between sunset and sunrise (as Automatic appearance decides
     /// night); `None` keeps one wallpaper all day.
     pub night_background: Option<String>,
+    /// The 24-hour choice as earlier versions saved it: written with every preference file, so
+    /// only `true` is known to be deliberate. Read through `uses_24_hour`.
     pub hour_24: bool,
+    /// The clock format once chosen in Settings (12 or 24 hour). Unset, Dutch uses 24 hours.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clock_24: Option<bool>,
     pub reduced_motion: bool,
     pub show_seconds: bool,
     /// Optional name appended to the Home greeting ("Good evening, Ana."). Empty = plain greeting.
@@ -331,6 +347,7 @@ impl Default for Preferences {
             larger_text: false,
             night_background: None,
             hour_24: false,
+            clock_24: None,
             reduced_motion: false,
             show_seconds: false,
             greeting_name: String::new(),
@@ -352,6 +369,19 @@ impl Default for Preferences {
 }
 
 impl Preferences {
+    /// Whether the clock shows 24 hours: the format chosen in Settings, else an earlier saved
+    /// 24-hour choice, else the language's habit (24 hours in Dutch, 12 in English).
+    pub fn uses_24_hour(&self) -> bool {
+        self.clock_24
+            .unwrap_or(self.hour_24 || self.language == Language::Nl)
+    }
+
+    /// A clock format chosen in Settings, kept regardless of the language.
+    pub fn set_24_hour(&mut self, value: bool) {
+        self.clock_24 = Some(value);
+        self.hour_24 = value;
+    }
+
     pub fn splash_background(&self) -> &str {
         self.splash_background
             .as_deref()

@@ -80,6 +80,11 @@ impl Language {
         })
     }
 
+    /// The localized date inside a line, in the language's own casing ("maandag 9 november").
+    pub fn date_inline(self, now: OffsetDateTime) -> String {
+        self.date_words(now)
+    }
+
     fn date_words(self, now: OffsetDateTime) -> String {
         let weekday = now.weekday().number_days_from_monday() as usize;
         let month = now.month() as usize - 1;

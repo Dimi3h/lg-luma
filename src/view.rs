@@ -987,7 +987,7 @@ const CLOCK_Y: f32 = HEADER.y + (HEADER.h - 36.) / 2.;
 fn header(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
     let clock = state.preferences.language.clock(
         now,
-        state.preferences.hour_24,
+        state.preferences.uses_24_hour(),
         state.preferences.show_seconds,
     );
     // On the main screen the clock is a button that opens Control Center: it lifts onto a
@@ -1080,7 +1080,7 @@ fn screensaver(
     }
     if state.preferences.screensaver_clock {
         let language = state.preferences.language;
-        let clock = language.clock(now, state.preferences.hour_24, false);
+        let clock = language.clock(now, state.preferences.uses_24_hour(), false);
         out.text(
             clock,
             Rect::new(SAFE_X, 1080. - 60. - 140., 1200., 82.),
@@ -1089,7 +1089,7 @@ fn screensaver(
             false,
         );
         out.text(
-            language.date(now),
+            state.preferences.date_format.format(language, now),
             Rect::new(SAFE_X, 1080. - 60. - 52., 1200., 40.),
             CALLOUT,
             c(0xffffff, 0.78),
@@ -1858,12 +1858,12 @@ fn home(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
         // On the clock's line, after the clock (drawn by `header`).
         let clock = language.clock(
             now,
-            state.preferences.hour_24,
+            state.preferences.uses_24_hour(),
             state.preferences.show_seconds,
         );
         let x = SAFE_X + assets.width(&clock, CLOCK_STYLE).ceil() + 18.;
         let (date, style) = assets.single_line(
-            &state.preferences.date_format.format(language, now),
+            &state.preferences.date_format.format_inline(language, now),
             CLOCK_STYLE.weight(450),
             1920. - SAFE_X - x,
         );
@@ -3118,8 +3118,12 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                 })
                 .collect(),
             Subpage::ClockFormat => vec![
-                (language.t("hour12"), None, !state.preferences.hour_24),
-                (language.t("hour24"), None, state.preferences.hour_24),
+                (
+                    language.t("hour12"),
+                    None,
+                    !state.preferences.uses_24_hour(),
+                ),
+                (language.t("hour24"), None, state.preferences.uses_24_hour()),
             ],
             Subpage::TimeFormat => vec![
                 ("HH:MM", None, !state.preferences.show_seconds),
@@ -3851,7 +3855,7 @@ fn clock_settings(out: &mut Scene, state: &State, assets: &Assets) {
         (
             Target::ClockFormat,
             "clockFormat",
-            language.t(if state.preferences.hour_24 {
+            language.t(if state.preferences.uses_24_hour() {
                 "hour24"
             } else {
                 "hour12"
