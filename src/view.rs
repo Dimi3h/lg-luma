@@ -117,8 +117,8 @@ impl Assets {
     }
 
     /// The blurred copy of the visible background that glass panels sample.
-    fn glass_backdrop(&self, state: &State) -> Option<String> {
-        let id = &state.preferences.background;
+    fn glass_backdrop(&self, state: &State, id: &str) -> Option<String> {
+        let id = &id.to_owned();
         if let Some(item) = state.wallpapers.iter().find(|item| &item.id == id) {
             return item.blurred(state.preferences.wallpaper_gradient);
         }
@@ -709,7 +709,9 @@ pub fn scene(state: &State, assets: &Assets, now: OffsetDateTime) -> Scene {
         return screensaver(state, assets, now, started, first);
     }
     let mut out = Scene::new();
-    out.backdrop = assets.glass_backdrop(state);
+    // The night wallpaper replaces the chosen one between sunset and sunrise.
+    let shown = state.shown_background(now).to_owned();
+    out.backdrop = assets.glass_backdrop(state, &shown);
     if let Some((previous, start)) = &state.previous_background {
         out.image(
             assets.background(state, previous),
@@ -719,7 +721,7 @@ pub fn scene(state: &State, assets: &Assets, now: OffsetDateTime) -> Scene {
         );
         let alpha = (start.elapsed().as_secs_f32() / state.background_fade).min(1.);
         out.draw.push(Draw::TintedImage(
-            assets.background(state, &state.preferences.background),
+            assets.background(state, &shown),
             Rect::new(0., 0., 1920., 1080.),
             0.,
             false,
@@ -732,7 +734,7 @@ pub fn scene(state: &State, assets: &Assets, now: OffsetDateTime) -> Scene {
             .then(|| out.backdrop.clone())
             .flatten();
         out.image(
-            blurred.unwrap_or_else(|| assets.background(state, &state.preferences.background)),
+            blurred.unwrap_or_else(|| assets.background(state, &shown)),
             Rect::new(0., 0., 1920., 1080.),
             0.,
             false,
@@ -4176,7 +4178,17 @@ fn options(out: &mut Scene, state: &State, assets: &Assets, id: &str, anchor: Op
             (Target::TileRemove(id.into()), language.t("removeTile")),
         ]
     } else if background {
-        let mut actions = vec![(Target::UseBackground, language.t("useBackground"))];
+        let mut actions = vec![
+            (Target::UseBackground, language.t("useBackground")),
+            (
+                Target::NightBackground,
+                if state.preferences.night_background.as_deref() == Some(id) {
+                    language.t("stopNightBackground")
+                } else {
+                    language.t("useAtNight")
+                },
+            ),
+        ];
         if deletable {
             actions.push((Target::DeleteBackground, language.t("deleteBackground")));
         }
@@ -4290,6 +4302,7 @@ fn options(out: &mut Scene, state: &State, assets: &Assets, id: &str, anchor: Op
             match &target {
                 Target::OpenApp | Target::TileTest(_) => "arrow",
                 Target::UseBackground => "check",
+                Target::NightBackground => "weather-moon",
                 Target::Option(0) => {
                     if favorite {
                         "heart-filled"

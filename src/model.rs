@@ -279,6 +279,9 @@ pub struct Preferences {
     pub appearance: Appearance,
     /// Settings › General › Text size: Larger (about 1.15×) for body text.
     pub larger_text: bool,
+    /// A second wallpaper shown between sunset and sunrise (as Automatic appearance decides
+    /// night); `None` keeps one wallpaper all day.
+    pub night_background: Option<String>,
     pub hour_24: bool,
     pub reduced_motion: bool,
     pub show_seconds: bool,
@@ -326,6 +329,7 @@ impl Default for Preferences {
             screensaver_clock: true,
             appearance: Appearance::Dark,
             larger_text: false,
+            night_background: None,
             hour_24: false,
             reduced_motion: false,
             show_seconds: false,

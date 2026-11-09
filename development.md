@@ -488,6 +488,11 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   TV does not answer are left out; a refused change shows a quiet notice and re-reads the status.
   Back closes the panel. Desktop builds simulate the TV and never sleep. All of it is unverified on
   a TV.
+- **Night wallpaper** (off by default): a background's options offer **Use at night** (and
+  **Don't use at night** for the current one). Between sunset and sunrise, decided as for
+  Automatic appearance, that wallpaper and its blurred glass copy replace the chosen one; the day
+  choice, rotation and the splash are unchanged. A deleted night wallpaper falls back to the day
+  one.
 - **Text size** (Settings › General: Default or Larger): Larger scales every text style of
   40 px and below (Headline, Callout, Body, Captions) by 1.15; titles keep their size. The scale
   is applied in one place for measuring (`Assets::width`/`lines`, so fitting and ellipsis follow

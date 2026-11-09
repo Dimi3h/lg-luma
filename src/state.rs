@@ -84,6 +84,8 @@ pub enum Target {
     WallpaperCycle,
     WallpaperGradient,
     UseBackground,
+    /// Background options: use this wallpaper between sunset and sunrise (or stop).
+    NightBackground,
     DeleteBackground,
     InputMode(String),
     InputRename,
@@ -362,6 +364,19 @@ impl State {
             .and_then(|reading| reading.sun)
             .unwrap_or([7 * 60, 21 * 60]);
         minutes < sunrise || minutes >= sunset
+    }
+
+    /// The wallpaper to show now: the night wallpaper between sunset and sunrise when one is
+    /// set and still exists, otherwise the chosen one.
+    pub fn shown_background(&self, now: time::OffsetDateTime) -> &str {
+        match &self.preferences.night_background {
+            Some(night)
+                if self.is_night(now) && self.background_ids().any(|known| known == night) =>
+            {
+                night
+            }
+            _ => &self.preferences.background,
+        }
     }
 
     /// Whether the light appearance applies now.
@@ -2595,6 +2610,19 @@ impl State {
                 });
                 self.preferences.background = id;
                 self.preferences.wallpaper_changed = unix_now();
+                self.back();
+                return vec![Effect::Save];
+            }
+            Target::NightBackground => {
+                let Some(Overlay::BackgroundOptions { id, .. }) = self.overlay.clone() else {
+                    return vec![];
+                };
+                self.preferences.night_background =
+                    if self.preferences.night_background.as_deref() == Some(id.as_str()) {
+                        None
+                    } else {
+                        Some(id)
+                    };
                 self.back();
                 return vec![Effect::Save];
             }

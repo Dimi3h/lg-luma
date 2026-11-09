@@ -3819,3 +3819,49 @@ fn larger_text_scales_body_styles_keeps_titles_and_still_fits_three_rows() {
     assert_eq!(state.activate(), vec![Effect::Save]);
     assert!(!state.preferences.larger_text);
 }
+
+#[test]
+fn a_night_wallpaper_replaces_the_chosen_one_between_sunset_and_sunrise() {
+    use crate::renderer::Draw;
+    let old: Preferences = serde_json::from_value(json!({"favorites": []})).unwrap();
+    assert_eq!(old.night_background, None, "Off by default");
+    let mut state = ready();
+    let at = |hour: u8| time::OffsetDateTime::UNIX_EPOCH.replace_hour(hour).unwrap();
+    assert_eq!(state.shown_background(at(23)), "dunes");
+    // Background options › Use at night on another wallpaper.
+    state.open(Page::Settings);
+    state.section = 1;
+    let night = (0..state.background_count())
+        .find(|&i| state.background_id(i) != Some("dunes"))
+        .unwrap();
+    let night_id = state.background_id(night).unwrap().to_owned();
+    state.focus = Target::Background(night);
+    state.options();
+    state.focus = Target::NightBackground;
+    assert_eq!(state.activate(), vec![Effect::Save]);
+    assert_eq!(
+        state.preferences.night_background.as_deref(),
+        Some(night_id.as_str())
+    );
+    assert_eq!(
+        state.preferences.background, "dunes",
+        "The day wallpaper is unchanged"
+    );
+    // Without a forecast, night is 21:00 to 07:00.
+    assert_eq!(state.shown_background(at(12)), "dunes");
+    assert_eq!(state.shown_background(at(22)), night_id);
+    assert_eq!(state.shown_background(at(6)), night_id);
+    // The test scene renders at midnight: the night wallpaper is drawn.
+    state.open(Page::Home);
+    assert!(scene(&state).draw.iter().any(|draw| matches!(draw,
+        Draw::Image(path, ..) if path.contains(&format!("wallpapers/{night_id}")))));
+    // The same action again stops it.
+    state.open(Page::Settings);
+    state.section = 1;
+    state.focus = Target::Background(night);
+    state.options();
+    state.focus = Target::NightBackground;
+    state.activate();
+    assert_eq!(state.preferences.night_background, None);
+    assert_eq!(state.shown_background(at(22)), "dunes");
+}

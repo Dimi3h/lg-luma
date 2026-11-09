@@ -1070,5 +1070,13 @@
   "textLarger": {
     "en": "Larger",
     "nl": "Groter"
+  },
+  "useAtNight": {
+    "en": "Use at night",
+    "nl": "'s Nachts gebruiken"
+  },
+  "stopNightBackground": {
+    "en": "Don't use at night",
+    "nl": "Niet 's nachts gebruiken"
   }
 }

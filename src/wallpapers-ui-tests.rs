@@ -662,7 +662,11 @@ fn background_popup_is_modal_lifts_the_same_thumbnail_and_restores_its_parent() 
             .iter()
             .map(|c| c.target.clone())
             .collect::<Vec<_>>(),
-        vec![Target::UseBackground, Target::DeleteBackground]
+        vec![
+            Target::UseBackground,
+            Target::NightBackground,
+            Target::DeleteBackground
+        ]
     );
     // The popup keeps the thumbnail lifted around its own centre.
     let (cx, cy) = before.center();
@@ -674,6 +678,8 @@ fn background_popup_is_modal_lifts_the_same_thumbnail_and_restores_its_parent() 
         if (rect.center().0 - cx).abs() < 0.01 && (rect.center().1 - cy).abs() < 0.01
             && rect.w > before.w && (rect.w / rect.h - before.w / before.h).abs() < 0.01))
     );
+    state.direction(Direction::Down, &popup.controls);
+    assert_eq!(state.focus, Target::NightBackground);
     state.direction(Direction::Down, &popup.controls);
     assert_eq!(state.focus, Target::DeleteBackground);
     state.activate();
@@ -700,7 +706,8 @@ fn selected_background_has_no_delete_action_and_rejects_forced_confirmation() {
         .unwrap();
     state.focus = Target::Background(index);
     state.options();
-    assert_eq!(scene(&state).controls.len(), 1);
+    // Use and Use at night, but no Delete.
+    assert_eq!(scene(&state).controls.len(), 2);
     assert!(!state.can_delete_background(&selected));
     state.focus = Target::DeleteBackground;
     state.activate();
