@@ -38,6 +38,8 @@ try {
     ['settings', 'settings'],
     // Widgets lists Date, Greeting, Weather, Shortcuts, then Inputs.
     ['inputs', 'settings,down,down,enter,down,down,down,down,enter'],
+    // Up from the grid reaches the weather button, then the clock, which opens Control Center.
+    ['control-center', 'home,up,up,enter'],
   ]) {
     // Independent state makes screenshots stable regardless of capture order.
     await fs.writeFile(preferences, JSON.stringify(configuration));

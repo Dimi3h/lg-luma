@@ -15,7 +15,7 @@ https://github.com/user-attachments/assets/2156d640-b8fa-4ea4-a02c-0db4c93bcc5a
       <img src="docs/home.png" alt="Luma main screen with the top shelf above the app grid, desktop preview">
     </td>
     <td width="50%" align="center">
-      <img src="docs/apps.png" alt="Luma app grid scrolled below the first row, desktop preview">
+      <img src="docs/apps.png" alt="Luma app grid scrolled past the third row, desktop preview">
     </td>
   </tr>
   <tr>
@@ -25,6 +25,12 @@ https://github.com/user-attachments/assets/2156d640-b8fa-4ea4-a02c-0db4c93bcc5a
     <td width="50%" align="center">
       <img src="docs/inputs.png" alt="Luma native input settings, desktop preview">
     </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/control-center.png" alt="Luma Control Center opened from the clock, desktop preview">
+    </td>
+    <td width="50%"></td>
   </tr>
 </table>
 

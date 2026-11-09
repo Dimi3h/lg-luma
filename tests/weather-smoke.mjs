@@ -232,7 +232,8 @@ try {
   );
   const latest = await scenario(
     'latest-search',
-    `${locationPage},type:slow,back,enter,click:900:278,click:1367:764,type:Paris,back,enter,await-search,down,enter`,
+    // Reopen the keyboard on the field and reach Clear (key 38) along the linear keyboard's row.
+    `${locationPage},type:slow,back,enter,click:900:278,${Array(38).fill('right').join(',')},enter,type:Paris,back,enter,await-search,down,enter`,
   );
   assert.equal(latest.preferences.weather_location.name, 'Paris');
   assert.ok(latest.weather.results.length === 0);

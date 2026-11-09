@@ -56,7 +56,7 @@ async function run(command, args) {
     });
   });
 }
-async function scenario(name, script, extra = []) {
+async function scenario(name, script, extra = [], frames = 120) {
   const dump = path.join(temporary, `${name}.json`);
   const report = path.join(out, `language-${name}-render.json`);
   await run(binary, [
@@ -67,7 +67,7 @@ async function scenario(name, script, extra = []) {
     '--script',
     script,
     '--frames',
-    '120',
+    String(frames),
     '--time',
     '2026-10-21T20:41:00+02:00',
     '--screenshot',
@@ -173,7 +173,13 @@ try {
   );
   assert.equal(backgroundOptions.modal, true);
   for (const key of ['useBackground', 'deleteBackground']) contains(backgroundOptions, key, 'nl');
-  const keyboard = await scenario('nl-keyboard', `${location},enter`);
+  // The linear keyboard's row ends with Space, Delete, Clear and Done; move there first.
+  const keyboard = await scenario(
+    'nl-keyboard',
+    `${location},enter,${Array(39).fill('right').join(',')}`,
+    [],
+    320,
+  );
   for (const key of ['space', 'delete', 'clear', 'done']) contains(keyboard, key, 'nl');
   const weatherSettings = await scenario('nl-weather-settings', weatherPage);
   for (const key of ['widgets', 'showWidget', 'location', 'temperature'])
