@@ -119,6 +119,10 @@ impl Client {
                 ("latitude", &latitude),
                 ("longitude", &longitude),
                 ("current", "temperature_2m,is_day,weather_code"),
+                // Today's sunrise and sunset (local time) for Automatic appearance and the
+                // night wallpaper.
+                ("daily", "sunrise,sunset"),
+                ("forecast_days", "1"),
                 ("temperature_unit", "celsius"),
                 ("timezone", "auto"),
             ],
@@ -316,6 +320,7 @@ mod tests {
             key: "48.2085,16.3721".into(),
             updated_at: 1000,
             reading: Reading {
+                sun: None,
                 temperature: 14.2,
                 code: 2,
                 is_day: true,

@@ -1042,5 +1042,21 @@
   "minutes": {
     "en": "{count} min",
     "nl": "{count} min"
+  },
+  "appearance": {
+    "en": "Appearance",
+    "nl": "Weergave"
+  },
+  "appearanceDark": {
+    "en": "Dark",
+    "nl": "Donker"
+  },
+  "appearanceLight": {
+    "en": "Light",
+    "nl": "Licht"
+  },
+  "appearanceAuto": {
+    "en": "Automatic",
+    "nl": "Automatisch"
   }
 }

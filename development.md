@@ -488,6 +488,14 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   TV does not answer are left out; a refused change shows a quiet notice and re-reads the status.
   Back closes the panel. Desktop builds simulate the TV and never sleep. All of it is unverified on
   a TV.
+- **Appearance** (Settings › General: Dark (default), Light or Automatic): Light brightens the
+  finished scene in one pass (`light_appearance` in `src/view.rs`): a white scrim over the
+  wallpaper, a white layer on each glass panel, near-black text and interface icons instead of
+  white, white instead of dark veils, and softer shadows. Focused white surfaces and their labels
+  are unchanged, and the screensaver stays dark. Automatic is light between today's sunrise and
+  sunset at the weather location, which the forecast now requests (`daily=sunrise,sunset`,
+  `forecast_days=1`, cached with the reading), and between 07:00 and 21:00 without a location or
+  forecast. The scrim is one more full-screen layer while Light applies.
 - **Screensaver** (Settings › General › Screensaver: Off, 5, 10 (default), 15 or 30 minutes;
   **Screensaver clock**, default On): after that long without a remote key, pointer movement or
   text input while Luma is visible and in front, the screen shows a slow Ken Burns (zoom from 4%

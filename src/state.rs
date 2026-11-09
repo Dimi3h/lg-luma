@@ -191,6 +191,8 @@ pub enum Subpage {
     HiddenApps,
     /// Settings › General › Screensaver: Off or the idle minutes.
     Screensaver,
+    /// Settings › General › Appearance: Dark, Light or Automatic.
+    Appearance,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -340,6 +342,29 @@ impl State {
             confirm_sleep: false,
             last_input: Instant::now(),
             screensaver: None,
+        }
+    }
+
+    /// Night at the weather location: between today's sunset and sunrise from the forecast,
+    /// or between 21:00 and 07:00 without one.
+    pub fn is_night(&self, now: time::OffsetDateTime) -> bool {
+        let minutes = now.hour() as u16 * 60 + now.minute() as u16;
+        let [sunrise, sunset] = self
+            .preferences
+            .weather_location
+            .as_ref()
+            .and_then(|place| self.weather.reading(place))
+            .and_then(|reading| reading.sun)
+            .unwrap_or([7 * 60, 21 * 60]);
+        minutes < sunrise || minutes >= sunset
+    }
+
+    /// Whether the light appearance applies now.
+    pub fn light(&self, now: time::OffsetDateTime) -> bool {
+        match self.preferences.appearance {
+            crate::model::Appearance::Dark => false,
+            crate::model::Appearance::Light => true,
+            crate::model::Appearance::Automatic => !self.is_night(now),
         }
     }
 
@@ -1338,6 +1363,7 @@ impl State {
             Some(Subpage::TextRendering) => Target::Setting(7),
             Some(Subpage::HiddenApps) => Target::Setting(11),
             Some(Subpage::Screensaver) => Target::Setting(12),
+            Some(Subpage::Appearance) => Target::Setting(14),
             None => Target::Sidebar(self.section),
         };
         self.scroll = 0.;
@@ -1455,6 +1481,7 @@ impl State {
                     // Without hidden apps the empty state holds focus.
                     Some(Subpage::HiddenApps) => self.hidden_apps().len().max(1),
                     Some(Subpage::Screensaver) => SCREENSAVER_MINUTES.len(),
+                    Some(Subpage::Appearance) => crate::model::Appearance::ALL.len(),
                     Some(Subpage::DateFormat) => crate::model::DateFormat::ALL.len(),
                     _ => 3,
                 };
@@ -1542,7 +1569,7 @@ impl State {
             }
             if matches!(
                 self.focus,
-                Target::Setting(1 | 4 | 7 | 11 | 12)
+                Target::Setting(1 | 4 | 7 | 11 | 12 | 14)
                     | Target::Widget(0..=4)
                     | Target::InputMode(_)
                     | Target::WeatherLocation
@@ -2476,6 +2503,15 @@ impl State {
                         return vec![];
                     }
                     13 => self.preferences.screensaver_clock = !self.preferences.screensaver_clock,
+                    14 => {
+                        self.subpage = Some(Subpage::Appearance);
+                        self.scroll = 0.;
+                        self.focus = Target::Choice(self.preferences.appearance.index());
+                        if !self.preferences.reduced_motion {
+                            self.panel_started = Some(Instant::now());
+                        }
+                        return vec![];
+                    }
                     11 => {
                         self.subpage = Some(Subpage::HiddenApps);
                         self.scroll = 0.;
@@ -2597,6 +2633,10 @@ impl State {
                         self.preferences.language =
                             Language::ALL[index.min(Language::ALL.len() - 1)];
                         self.weather.cancel_search();
+                    }
+                    Some(Subpage::Appearance) => {
+                        let modes = crate::model::Appearance::ALL;
+                        self.preferences.appearance = modes[index.min(modes.len() - 1)];
                     }
                     Some(Subpage::Screensaver) => {
                         self.preferences.screensaver_minutes =

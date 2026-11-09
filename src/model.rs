@@ -169,6 +169,46 @@ pub const CUSTOM_TILE_PREFIX: &str = "custom.";
 pub const TILE_LIMIT: usize = 64;
 pub const TILE_URL_LIMIT: usize = 512;
 
+/// Settings › General › Appearance. Automatic follows sunrise and sunset at the weather
+/// location (07:00 to 21:00 without one).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Appearance {
+    #[default]
+    Dark,
+    Light,
+    Automatic,
+}
+
+impl Appearance {
+    pub const ALL: [Self; 3] = [Self::Dark, Self::Light, Self::Automatic];
+
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|mode| *mode == self).unwrap()
+    }
+
+    pub fn label_key(self) -> &'static str {
+        match self {
+            Self::Dark => "appearanceDark",
+            Self::Light => "appearanceLight",
+            Self::Automatic => "appearanceAuto",
+        }
+    }
+}
+
+/// Unknown or malformed values load as Dark instead of failing the preference file.
+fn deserialize_appearance<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Appearance, D::Error> {
+    Ok(
+        match serde_json::Value::deserialize(deserializer)?.as_str() {
+            Some("light") => Appearance::Light,
+            Some("automatic") => Appearance::Automatic,
+            _ => Appearance::Dark,
+        },
+    )
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DateFormat {
@@ -235,6 +275,8 @@ pub struct Preferences {
     pub screensaver_minutes: u32,
     /// The time and date over the screensaver.
     pub screensaver_clock: bool,
+    #[serde(deserialize_with = "deserialize_appearance")]
+    pub appearance: Appearance,
     pub hour_24: bool,
     pub reduced_motion: bool,
     pub show_seconds: bool,
@@ -280,6 +322,7 @@ impl Default for Preferences {
             app_artwork: true,
             screensaver_minutes: 10,
             screensaver_clock: true,
+            appearance: Appearance::Dark,
             hour_24: false,
             reduced_motion: false,
             show_seconds: false,

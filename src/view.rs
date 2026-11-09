@@ -874,7 +874,69 @@ pub fn scene(state: &State, assets: &Assets, now: OffsetDateTime) -> Scene {
     if let Some((notice, _)) = &state.notice {
         toast(&mut out, state, assets, notice);
     }
+    if state.light(now) {
+        light_appearance(&mut out, content_start);
+    }
     out
+}
+
+/// The light appearance (Settings › General › Appearance): the finished scene, built for the
+/// dark look, is brightened in one pass. A white scrim lightens the wallpaper, glass panels gain
+/// a white layer, white text and interface icons turn near-black, dark veils turn white and
+/// shadows soften. Focused white surfaces and their dark labels stay as they are.
+fn light_appearance(out: &mut Scene, from: usize) {
+    const INK: [f32; 3] = [0.09, 0.09, 0.1];
+    let near_white = |color: &Color| color[0] > 0.8 && color[1] > 0.8 && color[2] > 0.8;
+    let near_black = |color: &Color| color[0] < 0.25 && color[1] < 0.25 && color[2] < 0.25;
+    let ink = |color: Color| [INK[0], INK[1], INK[2], color[3]];
+    let mut draws = Vec::with_capacity(out.draw.len() + 8);
+    for (index, mut draw) in std::mem::take(&mut out.draw).into_iter().enumerate() {
+        if index == from {
+            draws.push(Draw::Shape(
+                Rect::new(0., 0., 1920., 1080.),
+                0.,
+                0.,
+                [0.97, 0.97, 0.98, 0.5],
+            ));
+        }
+        if index < from {
+            draws.push(draw);
+            continue;
+        }
+        let mut glass = None;
+        match &mut draw {
+            Draw::Text(_, _, _, color, _) if near_white(color) => *color = ink(*color),
+            Draw::TintedImage(path, _, _, _, color)
+                if path.contains("ui-icons/") && near_white(color) =>
+            {
+                *color = ink(*color)
+            }
+            Draw::Shape(_, _, 0., color) if near_black(color) => {
+                *color = [0.96, 0.96, 0.97, color[3] * 0.9];
+            }
+            Draw::Shadow(_, _, _, color) => color[3] *= 0.5,
+            Draw::Backdrop(_, rect, radius, color) => {
+                glass = Some(Draw::Shape(
+                    *rect,
+                    *radius,
+                    0.,
+                    [1., 1., 1., 0.55 * color[3]],
+                ));
+            }
+            _ => {}
+        }
+        draws.push(draw);
+        draws.extend(glass);
+    }
+    if from >= draws.len() {
+        draws.push(Draw::Shape(
+            Rect::new(0., 0., 1920., 1080.),
+            0.,
+            0.,
+            [0.97, 0.97, 0.98, 0.5],
+        ));
+    }
+    out.draw = draws;
 }
 
 /// The clock's style and line; on the main screen the date follows it on the same line.
@@ -2766,6 +2828,7 @@ fn settings_path(state: &State) -> Vec<&str> {
         Some(Subpage::TextRendering) => vec![language.t("textRendering")],
         Some(Subpage::HiddenApps) => vec![language.t("hiddenApps")],
         Some(Subpage::Screensaver) => vec![language.t("screensaver")],
+        Some(Subpage::Appearance) => vec![language.t("appearance")],
         None => vec![],
     };
     let mut path = vec![section];
@@ -3046,6 +3109,16 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                 .into_iter()
                 .map(|option| (option.name(), None, option == language))
                 .collect(),
+            Subpage::Appearance => crate::model::Appearance::ALL
+                .into_iter()
+                .map(|mode| {
+                    (
+                        language.t(mode.label_key()),
+                        None,
+                        mode == state.preferences.appearance,
+                    )
+                })
+                .collect(),
             Subpage::Screensaver => {
                 let labels: Vec<_> = crate::state::SCREENSAVER_MINUTES
                     .iter()
@@ -3152,6 +3225,13 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                     false,
                 ),
                 (11, "hiddenApps", "eye-off", Some(hidden.as_str()), true),
+                (
+                    14,
+                    "appearance",
+                    "weather-sun",
+                    Some(language.t(state.preferences.appearance.label_key())),
+                    true,
+                ),
                 (
                     12,
                     "screensaver",

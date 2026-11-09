@@ -1718,6 +1718,7 @@ fn weather_units_save_without_replacing_celsius_cache_and_hide_keeps_city() {
         key: place.key(),
         updated_at: 1000,
         reading: crate::weather::Reading {
+            sun: None,
             temperature: 14.2,
             code: 2,
             is_day: true,
@@ -3640,4 +3641,89 @@ fn screensaver_defaults_to_ten_minutes_replaces_the_scene_and_any_input_ends_it(
     state.focus = Target::Setting(13);
     assert_eq!(state.activate(), vec![Effect::Save]);
     assert!(state.preferences.screensaver_clock);
+}
+
+#[test]
+fn appearance_defaults_to_dark_and_automatic_follows_the_sun_at_the_weather_location() {
+    use crate::model::Appearance;
+    use crate::renderer::Draw;
+    let old: Preferences =
+        serde_json::from_value(json!({"appearance": "sepia", "favorites": []})).unwrap();
+    assert_eq!(old.appearance, Appearance::Dark);
+    let mut state = ready();
+    let at = |hour: u8, minute: u8| {
+        time::OffsetDateTime::UNIX_EPOCH
+            .replace_hour(hour)
+            .unwrap()
+            .replace_minute(minute)
+            .unwrap()
+    };
+    let scrim = |scene: &view::Scene| {
+        scene.draw.iter().any(|draw| {
+            matches!(draw, Draw::Shape(rect, _, _, color) if rect.w == 1920. && color[0] > 0.9 && color[3] == 0.5)
+        })
+    };
+    // Dark (the default) leaves the scene untouched.
+    assert!(!state.light(at(12, 0)));
+    assert!(!scrim(&scene(&state)));
+    // Light brightens it: a scrim, and white text turns dark.
+    state.preferences.appearance = Appearance::Light;
+    let light = scene(&state);
+    assert!(scrim(&light));
+    assert!(light.draw.iter().any(|draw| matches!(draw,
+        Draw::Text(_, _, _, color, _) if color[0] < 0.2)));
+    // Automatic without a forecast: light from 07:00 to 21:00.
+    state.preferences.appearance = Appearance::Automatic;
+    assert!(!state.light(at(6, 59)));
+    assert!(state.light(at(7, 0)));
+    assert!(state.light(at(20, 59)));
+    assert!(!state.light(at(21, 0)));
+    // With a forecast: today's sunrise and sunset at the location.
+    let place = crate::weather::Location {
+        name: "Wenen".into(),
+        region: "Wenen".into(),
+        country: "Oostenrijk".into(),
+        latitude: 48.2085,
+        longitude: 16.3721,
+    };
+    state.preferences.weather_location = Some(place.clone());
+    state.weather.cache = Some(crate::weather::Cache {
+        key: place.key(),
+        updated_at: 1000,
+        reading: crate::weather::Reading {
+            sun: Some([7 * 60 + 30, 17 * 60 + 5]),
+            temperature: 9.,
+            code: 0,
+            is_day: false,
+        },
+    });
+    assert!(!state.light(at(7, 29)));
+    assert!(state.light(at(7, 30)));
+    assert!(!state.light(at(17, 5)));
+    // Settings › General › Appearance.
+    state.open(Page::Settings);
+    state.focus = Target::Setting(14);
+    state.direction(Direction::Right, &controls(&state));
+    assert_eq!(state.subpage, Some(crate::state::Subpage::Appearance));
+    assert_eq!(state.focus, Target::Choice(2));
+    state.direction(Direction::Up, &controls(&state));
+    assert_eq!(state.activate(), vec![Effect::Save]);
+    assert_eq!(state.preferences.appearance, Appearance::Light);
+}
+
+#[test]
+fn forecasts_carry_todays_sunrise_and_sunset() {
+    let reading = crate::weather::parse_reading(&json!({
+        "current": {"temperature_2m": 9.0, "weather_code": 0, "is_day": 1},
+        "daily": {"sunrise": ["2026-11-10T07:21"], "sunset": ["2026-11-10T16:44"]}
+    }))
+    .unwrap();
+    assert_eq!(reading.sun, Some([7 * 60 + 21, 16 * 60 + 44]));
+    // Missing or polar days have no times; the reading itself stays valid.
+    let polar = crate::weather::parse_reading(&json!({
+        "current": {"temperature_2m": -9.0, "weather_code": 0, "is_day": 1},
+        "daily": {"sunrise": [null], "sunset": [null]}
+    }))
+    .unwrap();
+    assert_eq!(polar.sun, None);
 }
