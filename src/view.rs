@@ -1,12 +1,11 @@
 //! Screen geometry and styling mirror the web UI's 1920×1080 / 16px-rem layout.
 use crate::{
     i18n::Language,
-    model::{App, BACKGROUNDS, CATEGORIES, Input, InputMode},
+    model::{App, BACKGROUNDS, Input, InputMode},
     renderer::{Color, Draw, TextStyle, WHITE},
     state::{
-        APPS_COLUMNS, Control, HOME_FADE_LEFT, HOME_FADE_RIGHT, HOME_STRIP_LEFT, HOME_STRIP_RIGHT,
-        HOME_TILE_PITCH, HOME_TILE_WIDTH, KEYS, Overlay, Page, Rect, SYSTEM_SECTION, State,
-        Subpage, Target, TextField, WIDGETS_SECTION,
+        APPS_COLUMNS, Control, KEYS, Overlay, Page, Rect, SYSTEM_SECTION, State, Subpage, Target,
+        TextField, WIDGETS_SECTION,
     },
     weather::{self, Unit},
 };
@@ -16,7 +15,6 @@ use std::{
 };
 use time::OffsetDateTime;
 
-const MAIN_TOP: f32 = 108.8;
 /// Card artwork proportions are authored for this height; other sizes scale from it.
 const FACE_HEIGHT: f32 = 154.4;
 const RECENTS_BACKDROP_OPACITY: f32 = 0.5;
@@ -426,7 +424,7 @@ impl Scene {
                 | Draw::AppImage(_, rect, ..)
                 | Draw::Backdrop(_, rect, ..)
                 | Draw::Rim(rect, ..) => rect,
-                Draw::Clip(_) | Draw::EdgeFade(_) | Draw::EdgeFadeX(_) => continue,
+                Draw::Clip(_) | Draw::EdgeFade(_) => continue,
             };
             rect.x += dx;
             rect.y += dy;
@@ -460,7 +458,7 @@ impl Scene {
                         [brightness, brightness, brightness, alpha],
                     );
                 }
-                Draw::Clip(_) | Draw::EdgeFade(_) | Draw::EdgeFadeX(_) => {}
+                Draw::Clip(_) | Draw::EdgeFade(_) => {}
             }
         }
     }
@@ -667,43 +665,17 @@ fn text(size: f32, weight: u16, tracking: f32) -> TextStyle {
     TextStyle::new(size).weight(weight).tracking(tracking)
 }
 
-pub struct Navigation {
-    pub surface: Rect,
-    pub items: [Rect; 3],
-}
-/// The tvOS tab bar: 68 high with its top edge 46 from the top of the screen.
-pub const TAB_BAR: Rect = Rect::new(0., 46., 0., 68.);
-const TAB_INSET: f32 = 8.;
-const TAB_STYLE: TextStyle = BODY;
-pub fn navigation(assets: &Assets, language: Language) -> Navigation {
-    let widths = ["home", "apps", "settings"]
-        .map(|key| (assets.width(language.t(key), TAB_STYLE.weight(600)) + 64.).max(140.));
-    let gap = 4.;
-    let width = widths.iter().sum::<f32>() + 2. * gap + 2. * TAB_INSET;
-    let mut x = (1920. - width) / 2. + TAB_INSET;
-    let items = widths.map(|width| {
-        let rect = Rect::new(x, TAB_BAR.y + TAB_INSET, width, TAB_BAR.h - 2. * TAB_INSET);
-        x += width + gap;
-        rect
-    });
-    Navigation {
-        surface: Rect::new((1920. - width) / 2., TAB_BAR.y, width, TAB_BAR.h),
-        items,
-    }
-}
+/// The clock line at the top of every page (tvOS has no tab bar on its Home Screen).
+pub const HEADER: Rect = Rect::new(0., 46., 0., 68.);
+/// Height of a one-line title row of controls (Settings' title line and its buttons).
+pub const TITLE_LINE_H: f32 = 68.;
 
 /// Fully shown Recents is drawn instead of the page, which is then not part of the scene.
 pub fn recents_replaces_page(state: &State) -> bool {
     state.recents_open() && state.recents.visibility == 1.
 }
 
-pub fn scene_with_pill(
-    state: &State,
-    assets: &Assets,
-    pill_x: f32,
-    pill_width: f32,
-    now: OffsetDateTime,
-) -> Scene {
+pub fn scene(state: &State, assets: &Assets, now: OffsetDateTime) -> Scene {
     let mut out = Scene::new();
     out.backdrop = assets.glass_backdrop(state);
     if let Some((previous, start)) = &state.previous_background {
@@ -749,12 +721,9 @@ pub fn scene_with_pill(
     }
     let viewport = state.content_viewport();
     let main_bottom = viewport.y + viewport.h;
-    if state.page == Page::Home {
-        out.draw.push(Draw::Clip(Some(viewport)));
-    }
+    // No clip on the main screen: scrolled rows fade out beneath the clock instead.
     match state.page {
         Page::Home => home(&mut out, state, assets, now),
-        Page::Apps => library(&mut out, state, assets),
         Page::Settings => settings(&mut out, state, assets),
     }
     if let Some(error) = &state.error
@@ -797,7 +766,7 @@ pub fn scene_with_pill(
     if page_alpha < 1. {
         out.fade(content_start, page_alpha, 1.);
     }
-    header(&mut out, state, assets, now, pill_x, pill_width);
+    header(&mut out, state, now);
     if let Some(
         overlay @ (Overlay::Options { .. }
         | Overlay::Delete { .. }
@@ -913,82 +882,19 @@ pub fn scene_with_pill(
     out
 }
 
-fn header(
-    out: &mut Scene,
-    state: &State,
-    assets: &Assets,
-    now: OffsetDateTime,
-    pill_x: f32,
-    pill_width: f32,
-) {
-    let language = state.preferences.language;
-    let clock = language.clock(
+fn header(out: &mut Scene, state: &State, now: OffsetDateTime) {
+    let clock = state.preferences.language.clock(
         now,
         state.preferences.hour_24,
         state.preferences.show_seconds,
     );
     out.text(
         clock,
-        Rect::new(SAFE_X, TAB_BAR.y + (TAB_BAR.h - 36.) / 2., 320., 36.),
+        Rect::new(SAFE_X, HEADER.y + (HEADER.h - 36.) / 2., 320., 36.),
         BODY.weight(550),
         c(0xffffff, 0.72),
         false,
     );
-    let layout = navigation(assets, language);
-    let nav = layout.surface;
-    out.shadow(nav, nav.h / 2., 24., 8., 0.16);
-    out.glass(nav, nav.h / 2., Glass::Regular);
-    // Only the selected tab is opaque. While the bar has focus it lifts with a drop shadow;
-    // it follows the tweened position and width rather than jumping between tabs.
-    let focused = (0..3)
-        .map(|index| state.focus_level(&Target::Nav(index)))
-        .fold(0., f32::max)
-        * if state.pointer { 0. } else { 1. };
-    let pill = grow(
-        Rect::new(pill_x, layout.items[0].y, pill_width, layout.items[0].h),
-        BUTTON_LIFT * focused,
-    );
-    if focused > 0. {
-        out.lift_shadow(pill, pill.h / 2., focused);
-    }
-    out.draw.push(Draw::RoundedGradient(
-        pill,
-        pill.h / 2.,
-        c(0xffffff, 1.),
-        c(0xe9e9eb, 1.),
-    ));
-    for (index, key) in ["home", "apps", "settings"].into_iter().enumerate() {
-        let rect = layout.items[index];
-        let selected = state.page_index() == index;
-        out.text(
-            language.t(key),
-            Rect::new(rect.x, rect.y + (rect.h - 36.) / 2., rect.w, 36.),
-            TAB_STYLE.weight(if selected { 600 } else { 500 }),
-            if selected {
-                ON_LIGHT
-            } else {
-                c(0xffffff, 0.78)
-            },
-            true,
-        );
-        out.control(Target::Nav(index), rect, false);
-    }
-    let rect = Rect::new(1920. - SAFE_X - TAB_BAR.h, TAB_BAR.y, TAB_BAR.h, TAB_BAR.h);
-    let level = state.focus_level(&Target::TvSettings);
-    let drawn = out.button(rect, rect.h / 2., level, false, BUTTON_LIFT);
-    let icon = 28. * drawn.w / rect.w;
-    out.icon(
-        assets,
-        "settings",
-        Rect::new(
-            drawn.x + (drawn.w - icon) / 2.,
-            drawn.y + (drawn.h - icon) / 2.,
-            icon,
-            icon,
-        ),
-        mix_color(c(0xffffff, 0.85), ON_LIGHT, level),
-    );
-    out.control(Target::TvSettings, rect, false);
 }
 
 /// An app card in the tvOS focus model: at rest it sits flat with a small shadow; focus lifts
@@ -1005,21 +911,10 @@ fn tile(
 ) {
     let target = Target::App(app.id.clone());
     out.control(target.clone(), rect, true);
-    let viewport = if state.page == Page::Home {
-        state.favorites_viewport()
-    } else {
-        state.content_viewport()
-    };
-    let top = if state.page == Page::Apps {
-        0.
-    } else {
-        MAIN_TOP
-    };
+    let viewport = state.content_viewport();
     // The eased display scroll can lag the logical position by up to a screen.
-    let drift = (state.scroll - state.display_scroll())
-        .abs()
-        .max((state.home_scroll - state.display_home_scroll()).abs());
-    if rect.y + rect.h + CAPTION_SPACE < top - drift
+    let drift = (state.scroll - state.display_scroll()).abs();
+    if rect.y + rect.h + CAPTION_SPACE < -drift
         || rect.y > 1054. + drift
         || rect.x + rect.w + 60. + drift < viewport.x
         || rect.x - 60. - drift > viewport.x + viewport.w
@@ -1028,7 +923,8 @@ fn tile(
     }
     let start = out.draw.len();
     let pressed = state.pressed.as_ref() == Some(&target);
-    let unavailable = state.page == Page::Apps && state.filter == 5;
+    // Hidden apps appear only in search results, dimmed and without a shadow (unavailable).
+    let unavailable = state.preferences.hidden.contains(&app.id);
     // Highlighted (pressed) returns to the unfocused size, tvOS's click feedback.
     let level = if pressed {
         0.
@@ -1106,7 +1002,7 @@ fn caption_area(assets: &Assets, text: &str, style: TextStyle, card: Rect, heigh
 }
 
 fn caption_title(state: &State, app: &App) -> String {
-    if state.filter == 5 && state.page == Page::Apps {
+    if state.preferences.hidden.contains(&app.id) {
         format!(
             "{} · {}",
             app.title,
@@ -1300,31 +1196,47 @@ fn brand_mark(out: &mut Scene, assets: &Assets, app: &App, rect: Rect, language:
     }
 }
 
-/// Home's top-shelf block: the date line, the greeting and the weather summary.
-const HOME_TOP: f32 = 252.;
+/// The top shelf: the date line, the greeting and the weather summary.
+const HOME_TOP: f32 = 236.;
 pub const DATE_HEIGHT: f32 = 38.;
 pub const GREETING_HEIGHT: f32 = 96. + 10.;
 const GREETING_WIDTH: f32 = 1500.;
-/// The favourites row: a Headline heading above one horizontal strip of cards.
-pub const FAVORITES_Y: f32 = 548.;
-const HEADING_GAP: f32 = 66.;
-/// Between the favourites' caption space and the Inputs heading.
-const SECTION_GAP: f32 = 32.;
+/// The first card row beneath the shelf: inputs when shown, otherwise the app grid.
+pub const GRID_Y: f32 = 520.;
+/// The shelf has faded out once the page has scrolled this far.
+const SHELF_FADE: f32 = 260.;
 
-fn heading(out: &mut Scene, label: &str, card_y: f32) {
-    out.text(
-        label,
-        Rect::new(SAFE_X, card_y - HEADING_GAP, 1200., 46.),
-        HEADLINE,
-        WHITE,
-        false,
-    );
+/// Logical (unscrolled) top of the grid's first row.
+pub fn grid_top(state: &State) -> f32 {
+    let inputs = state.home_inputs().len();
+    GRID_Y + inputs.div_ceil(APPS_COLUMNS) as f32 * ROW_PITCH
 }
 
+/// Position of the `index`th card of a six-column block starting at `top`.
+fn card_rect(index: usize, top: f32) -> Rect {
+    Rect::new(
+        SAFE_X + (index % APPS_COLUMNS) as f32 * CARD_PITCH,
+        top + (index / APPS_COLUMNS) as f32 * ROW_PITCH,
+        CARD_WIDTH,
+        CARD_HEIGHT,
+    )
+}
+
+/// The main screen, as the tvOS Home Screen: a top shelf (date, greeting, weather) above one
+/// grid of every app, with Search first and Settings last. Moving below the first row scrolls
+/// the shelf away (and dims it); returning to the first row brings it back.
 fn home(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
     let language = state.preferences.language;
     let s = state.scroll;
     let content_start = out.draw.len();
+    // Scrolled rows fade out beneath the clock.
+    out.draw.push(Draw::EdgeFade(Some([
+        HEADER.y + HEADER.h - 16.,
+        HEADER.y + HEADER.h + 36.,
+        1090.,
+        1100.,
+    ])));
+    let shelf_start = out.draw.len();
     let summary = state
         .preferences
         .show_weather
@@ -1379,115 +1291,158 @@ fn home(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
             top + date_height + greeting_height,
         );
     }
-    heading(out, language.t("favorites"), FAVORITES_Y - s);
+    // tvOS dims the shelf as focus leaves the first row; it follows the eased scroll.
+    let shelf = (1. - state.display_scroll() / SHELF_FADE).clamp(0., 1.);
+    if shelf < 1. {
+        out.fade(shelf_start, shelf, 1.);
+    }
     if state.moving.is_some() {
         out.text(
             language.t("moveApps"),
-            Rect::new(1240., FAVORITES_Y - HEADING_GAP + 8. - s, 600., 32.),
+            Rect::new(1240., GRID_Y - 64. - s, 600., 32.),
             CAPTION1.right(),
             SECONDARY,
             false,
         );
     }
-    let apps = state.apps();
-    let names = state.preferences.show_home_names;
-    let mut grid_height = CARD_HEIGHT + CAPTION_SPACE;
-    if state.loading && state.inventory.apps.is_empty() {
-        for index in 0..6 {
-            out.shape(
-                Rect::new(
-                    SAFE_X + index as f32 * CARD_PITCH,
-                    FAVORITES_Y - s,
-                    CARD_WIDTH,
-                    CARD_HEIGHT,
-                ),
-                CARD_RADIUS,
-                c(0xffffff, 0.06),
-            );
-        }
-    } else if apps.is_empty() {
-        let error = state.error.is_some() && state.inventory.apps.is_empty();
-        empty(
-            out,
-            state,
-            assets,
-            EmptyState {
-                rect: Rect::new(SAFE_X, FAVORITES_Y - 8. - s, 1760., 264.),
-                icon: if error { "alert" } else { "heart" },
-                title: if error {
-                    language.t("aLittleHelp")
-                } else {
-                    language.t("makeFavorites")
-                },
-                hint: if error {
-                    state.error.as_deref().unwrap_or("")
-                } else {
-                    language.t("pinHint")
-                },
-                action: Some(if error { Target::Retry } else { Target::Browse }),
-            },
-        );
-        grid_height = 256.;
+    for (index, input) in state.home_inputs().into_iter().enumerate() {
+        let mut rect = card_rect(index, GRID_Y);
+        rect.y -= s;
+        input_card(out, state, assets, input, rect);
     }
-    // Like Apple TV's rows, the favourites run to the screen edge: the next card shows cut off
-    // at the right (and a scrolled-away one at the left), so it is clear the row continues.
-    out.draw.push(Draw::Clip(Some(state.favorites_viewport())));
-    // Soft edges outside the safe area, clear of a lifted card at either end.
-    let left = if state.home_scroll > 0. {
-        [HOME_FADE_LEFT, HOME_STRIP_LEFT - 20.]
-    } else {
-        [0., 0.]
-    };
-    out.draw.push(Draw::EdgeFadeX(Some([
-        left[0],
-        left[1],
-        HOME_STRIP_RIGHT + 20.,
-        HOME_FADE_RIGHT,
-    ])));
-    let strip_start = out.draw.len();
+    let grid_y = grid_top(state) - s;
+    let apps = state.apps();
+    let favorites = state.preferences.favorites(&state.inventory.apps);
+    let names = state.preferences.show_app_names;
+    let searching = !state.query.is_empty();
+    system_card(
+        out,
+        state,
+        assets,
+        Target::Search,
+        card_rect(0, grid_y),
+        "search",
+        &if searching {
+            format!("“{}”", state.query)
+        } else {
+            language.t("search").to_owned()
+        },
+    );
+    let loading = state.loading && state.inventory.apps.is_empty();
+    let error = state.inventory_failed_empty();
+    if loading {
+        for index in 1..APPS_COLUMNS {
+            out.shape(card_rect(index, grid_y), CARD_RADIUS, c(0xffffff, 0.06));
+        }
+    }
     for (index, app) in apps.iter().enumerate() {
         tile(
             out,
             state,
             assets,
             app,
-            Rect::new(
-                HOME_STRIP_LEFT + index as f32 * HOME_TILE_PITCH - state.home_scroll,
-                FAVORITES_Y - s,
-                HOME_TILE_WIDTH,
-                CARD_HEIGHT,
-            ),
+            card_rect(index + 1, grid_y),
             names,
-            false,
+            !searching && favorites.contains(&app.id),
         );
     }
-    out.shift(
-        strip_start,
-        state.home_scroll - state.display_home_scroll(),
-        0.,
+    let last = apps.len() + 1;
+    system_card(
+        out,
+        state,
+        assets,
+        Target::SettingsCard,
+        card_rect(last, grid_y),
+        "settings",
+        language.t("settings"),
     );
-    out.draw.push(Draw::EdgeFadeX(None));
-    out.draw.push(Draw::Clip(Some(state.content_viewport())));
-    let input_y = FAVORITES_Y + grid_height + SECTION_GAP + HEADING_GAP - s;
-    let inputs: Vec<_> = state
-        .inventory
-        .inputs
-        .iter()
-        .filter(|input| state.preferences.input_visible(input))
-        .collect();
-    if !inputs.is_empty() {
-        heading(out, language.t("inputsHeading"), input_y);
-    }
-    for (index, input) in inputs.iter().enumerate() {
-        let rect = Rect::new(
-            SAFE_X + (index % APPS_COLUMNS) as f32 * CARD_PITCH,
-            input_y + (index / APPS_COLUMNS) as f32 * ROW_PITCH,
-            CARD_WIDTH,
-            CARD_HEIGHT,
+    // Without apps (a failed inventory, or a search without matches), explain beneath the
+    // grid's cards.
+    if (error || (searching && apps.is_empty())) && !loading {
+        let hint = state
+            .error
+            .clone()
+            .unwrap_or_else(|| language.format("noMatchesHint", &[("query", &state.query)]));
+        empty(
+            out,
+            state,
+            assets,
+            EmptyState {
+                rect: Rect::new(
+                    SAFE_X,
+                    grid_y + ROW_PITCH,
+                    1760.,
+                    if error { 264. } else { 200. },
+                ),
+                icon: if error { "alert" } else { "search" },
+                title: if error {
+                    language.t("aLittleHelp")
+                } else {
+                    language.t("noMatches")
+                },
+                hint: &hint,
+                action: error.then_some(Target::Retry),
+            },
         );
-        input_card(out, state, assets, input, rect);
     }
+    out.draw.push(Draw::EdgeFade(None));
     out.shift(content_start, 0., s - state.display_scroll());
+}
+
+/// Search and Settings as grid cards, as tvOS shows them on its Home Screen: a glass face
+/// with a large glyph and the name, lifting like an app card when focused.
+fn system_card(
+    out: &mut Scene,
+    state: &State,
+    assets: &Assets,
+    target: Target,
+    rect: Rect,
+    icon: &str,
+    label: &str,
+) {
+    let pressed = state.pressed.as_ref() == Some(&target);
+    let level = if pressed {
+        0.
+    } else {
+        state.focus_level(&target)
+    };
+    let drawn = grow(rect, CARD_LIFT * level);
+    let scale = drawn.h / rect.h;
+    let radius = CARD_RADIUS * scale;
+    out.lift_shadow(drawn, radius, level);
+    out.glass(drawn, radius, Glass::Regular);
+    if level > 0. {
+        // Focus illuminates the glass, like light catching an app icon.
+        out.shape(drawn, radius, c(0xffffff, 0.14 * level));
+    }
+    let size = 54. * scale;
+    out.icon(
+        assets,
+        icon,
+        Rect::new(
+            drawn.x + (drawn.w - size) / 2.,
+            drawn.y + 48. * scale - size / 2.,
+            size,
+            size,
+        ),
+        WHITE,
+    );
+    let (label, mut style) = assets.single_line(label, CAPTION1.weight(600), rect.w - 32.);
+    style.size *= scale;
+    out.text(
+        label,
+        Rect::new(
+            drawn.x + 16. * scale,
+            drawn.y + 96. * scale,
+            drawn.w - 32. * scale,
+            32. * scale,
+        ),
+        style,
+        WHITE,
+        true,
+    );
+    card_glass(out, drawn, radius, level);
+    out.control(target, rect, true);
 }
 
 /// tvOS has no inputs, so each is drawn as a 5:3 card in the app-card language: a large
@@ -1742,119 +1697,6 @@ fn weather_summary(
     }
 }
 
-fn library(out: &mut Scene, state: &State, assets: &Assets) {
-    library_grid(out, state, assets);
-    library_toolbar(out, state, assets);
-}
-
-/// The Apps page's own tab bar (tvOS segmented control) and search field, in the same glass
-/// as the header bar.
-pub const TOOLBAR: Rect = Rect::new(SAFE_X, 144., 0., 68.);
-pub const APPS_GRID_Y: f32 = TOOLBAR.y + TOOLBAR.h + 52.;
-const SEARCH_WIDTH: f32 = 400.;
-
-fn library_toolbar(out: &mut Scene, state: &State, assets: &Assets) {
-    let language = state.preferences.language;
-    let mut segments = vec![(Target::ClearFilter, language.t("categoryAll").to_owned())];
-    for (index, label) in CATEGORIES.into_iter().enumerate() {
-        segments.push((
-            Target::Filter(index + 1),
-            language.category(label).to_owned(),
-        ));
-    }
-    if state.hidden_count() > 0 {
-        segments.push((
-            Target::Filter(5),
-            language.format("hidden", &[("count", &state.hidden_count().to_string())]),
-        ));
-    }
-    let style = BODY;
-    let widths: Vec<f32> = segments
-        .iter()
-        .map(|(_, label)| assets.width(label, style.weight(600)) + 48.)
-        .collect();
-    let gap = 4.;
-    let bar = Rect::new(
-        TOOLBAR.x,
-        TOOLBAR.y,
-        widths.iter().sum::<f32>() + gap * (widths.len() - 1) as f32 + 2. * TAB_INSET,
-        TOOLBAR.h,
-    );
-    out.shadow(bar, bar.h / 2., 24., 8., 0.14);
-    out.glass(bar, bar.h / 2., Glass::Regular);
-    let mut x = bar.x + TAB_INSET;
-    for ((target, label), width) in segments.into_iter().zip(widths) {
-        let rect = Rect::new(x, bar.y + TAB_INSET, width, bar.h - 2. * TAB_INSET);
-        let selected = match target {
-            Target::Filter(index) => state.filter == index,
-            _ => state.filter == 0,
-        };
-        segment(out, state, target, rect, &label, selected);
-        x += width + gap;
-    }
-    let search = Rect::new(
-        1920. - SAFE_X - SEARCH_WIDTH,
-        TOOLBAR.y,
-        SEARCH_WIDTH,
-        TOOLBAR.h,
-    );
-    let level = state
-        .focus_level(&Target::Search)
-        .max(state.focus_level(&Target::ClearSearch));
-    let drawn = out.button(search, search.h / 2., level, false, BUTTON_LIFT / 2.);
-    let ink = |rest: Color| mix_color(rest, ON_LIGHT, level);
-    out.icon(
-        assets,
-        "search",
-        Rect::new(drawn.x + 26., drawn.y + (drawn.h - 26.) / 2., 26., 26.),
-        ink(c(0xffffff, 0.75)),
-    );
-    let field = if state.query.is_empty() {
-        language.t("findApp").to_owned()
-    } else {
-        state.query.clone()
-    };
-    let available = drawn.w - 72. - if state.query.is_empty() { 24. } else { 64. };
-    let (field, field_style) = assets.single_line(&field, style.weight(500), available);
-    out.text(
-        field,
-        Rect::new(
-            drawn.x + 66.,
-            drawn.y + (drawn.h - 36.) / 2.,
-            available,
-            36.,
-        ),
-        field_style,
-        ink(if state.query.is_empty() {
-            c(0xffffff, 0.66)
-        } else {
-            WHITE
-        }),
-        false,
-    );
-    out.control(Target::Search, search, false);
-    if !state.query.is_empty() {
-        let clear = Rect::new(search.x + search.w - 56., search.y + 16., 36., 36.);
-        let focused = state.focus == Target::ClearSearch;
-        out.shape(
-            clear,
-            18.,
-            if focused {
-                ON_LIGHT
-            } else {
-                ink(c(0xffffff, 0.16))
-            },
-        );
-        out.icon(
-            assets,
-            "close",
-            clear.inset(9.),
-            if focused { WHITE } else { ink(WHITE) },
-        );
-        out.control(Target::ClearSearch, clear, false);
-    }
-}
-
 /// One segment of a tvOS tab bar: transparent at rest, white when selected, lifted with a
 /// shadow when focused.
 fn segment(
@@ -1893,65 +1735,6 @@ fn segment(
             .push(Draw::Shape(drawn, drawn.h / 2., 0., c(0, 0.1)));
     }
     out.control(target, rect, false);
-}
-
-fn library_grid(out: &mut Scene, state: &State, assets: &Assets) {
-    let language = state.preferences.language;
-    let s = state.scroll;
-    let start = out.draw.len();
-    let favorites = state.preferences.favorites(&state.inventory.apps);
-    let apps = state.apps();
-    if apps.is_empty() {
-        let title = if state.loading {
-            language.t("findingApps")
-        } else if !state.query.is_empty() {
-            language.t("noMatches")
-        } else if state.filter == 5 {
-            language.t("noHidden")
-        } else {
-            language.t("roomForNew")
-        };
-        let hint = state.error.clone().unwrap_or_else(|| {
-            if !state.query.is_empty() {
-                language.format("noMatchesHint", &[("query", &state.query)])
-            } else if state.filter == 5 {
-                language.t("hiddenHint").into()
-            } else {
-                language.t("noCategoryApps").into()
-            }
-        });
-        empty(
-            out,
-            state,
-            assets,
-            EmptyState {
-                rect: Rect::new(SAFE_X, APPS_GRID_Y - s, 1760., 304.),
-                icon: "grid",
-                title,
-                hint: &hint,
-                action: state.error.as_ref().map(|_| Target::Retry),
-            },
-        );
-    }
-    let names = state.preferences.show_app_names;
-    for (index, app) in apps.iter().enumerate() {
-        let (row, column) = (index / APPS_COLUMNS, index % APPS_COLUMNS);
-        tile(
-            out,
-            state,
-            assets,
-            app,
-            Rect::new(
-                SAFE_X + column as f32 * CARD_PITCH,
-                APPS_GRID_Y + row as f32 * ROW_PITCH - s,
-                CARD_WIDTH,
-                CARD_HEIGHT,
-            ),
-            names,
-            favorites.contains(&app.id),
-        );
-    }
-    out.shift(start, 0., s - state.display_scroll());
 }
 
 /// The existing System status card owns the only update action.
@@ -2448,7 +2231,6 @@ fn settings_path(state: &State) -> Vec<&str> {
                     state.preferences.input_title(input)
                 }),
         ],
-        Some(Subpage::AppNames) => vec![language.t("appNames")],
         Some(Subpage::Greeting) => vec![language.t("greeting")],
         Some(Subpage::Date) => vec![language.t("date")],
         Some(Subpage::Weather) => vec![language.t("weather")],
@@ -2479,7 +2261,7 @@ fn settings_title(out: &mut Scene, state: &State, assets: &Assets) {
     let mut style = HEADLINE;
     let text_width: f32 = path.iter().map(|part| assets.width(part, style)).sum();
     style.size *= ((available - separators) / text_width).min(1.);
-    let y = SETTINGS_TITLE_Y + (TOOLBAR.h - 46.) / 2.;
+    let y = SETTINGS_TITLE_Y + (TITLE_LINE_H - 46.) / 2.;
     let mut x = SETTINGS_X + 4.;
     for (position, &part) in path.iter().enumerate() {
         if position > 0 {
@@ -2605,7 +2387,6 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                 | Subpage::Inputs
                 | Subpage::Greeting
                 | Subpage::Date
-                | Subpage::AppNames
                 | Subpage::Clock
         ) {
             match subpage {
@@ -2615,7 +2396,6 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                 Subpage::Inputs => inputs_settings(out, state, assets),
                 Subpage::Greeting => greeting_settings(out, state, assets),
                 Subpage::Date => date_settings(out, state, assets),
-                Subpage::AppNames => app_name_settings(out, state, assets),
                 Subpage::Clock => clock_settings(out, state, assets),
                 _ => unreachable!(),
             }
@@ -2686,7 +2466,6 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
             | Subpage::Inputs
             | Subpage::Greeting
             | Subpage::Date
-            | Subpage::AppNames
             | Subpage::Clock => {
                 unreachable!()
             }
@@ -2744,7 +2523,17 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
     match state.section {
         0 => {
             for (position, (index, key, icon, value, chevron)) in [
-                (0, "appNames", "type", None, true),
+                (
+                    0,
+                    "appNames",
+                    "type",
+                    Some(if state.preferences.show_app_names {
+                        language.t("stateOn")
+                    } else {
+                        language.t("stateOff")
+                    }),
+                    false,
+                ),
                 (1, "clock", "clock", None, true),
                 (4, "language", "language", Some(language.name()), true),
                 (
@@ -2990,7 +2779,7 @@ fn background_actions(out: &mut Scene, state: &State, assets: &Assets) {
     for (target, rect, title, icon, value) in [
         (
             Target::WallpaperCycle,
-            Rect::new(right - cycle_width, y, cycle_width, TOOLBAR.h),
+            Rect::new(right - cycle_width, y, cycle_width, TITLE_LINE_H),
             cycle_label,
             if state.preferences.wallpaper_cycle {
                 "refresh"
@@ -3009,7 +2798,7 @@ fn background_actions(out: &mut Scene, state: &State, assets: &Assets) {
                 right - cycle_width - 20. - gradient_width,
                 y,
                 gradient_width,
-                TOOLBAR.h,
+                TITLE_LINE_H,
             ),
             gradient_label,
             if state.preferences.wallpaper_gradient {
@@ -3029,7 +2818,7 @@ fn background_actions(out: &mut Scene, state: &State, assets: &Assets) {
                 right - cycle_width - 40. - gradient_width - upload_width,
                 y,
                 upload_width,
-                TOOLBAR.h,
+                TITLE_LINE_H,
             ),
             upload_label,
             "upload",
@@ -3057,6 +2846,27 @@ fn background_actions(out: &mut Scene, state: &State, assets: &Assets) {
 fn inputs_settings(out: &mut Scene, state: &State, assets: &Assets) {
     let language = state.preferences.language;
     let s = state.scroll;
+    // Whether input cards appear on the main screen; inputs are otherwise on the remote.
+    row(
+        out,
+        state,
+        assets,
+        Row {
+            target: Target::InputsToggle,
+            rect: settings_rect(row_y(0) - s, ROW_H),
+            title: language.t("showWidget"),
+            icon: Some("eye"),
+            value: Some(language.t(if state.preferences.show_inputs {
+                "stateOn"
+            } else {
+                "stateOff"
+            })),
+            description: None,
+            selected: false,
+            chevron: false,
+        },
+    );
+    let top = row_y(1);
     for (index, input) in state.inventory.inputs.iter().enumerate() {
         let mode = state
             .preferences
@@ -3071,7 +2881,7 @@ fn inputs_settings(out: &mut Scene, state: &State, assets: &Assets) {
             Row {
                 target: Target::InputMode(input.id.clone()),
                 rect: settings_rect(
-                    SETTINGS_TOP + index as f32 * (DETAIL_ROW_H + ROW_GAP) - s,
+                    top + index as f32 * (DETAIL_ROW_H + ROW_GAP) - s,
                     DETAIL_ROW_H,
                 ),
                 title: state.preferences.input_title(input),
@@ -3094,14 +2904,13 @@ fn inputs_settings(out: &mut Scene, state: &State, assets: &Assets) {
             },
         );
     }
-    let mut y =
-        SETTINGS_TOP + state.inventory.inputs.len() as f32 * (DETAIL_ROW_H + ROW_GAP) + 16. - s;
+    let mut y = top + state.inventory.inputs.len() as f32 * (DETAIL_ROW_H + ROW_GAP) + 16. - s;
     if state.inventory.inputs.is_empty() {
         out.text(
             language.t("noInputs"),
             Rect::new(
                 SETTINGS_X + ROW_PAD,
-                SETTINGS_TOP - s,
+                top - s,
                 SETTINGS_W - 2. * ROW_PAD,
                 36.,
             ),
@@ -3272,41 +3081,6 @@ fn clock_settings(out: &mut Scene, state: &State, assets: &Assets) {
                 description: None,
                 selected: false,
                 chevron: true,
-            },
-        );
-    }
-}
-
-fn app_name_settings(out: &mut Scene, state: &State, assets: &Assets) {
-    let language = state.preferences.language;
-    for (index, (target, title, enabled)) in [
-        (
-            Target::AppNamesHome,
-            "showOnHome",
-            state.preferences.show_home_names,
-        ),
-        (
-            Target::AppNamesApps,
-            "showOnApps",
-            state.preferences.show_app_names,
-        ),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        row(
-            out,
-            state,
-            assets,
-            Row {
-                target,
-                rect: settings_rect(row_y(index) - state.scroll, ROW_H),
-                title: language.t(title),
-                icon: None,
-                value: Some(language.t(if enabled { "stateOn" } else { "stateOff" })),
-                description: None,
-                selected: false,
-                chevron: false,
             },
         );
     }
@@ -3957,7 +3731,7 @@ fn keyboard(out: &mut Scene, state: &State, assets: &Assets) {
     }
 }
 
-/// A glass banner at the top centre, below the tab bar, that slides down as it appears.
+/// A glass banner at the top centre, level with the clock, that slides down as it appears.
 fn toast(out: &mut Scene, state: &State, assets: &Assets, notice: &str) {
     let start = out.draw.len();
     let notice = notice.trim_end_matches(['.', '。']);
@@ -3976,7 +3750,7 @@ fn toast(out: &mut Scene, state: &State, assets: &Assets, notice: &str) {
     };
     let rect = Rect::new(
         960. - width / 2.,
-        TAB_BAR.y + TAB_BAR.h + 22. - 28. * (1. - appear),
+        HEADER.y - 28. * (1. - appear),
         width,
         height,
     );
@@ -3985,7 +3759,7 @@ fn toast(out: &mut Scene, state: &State, assets: &Assets, notice: &str) {
     let level = state.focus_level(&target);
     let drawn = out.button(rect, radius, level, false, BUTTON_LIFT / 2.);
     // The slide is drawing only: the hit region is the settled banner from the start.
-    let settled = Rect::new(rect.x, TAB_BAR.y + TAB_BAR.h + 22., width, height);
+    let settled = Rect::new(rect.x, HEADER.y, width, height);
     out.shadow(drawn, radius, 30., 10., 0.25 * (1. - level));
     out.text(
         notice,
@@ -4037,7 +3811,7 @@ mod tests {
     fn settings_breadcrumbs_use_equal_gaps_and_only_highlight_the_leaf() {
         let assets = assets();
         let mut state = State::new(Preferences::default());
-        state.open(2);
+        state.open(Page::Settings);
         state.section = 2;
         state.subpage = Some(Subpage::DateFormat);
         for language in Language::ALL {
@@ -4050,7 +3824,7 @@ mod tests {
                 };
                 let mut scene = Scene::new();
                 settings_title(&mut scene, &state, &assets);
-                let line = SETTINGS_TITLE_Y + (TOOLBAR.h - 46.) / 2.;
+                let line = SETTINGS_TITLE_Y + (TITLE_LINE_H - 46.) / 2.;
                 let parts: Vec<_> = scene
                     .draw
                     .iter()
@@ -4098,7 +3872,7 @@ mod tests {
     fn upload_button_padding_tracks_the_label_in_every_language() {
         let assets = assets();
         let mut state = State::new(Preferences::default());
-        state.open(2);
+        state.open(Page::Settings);
         state.section = 1;
         for language in Language::ALL {
             state.preferences.language = language;
@@ -4129,7 +3903,7 @@ mod tests {
     fn auto_rotation_keeps_a_compact_gap_and_right_aligned_state() {
         let assets = assets();
         let mut state = State::new(Preferences::default());
-        state.open(2);
+        state.open(Page::Settings);
         state.section = 1;
         let label = state.preferences.language.t("wallpaperCycle");
         let label_width = assets.width(label, BODY);

@@ -74,7 +74,7 @@ try {
     }
     return state;
   };
-  const home = await scenario('home', 'down');
+  const home = await scenario('home', 'home');
   assert.deepEqual(home.focus, { App: 'netflix' });
   const recents = await scenario('recents', 'recents,await-recents');
   assert.equal(recents.modal, true);
@@ -126,36 +126,30 @@ try {
   );
   assert.equal(recentPointerLaunch.modal, false);
   assert.equal(recentPointerLaunch.recents_visibility, 0);
-  const recentHomeBack = await scenario('recents-home-back', 'home,down,back,await-recents');
+  const recentHomeBack = await scenario('recents-home-back', 'home,back,await-recents');
   assert.equal(recentHomeBack.modal, true);
   assert.deepEqual(recentHomeBack.focus, { Recent: 'netflix' });
   const recentYoutube = await scenario('recents-youtube', 'recents,await-recents,right');
   assert.deepEqual(recentYoutube.focus, { Recent: 'youtube.leanback.v4' });
-  const appOptions = await scenario('app-options', 'apps,down,enter');
+  const appOptions = await scenario('app-options', 'home,menu');
   assert.deepEqual(appOptions.focus, 'OpenApp');
   assert.ok(appOptions.ui_text.includes('Delete app'));
-  const deleteFocused = await scenario('delete-focused', 'apps,down,enter,down,down,down');
+  const deleteFocused = await scenario('delete-focused', 'home,menu,down,down,down');
   assert.deepEqual(deleteFocused.focus, { Option: 2 });
-  const deleteConfirm = await scenario('delete-confirm', 'apps,down,enter,down,down,down,enter');
+  const deleteConfirm = await scenario('delete-confirm', 'home,menu,down,down,down,enter');
   assert.deepEqual(deleteConfirm.focus, 'CancelDelete');
   assert.ok(deleteConfirm.ui_text.some((value) => value.includes('uninstall “Netflix”')));
-  const deleteCancel = await scenario(
-    'delete-cancel',
-    'apps,down,enter,down,down,down,enter,enter',
-  );
+  const deleteCancel = await scenario('delete-cancel', 'home,menu,down,down,down,enter,enter');
   assert.deepEqual(deleteCancel.focus, { Option: 2 });
   assert.ok(deleteCancel.apps.includes('netflix'));
-  const hidden = await scenario('apps', 'apps,down,enter,down,down,enter');
+  const hidden = await scenario('apps', 'home,menu,down,down,enter');
   assert.ok(hidden.preferences.hidden.includes('netflix'));
   assert.deepEqual(hidden.focus, { App: 'youtube.leanback.v4' });
-  // Reload from disk, find Netflix in Hidden, and restore it. Up from the grid returns to the
-  // selected segment ("All"), so Hidden is five segments to the right.
-  const restored = await scenario(
-    'restored',
-    'apps,down,up,right,right,right,right,right,enter,down,enter,down,down,enter',
-  );
+  assert.ok(!hidden.apps.includes('netflix'), 'Hidden apps leave the grid');
+  // Reload from disk, find the hidden Netflix through Search, and show it again.
+  const restored = await scenario('restored', 'home,type:netflix,back,right,menu,down,down,enter');
   assert.deepEqual(restored.preferences.hidden, []);
-  const searched = await scenario('search', 'apps,type:YouTube,back');
+  const searched = await scenario('search', 'home,type:YouTube,back');
   assert.equal(searched.query, 'YouTube');
   assert.deepEqual(searched.apps, ['youtube.leanback.v4']);
   for (const [id, title] of [
@@ -165,18 +159,18 @@ try {
     ['com.cmb.rainbowtv', 'Rainbow TV'],
     ['com.lgtvod.kr.app', 'LG TV VOD'],
   ]) {
-    const koreanApp = await scenario(`korean-${id}`, `apps,type:${title},back`);
+    const koreanApp = await scenario(`korean-${id}`, `home,type:${title},back,right`);
     assert.deepEqual(koreanApp.apps, [id]);
     assert.ok(koreanApp.ui_text.includes(title));
   }
-  const settings = await scenario('settings', 'settings,down,down,enter,down,enter,enter');
+  const settings = await scenario('settings', 'settings,down,enter,down,enter,enter');
   assert.equal(settings.preferences.background, 'forest');
-  const saved = await scenario('saved', 'down,hold,right,back');
+  const saved = await scenario('saved', 'home,hold,right,back');
   assert.equal(saved.preferences.background, 'forest');
   assert.deepEqual(saved.preferences.favorites.slice(0, 2), ['youtube.leanback.v4', 'netflix']);
   const upload = await scenario(
     'wallpaper-upload',
-    'settings,down,down,enter,up,up,up,enter,await-upload',
+    'settings,down,enter,up,up,up,enter,await-upload',
   );
   assert.equal(upload.modal, true);
   assert.equal(upload.focus, 'CloseDialog');
@@ -191,7 +185,7 @@ try {
   );
   const uploadClosed = await scenario(
     'wallpaper-upload-closed',
-    'settings,down,down,enter,up,up,up,enter,await-upload,back',
+    'settings,down,enter,up,up,up,enter,await-upload,back',
   );
   assert.equal(uploadClosed.modal, false);
   assert.equal(uploadClosed.focus, 'UploadWallpaper');
@@ -205,15 +199,15 @@ try {
     .jpeg()
     .toFile(path.join(customDirectory, 'thumbnail.jpg'));
   await fs.writeFile(path.join(customDirectory, 'metadata.json'), JSON.stringify({ id: customId }));
-  const custom = await scenario('wallpaper-custom', 'settings,down,down,enter,down,enter,enter');
+  const custom = await scenario('wallpaper-custom', 'settings,down,enter,down,enter,enter');
   assert.equal(custom.preferences.background, customId);
   assert.equal(custom.modal, false);
   assert.deepEqual(custom.focus, { Background: 9 });
-  const customRestored = await scenario('wallpaper-custom-restored', 'home,down');
+  const customRestored = await scenario('wallpaper-custom-restored', 'home');
   assert.equal(customRestored.preferences.background, customId);
   const bundledRestored = await scenario(
     'wallpaper-bundled-restored',
-    'settings,down,down,enter,up,enter,enter',
+    'settings,down,enter,up,enter,enter',
   );
   assert.equal(bundledRestored.preferences.background, 'forest');
   const clock = await scenario('clock', 'settings,click:900:370');
@@ -221,19 +215,27 @@ try {
   assert.equal(clock.focus, 'ClockFormat');
   assert.ok(clock.ui_text.includes('Clock format'));
   assert.ok(clock.ui_text.includes('Time format'));
-  const inputsPage = 'settings,down,down,down,enter,down,down,down,down,enter';
+  const inputsPage = 'settings,down,down,enter,down,down,down,down,enter';
   const inputs = await scenario('inputs-page', inputsPage);
   assert.equal(inputs.subpage, 'Inputs');
-  assert.deepEqual(inputs.focus, { InputMode: 'com.webos.app.hdmi1' });
-  const input = await scenario('inputs', `${inputsPage},enter,up,enter`);
+  // Inputs opens on Show widget (off): the main screen has no input cards by default.
+  assert.equal(inputs.focus, 'InputsToggle');
+  assert.equal(inputs.preferences.show_inputs, false);
+  const inputCards = await scenario('inputs-shown', `${inputsPage},enter,home,up`);
+  assert.equal(inputCards.preferences.show_inputs, true);
+  assert.deepEqual(inputCards.focus, { Input: 'com.webos.app.hdmi2' });
+  const inputsHidden = await scenario('inputs-hidden', `${inputsPage},enter,home,up`);
+  assert.equal(inputsHidden.preferences.show_inputs, false);
+  assert.equal(inputsHidden.focus, 'WeatherConfigure');
+  const input = await scenario('inputs', `${inputsPage},down,enter,up,enter`);
   assert.equal(input.preferences.input_modes['com.webos.app.hdmi1'], 'Off');
   assert.equal(input.subpage, 'Inputs');
-  const closed = await scenario('dialog-closed', 'apps,down,menu,click:100:900');
+  const closed = await scenario('dialog-closed', 'home,menu,click:100:900');
   assert.equal(closed.modal, false);
   assert.deepEqual(closed.focus, { App: 'youtube.leanback.v4' });
   const fixedTime = ['--time', '2026-10-21T20:41:00+02:00'];
-  const one = await scenario('density-1x', 'home,down', fixedTime);
-  const two = await scenario('density-2x', 'home,down', [...fixedTime, '--capture-scale', '2']);
+  const one = await scenario('density-1x', 'home', fixedTime);
+  const two = await scenario('density-2x', 'home', [...fixedTime, '--capture-scale', '2']);
   assert.deepEqual(two.render.capture.target, { width: 3840, height: 2160 });
   assert.equal(two.render.capture.viewport.scale, 2);
   assert.equal(one.render.capture.viewport.scale, 1);
@@ -277,11 +279,11 @@ try {
     two.render.capture.high_resolution_wallpaper,
     hasWallpaper && two.render.graphics.max_texture_size >= 3840,
   );
-  const profiled = await scenario('profile', 'home,down', ['--profile-frames', '24', ...fixedTime]);
+  const profiled = await scenario('profile', 'home', ['--profile-frames', '24', ...fixedTime]);
   assert.equal(profiled.render.profile.presented, 24);
   assert.ok(profiled.render.profile.pacing.samples > 0);
   assert.ok(profiled.render.profile.cpu_submission.mean_ms >= 0);
-  const widgetsPage = 'settings,down,down,down,enter';
+  const widgetsPage = 'settings,down,down,enter';
   const widgets = await scenario('widgets-settings', widgetsPage);
   assert.deepEqual(widgets.focus, { Widget: 4 });
   assert.ok(widgets.ui_text.includes('Widgets'));
@@ -320,36 +322,33 @@ try {
   assert.equal(greeting.focus, 'GreetingNameClear');
   assert.ok(greeting.ui_text.includes('Clear name'));
 
-  const appNamesEditor = 'settings,down,enter,enter';
-  const appNames = await scenario('app-name-settings', appNamesEditor);
-  assert.equal(appNames.subpage, 'AppNames');
-  assert.ok(appNames.ui_text.includes('Show on Home'));
-  assert.ok(appNames.ui_text.includes('Show on Apps'));
-  assert.equal(appNames.preferences.show_home_names, false);
+  // App names is one On/Off row in General: titles beneath the focused grid card (tvOS).
+  const appNamesRow = 'settings,enter';
+  const appNames = await scenario('app-name-settings', appNamesRow);
+  assert.deepEqual(appNames.focus, { Setting: 0 });
+  assert.ok(appNames.ui_text.includes('App names'));
+  assert.equal(appNames.subpage, null);
   assert.equal(appNames.preferences.show_app_names, true);
-  const customNames = await scenario(
-    'home-names-enabled',
-    `${appNamesEditor},enter,down,enter,back,home,down`,
-  );
-  assert.equal(customNames.preferences.show_home_names, true);
-  assert.equal(customNames.preferences.show_app_names, false);
-  // tvOS captions only the focused card (the first favorite; an earlier scenario reordered).
-  assert.equal(
-    ['Netflix', 'YouTube'].filter((title) => customNames.ui_text.includes(title)).length,
-    1,
-  );
-  const hiddenNames = await scenario('app-names-disabled', 'apps,down');
+  const hiddenNames = await scenario('app-names-disabled', `${appNamesRow},enter,home`);
   assert.equal(hiddenNames.preferences.show_app_names, false);
   assert.ok(!hiddenNames.ui_text.includes('Netflix'));
+  assert.ok(!hiddenNames.ui_text.includes('YouTube'));
+  const shownNames = await scenario('app-names-enabled', `${appNamesRow},enter,home`);
+  assert.equal(shownNames.preferences.show_app_names, true);
+  // tvOS captions only the focused card (the first favourite; an earlier scenario reordered).
+  assert.equal(
+    ['Netflix', 'YouTube'].filter((title) => shownNames.ui_text.includes(title)).length,
+    1,
+  );
 
   const renamedInput = await scenario(
     'input-rename-focus',
-    `${inputsPage},down,enter,down,type:Console,back`,
+    `${inputsPage},down,down,enter,down,type:Console,back`,
   );
   assert.equal(renamedInput.focus, 'InputRename');
   assert.equal(renamedInput.preferences.input_names['com.webos.app.hdmi2'], 'Console');
   assert.ok(renamedInput.ui_text.includes('Clear name'));
-  const clockEditor = 'settings,down,enter,down,enter';
+  const clockEditor = 'settings,enter,down,enter';
   const timeFormat = await scenario('clock-time-format', `${clockEditor},down,enter`);
   assert.equal(timeFormat.subpage, 'TimeFormat');
   assert.deepEqual(timeFormat.focus, { Choice: 0 });
@@ -366,16 +365,13 @@ try {
   const clockFocus = await scenario('clock-format-focus', `${clockEditor},enter,down`);
   assert.equal(clockFocus.subpage, 'ClockFormat');
   assert.deepEqual(clockFocus.focus, { Choice: 1 });
-  const system = await scenario(
-    'system-settings',
-    'settings,down,down,down,down,right,down,down,down',
-  );
+  const system = await scenario('system-settings', 'settings,down,down,down,right,down,down,down');
   assert.deepEqual(system.focus, { Setting: 5 });
   assert.ok(system.ui_text.includes('Refresh apps & inputs'));
   assert.ok(!system.ui_text.includes('Luma update'));
   assert.ok(system.ui_text.includes('Quit app'));
   assert.ok(system.ui_text.includes('Text rendering'));
-  const updatePreview = await scenario('update-preview', 'settings,down,down,down,down,right', [
+  const updatePreview = await scenario('update-preview', 'settings,down,down,down,right', [
     '--test-update-version',
     '99.0.0',
   ]);
@@ -385,7 +381,7 @@ try {
   assert.ok(updatePreview.ui_text.includes('Install 99.0.0'));
   const afterUpdatePreview = await scenario(
     'update-preview-cleared',
-    'settings,down,down,down,down,right',
+    'settings,down,down,down,right',
   );
   assert.equal(afterUpdatePreview.focus, 'CheckUpdates');
   assert.ok(!afterUpdatePreview.ui_text.includes('Update available'));
@@ -394,7 +390,7 @@ try {
   ).version;
   const latestPreview = await scenario(
     'update-current-preview',
-    'settings,down,down,down,down,right,enter',
+    'settings,down,down,down,right,enter',
     ['--test-update-version', currentVersion],
   );
   assert.equal(latestPreview.focus, 'CheckUpdates');
@@ -404,7 +400,7 @@ try {
   assert.ok(latestPreview.ui_text.includes('Check again'));
   assert.ok(latestPreview.ui_text.includes(`Current version: ${currentVersion}`));
   assert.ok(!latestPreview.ui_text.some((label) => label.startsWith('Luma v')));
-  const textOptions = 'settings,down,down,down,down,right,down,down,enter';
+  const textOptions = 'settings,down,down,down,right,down,down,enter';
   const textRendering = await scenario('text-rendering-options', textOptions);
   assert.equal(textRendering.subpage, 'TextRendering');
   assert.deepEqual(textRendering.focus, { Choice: 0 });
@@ -415,13 +411,13 @@ try {
   assert.equal(analyticSaved.preferences.text_rendering, 'analytic');
   assert.deepEqual(analyticSaved.focus, { Setting: 7 });
   assert.equal(analyticSaved.render.text_rendering.mode, 'msaa', 'Mode changes apply next launch');
-  const analytic = await scenario('text-rendering-analytic', 'home,down');
+  const analytic = await scenario('text-rendering-analytic', 'home');
   assert.equal(analytic.render.text_rendering.mode, 'analytic');
   assert.equal(analytic.render.text_rendering.embolden, 0.25);
   assert.equal(analytic.render.last_presented.multisample_samples, 0);
   const msaaSaved = await scenario('text-rendering-msaa-saved', `${textOptions},up,enter`);
   assert.equal(msaaSaved.preferences.text_rendering, 'msaa');
-  const msaa = await scenario('text-rendering-msaa', 'home,down');
+  const msaa = await scenario('text-rendering-msaa', 'home');
   assert.equal(msaa.render.text_rendering.mode, 'msaa');
   assert.equal(msaa.render.text_rendering.embolden, 0);
   // Companion HTTP writes are covered by loopback Rust tests. Seed its persisted result
@@ -484,7 +480,8 @@ try {
   const tileEditorClosed = await scenario('tile-editor-closed', `${tileEditorOpen},back`);
   assert.equal(tileEditorClosed.modal, false);
   assert.equal(tileEditorClosed.focus, 'TileEditor');
-  // The exposed card fragments are real pointer targets, including after remote scrolling.
+  // Grid cards are real pointer targets, also after remote scrolling, and a click never
+  // scrolls the clicked card.
   const edgeFavorites = [
     'netflix',
     'youtube.leanback.v4',
@@ -500,39 +497,39 @@ try {
     preferences,
     JSON.stringify({ favorites: edgeFavorites, show_weather: false }),
   );
-  const edgeRight = await scenario('favorites-edge-right', 'home,click:1895:600');
-  assert.deepEqual(edgeRight.focus, { App: edgeFavorites[6] });
-  assert.equal(edgeRight.home_scroll, 0, 'Clicking the fragment must not move it');
-  const edgeLeft = await scenario(
-    'favorites-edge-left',
-    `home,down,${Array(6).fill('right').join(',')},click:20:600`,
-  );
-  assert.deepEqual(edgeLeft.focus, { App: edgeFavorites[0] });
-  assert.ok(Math.abs(edgeLeft.home_scroll - 300) < 0.01, 'Pointer focus preserves strip position');
+  // Second row, first column: the grid's seventh card (after Search and five favourites).
+  const secondRow = await scenario('grid-second-row-click', 'home,click:210:854');
+  assert.deepEqual(secondRow.focus, { App: edgeFavorites[5] });
+  assert.equal(secondRow.scroll, 0, 'Clicking a card must not move it');
+  const scrolledClick = await scenario('grid-scrolled-click', 'home,down,down,click:510:248');
+  assert.ok(scrolledClick.scroll > 0, 'Focus below the first row scrolls the shelf away');
+  assert.ok(scrolledClick.focus.App, 'The visible card under the pointer takes focus');
+  const scrolledBack = await scenario('grid-shelf-returns', 'home,down,down,up,up');
+  assert.equal(scrolledBack.scroll, 0, 'The first row brings the shelf back');
   await fs.writeFile(preferences, JSON.stringify({ show_weather: false }));
   const gradientDisabled = await scenario(
     'wallpaper-gradient-disabled',
-    'settings,down,down,enter,up,up,right,enter',
+    'settings,down,enter,up,up,right,enter',
   );
   assert.equal(gradientDisabled.focus, 'WallpaperGradient');
   assert.equal(gradientDisabled.preferences.wallpaper_gradient, false);
   assert.ok(gradientDisabled.ui_text.includes('Gradient'));
-  const gradientRestored = await scenario('wallpaper-gradient-restored', 'home,down');
+  const gradientRestored = await scenario('wallpaper-gradient-restored', 'home');
   assert.equal(gradientRestored.preferences.wallpaper_gradient, false);
   const gradientEnabled = await scenario(
     'wallpaper-gradient-enabled',
-    'settings,down,down,enter,up,up,right,enter',
+    'settings,down,enter,up,up,right,enter',
   );
   assert.equal(gradientEnabled.preferences.wallpaper_gradient, true);
   const cycleEnabled = await scenario(
     'wallpaper-cycle-enabled',
-    'settings,down,down,enter,up,up,right,right,enter',
+    'settings,down,enter,up,up,right,right,enter',
   );
   assert.equal(cycleEnabled.subpage, null);
   assert.equal(cycleEnabled.focus, 'WallpaperCycle');
   assert.equal(cycleEnabled.preferences.wallpaper_cycle, true);
   assert.ok(cycleEnabled.ui_text.includes('Rotation'));
-  const cycledAfterRestart = await scenario('wallpaper-cycle-restart', 'down');
+  const cycledAfterRestart = await scenario('wallpaper-cycle-restart', 'home');
   assert.equal(
     cycledAfterRestart.preferences.background,
     'san-francisco',
@@ -540,7 +537,7 @@ try {
   );
   const cycleDisabled = await scenario(
     'wallpaper-cycle-disabled',
-    'settings,down,down,enter,up,up,right,right,enter',
+    'settings,down,enter,up,up,right,right,enter',
   );
   assert.equal(cycleDisabled.preferences.wallpaper_cycle, false);
   assert.ok(cycleDisabled.ui_text.includes('Rotation'));

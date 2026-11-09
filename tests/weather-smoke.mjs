@@ -143,13 +143,13 @@ async function scenario(name, script, frames = 210) {
 }
 const forecastCount = () => requests.filter((request) => request.path === '/v1/forecast').length;
 const searchCount = () => requests.filter((request) => request.path === '/v1/search').length;
-const weatherPage = 'settings,down,down,down,enter,down,down,enter';
+const weatherPage = 'settings,down,down,enter,down,down,enter';
 const locationPage = `${weatherPage},down,enter`;
 try {
   if (process.env.LUMA_SMOKE_SKIP_BUILD !== '1')
     await run('cargo', ['build', '--locked', '--package', 'luma']);
   await writePreferences();
-  await scenario('unconfigured', 'home,down');
+  await scenario('unconfigured', 'home');
   assert.equal(requests.length, 0, 'No geolocation or automatic city discovery');
   const short = await scenario('short-query', `${locationPage},enter,back,enter`);
   assert.equal(short.weather.searching, false);

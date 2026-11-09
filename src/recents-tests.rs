@@ -209,7 +209,7 @@ fn back_dismissal_consumes_repeats_native_exit_and_release_without_quitting() {
         None
     );
     assert_eq!(state.page, Page::Home);
-    assert_eq!(state.focus, Target::Nav(0));
+    assert_eq!(state.focus, Target::Search);
 }
 
 #[test]
@@ -303,17 +303,13 @@ fn a_short_back_on_home_opens_recents_and_the_next_press_restores_the_app() {
 }
 
 #[test]
-fn home_header_has_only_navigation_and_tv_settings() {
+fn the_main_screen_header_is_only_the_clock() {
+    // tvOS has no tab bar on its Home Screen: nothing above the shelf is a control.
     let state = ready();
-    let header: Vec<_> = controls(&state)
-        .into_iter()
-        .filter(|control| control.rect.y < 120.)
-        .collect();
-    assert_eq!(header.len(), 4);
     assert!(
-        header
+        controls(&state)
             .iter()
-            .all(|control| matches!(control.target, Target::Nav(_) | Target::TvSettings))
+            .all(|control| control.rect.y >= 120.)
     );
 }
 
@@ -367,7 +363,7 @@ fn youtube_recents_uses_the_apps_vector_and_the_same_relative_logo_geometry() {
     };
     let mut state = ready();
     state.preferences.reduced_motion = true;
-    state.open(1);
+    state.open(crate::state::Page::Home);
     let apps = scene(&state);
     let app_face = bounds(&apps, "surfaces/youtube.png");
     let app_logo = bounds(&apps, "logos/youtube.lvec");
@@ -388,7 +384,7 @@ fn youtube_recents_uses_the_apps_vector_and_the_same_relative_logo_geometry() {
 #[test]
 fn recents_is_modal_and_restores_the_exact_settings_parent() {
     let mut state = ready();
-    state.open(2);
+    state.open(crate::state::Page::Settings);
     state.subpage = Some(crate::state::Subpage::Clock);
     state.focus = Target::ClockFormat;
     assert_eq!(
@@ -499,7 +495,7 @@ fn failed_actions_keep_history_and_stale_replies_cannot_reopen_or_replace_a_sess
     let generation = state.recents.generation;
     state.recent_response(generation, Command::Launch("netflix".into()), Ok(None));
     assert!(!state.recents_open());
-    assert_eq!(state.focus, Target::Nav(0));
+    assert_eq!(state.focus, Target::Search);
 }
 
 #[test]
@@ -546,7 +542,7 @@ fn recents_pointer_focus_never_moves_hit_regions_and_reduced_motion_snaps() {
 fn recents_crossfade_reverses_without_jumping_and_restores_parent_input_immediately() {
     use crate::renderer::Draw;
     let mut state = ready();
-    state.open(2);
+    state.open(crate::state::Page::Settings);
     state.subpage = Some(crate::state::Subpage::Clock);
     state.focus = Target::ClockFormat;
     let parent = controls(&state);

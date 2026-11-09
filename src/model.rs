@@ -3,7 +3,6 @@ use crate::weather::{Location, Unit};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 
-pub const CATEGORIES: [&str; 4] = ["Streaming", "Music", "Gaming", "Utilities"];
 pub const BACKGROUNDS: [(&str, &str); 9] = [
     ("slate", "Slate"),
     ("midnight", "Midnight"),
@@ -222,8 +221,10 @@ pub struct Preferences {
     /// Last manually chosen splash, independent of automatic rotation.
     pub splash_background: Option<String>,
     pub deleted_backgrounds: Vec<String>,
-    pub show_home_names: bool,
+    /// Titles beneath the focused grid card (tvOS); off hides them.
     pub show_app_names: bool,
+    /// Input cards above the apps on the main screen; inputs stay on the remote otherwise.
+    pub show_inputs: bool,
     pub hour_24: bool,
     pub reduced_motion: bool,
     pub show_seconds: bool,
@@ -262,8 +263,8 @@ impl Default for Preferences {
             background: "dunes".into(),
             splash_background: None,
             deleted_backgrounds: vec![],
-            show_home_names: false,
             show_app_names: true,
+            show_inputs: false,
             hour_24: false,
             reduced_motion: false,
             show_seconds: false,

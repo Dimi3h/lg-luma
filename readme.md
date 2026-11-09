@@ -1,7 +1,8 @@
 # Luma
 
-A native launcher for rooted LG webOS TVs, styled after Apple tvOS: a glass tab bar, rows of
-5:3 app cards that lift on focus with their title beneath, and Liquid Glass-style panels.
+A native launcher for rooted LG webOS TVs, styled after Apple tvOS: one screen with the date,
+greeting and weather above a grid of every app (Search first, Settings last), 5:3 cards that lift
+on focus with their title beneath, and Liquid Glass-style panels.
 
 https://github.com/user-attachments/assets/2156d640-b8fa-4ea4-a02c-0db4c93bcc5a
 
@@ -11,10 +12,10 @@ https://github.com/user-attachments/assets/2156d640-b8fa-4ea4-a02c-0db4c93bcc5a
 <table>
   <tr>
     <td width="50%" align="center">
-      <img src="docs/home.png" alt="Luma native Home screen, desktop preview">
+      <img src="docs/home.png" alt="Luma main screen with the top shelf above the app grid, desktop preview">
     </td>
     <td width="50%" align="center">
-      <img src="docs/apps.png" alt="Luma native app library, desktop preview">
+      <img src="docs/apps.png" alt="Luma app grid scrolled below the first row, desktop preview">
     </td>
   </tr>
   <tr>

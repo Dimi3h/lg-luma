@@ -497,16 +497,10 @@ fn grid_and_options_use_matching_adaptive_hearts_without_a_backing_circle() {
             },
             None,
         );
-        state.open(1);
+        state.open(crate::state::Page::Home);
         state.focus = Target::App("regional.app".into());
         let render = |state: &crate::state::State| {
-            crate::view::scene_with_pill(
-                state,
-                &assets,
-                800.,
-                100.,
-                time::OffsetDateTime::UNIX_EPOCH,
-            )
+            crate::view::scene(state, &assets, time::OffsetDateTime::UNIX_EPOCH)
         };
         poll_until(&assets.artwork, || {
             render(&state)
@@ -561,15 +555,7 @@ fn visible_cards_switch_from_fallback_to_a_single_composited_installed_surface()
         },
         None,
     );
-    let scene = || {
-        crate::view::scene_with_pill(
-            &state,
-            &assets,
-            800.,
-            100.,
-            time::OffsetDateTime::UNIX_EPOCH,
-        )
-    };
+    let scene = || crate::view::scene(&state, &assets, time::OffsetDateTime::UNIX_EPOCH);
     assert!(
         !scene()
             .draw

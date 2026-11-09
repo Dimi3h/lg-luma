@@ -37,25 +37,25 @@ woff2, Python/fontTools, CMake and Git. Linux includes Mesa and Xvfb. Supported 
 Apple Silicon macOS and ARM64/x86-64 Linux. Without Nix, supply those tools and Rust 1.88+,
 including `armv7-unknown-linux-gnueabi` for TV builds. No browser installation is needed.
 
-| Command                   | Purpose                                                    |
-| ------------------------- | ---------------------------------------------------------- |
-| `pnpm dev [--options]`    | Run the desktop preview                                    |
-| `pnpm assets [--4k]`      | Prepare fonts, vector artwork and raster backgrounds       |
-| `pnpm screenshots`        | Capture native Home, Apps, General and Inputs into `docs/` |
-| `pnpm assets:vector`      | Recompile bundled SVG icon/logo meshes                     |
-| `pnpm assets:fonts`       | Restore checksum-pinned Noto font source if needed         |
-| `pnpm sdk`                | Download/relocate a pinned host webOS SDK                  |
-| `pnpm runtime`            | Prepare checksum-pinned SDL-webOS                          |
-| `pnpm build`              | Release ARM cross-build using `WEBOS_NDK`                  |
-| `pnpm run package`        | Assets, cross-build, IPK verification and Homebrew feed    |
-| `pnpm deploy --device tv` | Build/install/launch through an ares device profile        |
-| `pnpm check`              | Oxlint and workspace Clippy, without executing tests       |
-| `pnpm format:check`       | Rust and tooling/document formatting checks                |
-| `pnpm test`               | Release-tooling and Rust workspace unit tests              |
-| `pnpm test:icons`         | Mocked runtime icon reads and bundled vector checks        |
-| `pnpm test:smoke`         | Desktop rendering, mocked weather and localization checks  |
-| `pnpm changeset`          | Add a release note and requested version bump to a PR      |
-| `pnpm version:check`      | Check synchronized app release versions                    |
+| Command                   | Purpose                                                                     |
+| ------------------------- | --------------------------------------------------------------------------- |
+| `pnpm dev [--options]`    | Run the desktop preview                                                     |
+| `pnpm assets [--4k]`      | Prepare fonts, vector artwork and raster backgrounds                        |
+| `pnpm screenshots`        | Capture the main screen, its scrolled grid, General and Inputs into `docs/` |
+| `pnpm assets:vector`      | Recompile bundled SVG icon/logo meshes                                      |
+| `pnpm assets:fonts`       | Restore checksum-pinned Noto font source if needed                          |
+| `pnpm sdk`                | Download/relocate a pinned host webOS SDK                                   |
+| `pnpm runtime`            | Prepare checksum-pinned SDL-webOS                                           |
+| `pnpm build`              | Release ARM cross-build using `WEBOS_NDK`                                   |
+| `pnpm run package`        | Assets, cross-build, IPK verification and Homebrew feed                     |
+| `pnpm deploy --device tv` | Build/install/launch through an ares device profile                         |
+| `pnpm check`              | Oxlint and workspace Clippy, without executing tests                        |
+| `pnpm format:check`       | Rust and tooling/document formatting checks                                 |
+| `pnpm test`               | Release-tooling and Rust workspace unit tests                               |
+| `pnpm test:icons`         | Mocked runtime icon reads and bundled vector checks                         |
+| `pnpm test:smoke`         | Desktop rendering, mocked weather and localization checks                   |
+| `pnpm changeset`          | Add a release note and requested version bump to a PR                       |
+| `pnpm version:check`      | Check synchronized app release versions                                     |
 
 The TV target is ARMv7 **soft-float calling convention**, `gnueabi`, not `gnueabihf`. Codegen
 uses the NDK's Cortex-A9/VFP baseline with NEON disabled for Rust code. Hardware floating point
@@ -98,11 +98,13 @@ It does not execute the test suites. A desktop display is required; on headless 
 Backspace deletes while editing. Native Back uses SDL's webOS-specific keycode. Back dismisses
 the keyboard first; Weather Location then returns to its parent Location row, HDMI choices to
 that HDMI row, and the Background gallery to Background in the sidebar. Back from the sidebar
-focuses the Settings tab, then returns Home. **System** in the sidebar groups **Refresh apps & inputs**
-and the vector power-icon **Quit app** action separately from General preferences.
-On Apps, OK or a normal pointer click on an app opens its side popup, with **Open** first and focused by
-default, followed by favorite, hide/show and **Delete app** actions. A second OK launches the app.
-Home favorites, Inputs and Recent apps launch directly. Hold OK on Home still reorders favorites.
+returns to the main screen with the Settings card focused. **System** in the sidebar groups
+**Refresh apps & inputs** and the vector power-icon **Quit app** action separately from General
+preferences.
+OK (or a pointer click) on a grid card launches the app, as on tvOS; inputs and Recent apps launch
+directly too. Hold OK on a pinned favourite to reorder it; hold OK on any other app, or press Menu,
+to open its side popup, with **Open** first and focused by default, followed by favorite,
+hide/show and **Delete app** actions.
 Background cards open the same side popup with **Use background** first and **Delete background**
 only for inactive backgrounds. Deletion requires confirmation with **Cancel** focused by default.
 Uploaded images are deleted on the wallpaper worker; bundled assets remain in the package, with
@@ -134,21 +136,23 @@ The **Clock** subpage contains **Clock format** (12-hour or 24-hour) and **Time 
 or `HH:MM:SS`, defaulting to `HH:MM`). Choosing a format returns to its row in Clock, and Back
 from Clock restores its General row. With seconds shown, the header clock redraws once per second
 instead of once per minute. Existing saved hour and seconds preferences are retained.
-General has an **App names** subpage with independent **Show on Home** and **Show on Apps** toggles.
-As on tvOS, **On** shows the title beneath the focused card only, fading in with the focus lift;
-**Off** never shows titles. Home captions default to off and Apps captions default to on, stored
-independently in `show_home_names` and `show_app_names`. The legacy `show_names` preference does
-not override these defaults. Captions never reserve layout space or extend a card's hit region:
-grid rows keep the tvOS spacing either way.
+General has an **App names** row that toggles On/Off directly (stored in `show_app_names`, default
+On). As on tvOS, On shows the title beneath the focused grid card only, fading in with the focus
+lift; Off never shows titles. The former separate Home (`show_home_names`) preference is ignored
+now that there is one grid; the legacy `show_names` preference does not override the default.
+Captions never reserve layout space or extend a card's hit region.
 **Settings → Widgets** groups **Date**, **Greeting**, **Weather**, **Shortcuts**, and **Inputs** as separate subpages.
 Weather location and temperature choices return to Weather; Back from a widget returns to its row
 in Widgets. Input visibility/naming choices return to Inputs, then its Widgets row.
+**Widgets → Inputs → Show widget** (`show_inputs`, default Off) adds the visible inputs as a row of
+5:3 cards under the top shelf, above the apps. Off, inputs stay available on the TV remote and
+in the Inputs subpage, which keeps per-input visibility and names.
 Existing greeting, weather, shortcut and input preferences are unchanged. Scrollable Settings lists
 reserve 64 logical pixels below their last item for both remote focus and wheel scrolling,
 with a tighter 48-pixel spacing for Languages and Backgrounds.
 **Widgets → Greeting → Show widget** is the first row and hides only the greeting text, preserving the saved name,
 date and weather. Weather moves directly below the date when the greeting is hidden, without
-moving favorites or inputs. It defaults to enabled for existing and new installations.
+moving the grid or inputs. It defaults to enabled for existing and new installations.
 **Widgets → Date** contains **Show widget** (enabled by default) and **Date format**. Choose the
 existing localized weekday/month/day display (default), `DD.MM.YYYY`, `MM/DD/YYYY`, or `YYYY-MM-DD`.
 Choosing a format returns to its Date row; Back from Date restores its Widgets row. Hiding the
@@ -160,22 +164,33 @@ safe content viewports, which start below that title line.
 The **Greeting** subpage contains **Name** and **Clear name**. Selecting Name opens the text keyboard
 (the system keyboard on the TV) and the name is appended to the Home greeting ("Good evening, Ana.").
 Long greetings scale down to fit their existing single-line area, centred vertically without
-moving the weather summary or favorite cards. Short greetings retain their original size.
+moving the weather summary or the grid. Short greetings retain their original size.
 The keyboard starts empty; closing it without a name preserves the saved value. Clear name removes
 it. Preferences are saved when the keyboard closes, including automatic system-keyboard dismissal.
 Back from Greeting restores its Widgets row; App names returns to General. Input name removal
 also uses **Clear name**.
 Choice checkmarks identify saved values, while the bright row fill identifies only the current focus.
 
-Home favorites form one horizontal strip, never a second row. Left/Right follows saved order,
-including reorder mode, and reveals complete cards. Up returns to Home navigation; Down enters
-the nearest input card in the first row. The strip position survives page changes. Wheel movement over
-favorites scrolls horizontally; elsewhere it scrolls vertically. Pointer hover/down never moves
-the clicked control. Apps Up/Down follows the six-column grid order, including offscreen rows,
-and only the first row's Up route reaches the Apps tab bar, returning to its selected segment
-(**All** or a category), as on tvOS. **All** replaces the former clear-filter button; choosing a
-category segment selects it rather than toggling it. Apps content scrolls behind the glass tab
-bar and search field.
+Luma has one main screen, as the tvOS Home Screen: the clock at the top left, the top shelf (date,
+greeting and weather) and beneath it one six-column grid of every app. There is no tab bar and no
+TV-settings button (the remote's own Settings button remains). The grid starts with a **Search**
+card, then the pinned favourites in their saved order, then every other visible app by title, and
+ends with a **Settings** card that opens Settings full screen. Pinning an app moves it into the
+favourites block; unpinning moves it back. Reorder mode moves a favourite within that block; OK or
+Back finishes it without launching.
+
+Up/Down follow the six-column grid indices, including offscreen rows, so the shelf cannot steal
+mid-grid navigation; Left/Right stay within a row. Up from the first row reaches the input cards
+when shown, then the shelf's weather button when no location is set. While the first row has
+focus the shelf is in view; focusing a lower row scrolls the grid so that row sits near the top,
+moving and dimming the shelf away, and returning to the first row brings it back (eased by
+`src/motion.rs`). Wheel scrolling moves the page directly. Pointer hover/down never moves the
+clicked control.
+
+The Search card opens the search keyboard; while a query is active its matches replace the grid
+(Search stays first, Settings last) and Back clears it, returning focus to Search. Search also
+finds hidden apps, dimmed and marked **Hidden**, which is how they are shown again (options →
+**Show app**). Category filters were removed.
 
 TV editing uses the system keyboard through SDL-webOS. Desktop editing uses the custom panel.
 
@@ -398,19 +413,19 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
 `src/view.rs`; motion lives in `src/motion.rs`.
 
 - **Layout**: an 80 × 60 safe area; six columns of 260 × 156 (5:3) cards with 40 between them and
-  100 between rows (pitch 300 × 256). Home favourites are the "top row" with six full cards and the
-  seventh cut off at the right edge; inputs follow as a second row of cards.
+  100 between rows (pitch 300 × 256), holding Search, every app and Settings beneath the top
+  shelf; optional input cards form a row above the apps.
 - **Type**: the tvOS text styles with Inter instead of SF Pro: Title 1 (76/96, greeting),
   Title 3 (48/56, overlay and sidebar titles), Headline (38/46, section headings), Callout (31/38),
   Body (29/36, rows and captions), Caption 1 (25/32, values and status) and Caption 2 (23/30, the
   smallest text anywhere).
 - **Focus** lifts instead of drawing a ring: the focused card grows 10% around its centre (rows
   2.5%, buttons 6%) with a large soft shadow, and its rim brightens. Focused rows and buttons turn
-  opaque white with dark labels; selected items (the current tab, segment, sidebar section,
-  background) stay highlighted at their resting size; pressed items return to their resting size;
-  hidden apps in the Hidden filter are dimmed and lose their shadow. Hit regions stay at the
+  opaque white with dark labels; selected items (the sidebar section, the background) stay
+  highlighted at their resting size; pressed items return to their resting size; hidden apps in
+  search results are dimmed and lose their shadow. Hit regions stay at the
   unscaled rectangles; only drawing scales.
-- **Motion**: focus lift, scroll position (Home strip, Apps grid, Settings lists) and page switches
+- **Motion**: focus lift, scroll position (the main grid and shelf, Settings lists) and page switches
   ease with a critically damped exponential (about 200 ms for focus, 250 ms for scrolling, a 200 ms
   fade-in for pages). Controls always use the logical, unanimated positions; the drawn content
   follows. Wheel and pointer scrolling, list changes and **Reduced motion** snap immediately.
@@ -420,8 +435,8 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   upload worker writes `wallpaper-blur.jpg` and `original-blur.jpg` for uploads. Glass panels
   (`Scene::glass`) draw that copy at the same screen coordinates inside their rounded rectangle
   (`Draw::Backdrop`, one textured pass), add a short highlight along the top edge and a 1.5 px
-  gradient rim (`Draw::Rim`) that is brightest at the top. The tab bar, Apps tab bar and search, settings sidebar and rows, context menus,
-  alerts, keyboard, notices and companion dialogs use it; menus, alerts and Recents put the blurred
+  gradient rim (`Draw::Rim`) that is brightest at the top. The Search and Settings cards, the
+  settings sidebar and rows, context menus, alerts, keyboard, notices and companion dialogs use it; menus, alerts and Recents put the blurred
   copy behind the whole stage. Uploads made before this change have no blurred copy and fall back
   to a dark translucent fill. App cards get a glassy rim that strengthens on focus. There is no
   real-time blur or refraction.
@@ -744,9 +759,9 @@ is bound to that executable path. Luma detects this (`platform::runs_as_lg_home`
   registers with SAM itself through `registerApp` (lifecycle v2) on its own LS2 connection.
   `luna::subscribe` waits up to 10 s for SAM's first reply (`registered`); a failed connection,
   call or refused registration is a startup error, so Luma exits and SAM starts Home afresh.
-  Home-replacement mode also claims SDL-webOS's Home key, returning directly to the Home tab
+  Home-replacement mode also claims SDL-webOS's Home key, returning directly to the main screen
   when SAM does not relaunch an already-foreground Home. Normal app-tile launches do not claim it.
-  `relaunch` returns to Luma's Home tab, dismisses overlays, raises the window and refreshes
+  `relaunch` returns to Luma's main screen, dismisses overlays, raises the window and refreshes
   the inventory. Keyboard edits are saved before leaving their subpage. `close` and a later
   `returnValue: false` (registration lost) quit. SAM keeps the process across Home launches and
   standby (`pause`, reason `keepAlive`) instead of restarting it;
@@ -845,7 +860,7 @@ pnpm dev --test-extra-apps 120
 On the TV, add `--test-extra-apps 120` after the JSON argument in the jailed command above.
 This explicitly appends up to 300 labeled non-launchable cards to a successful real inventory,
 using its apps as artwork/category templates. It uses `scroll-preview-preferences.json`,
-initialized from normal choices once. Favoriting test cards exercises long Home strips without
+initialized from normal choices once. Favoriting test cards exercises a long favourites block without
 changing normal favorites. Ctrl+C then a normal launch restores real inventory/preferences.
 The placeholder cards are never a fallback for an inventory failure.
 

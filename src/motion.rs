@@ -20,7 +20,6 @@ struct Context {
     page: Page,
     section: usize,
     subpage: Option<Subpage>,
-    filter: usize,
     query: String,
 }
 
@@ -32,7 +31,6 @@ pub struct Motion {
     seen: Option<Target>,
     levels: Vec<(Target, f32)>,
     scroll: Option<f32>,
-    home_scroll: Option<f32>,
     context: Option<Context>,
     page_since: Option<Instant>,
     active: bool,
@@ -43,10 +41,8 @@ pub struct Inputs<'a> {
     pub page: Page,
     pub section: usize,
     pub subpage: &'a Option<Subpage>,
-    pub filter: usize,
     pub query: &'a str,
     pub scroll: f32,
-    pub home_scroll: f32,
     pub reduced: bool,
     /// Wheel scrolling and pointer hover keep display and hit regions identical.
     pub pointer: bool,
@@ -110,7 +106,6 @@ impl Motion {
             page: input.page,
             section: input.section,
             subpage: input.subpage.clone(),
-            filter: input.filter,
             query: input.query.to_owned(),
         };
         let switched = self.context.as_ref() != Some(&context);
@@ -131,16 +126,11 @@ impl Motion {
         changed |= self.page_since.is_some();
 
         let snap = switched || input.reduced || input.pointer;
-        for (display, logical) in [
-            (&mut self.scroll, input.scroll),
-            (&mut self.home_scroll, input.home_scroll),
-        ] {
-            match display {
-                Some(value) if !snap => changed |= approach(value, logical, SCROLL_RATE, dt, 0.5),
-                _ => {
-                    changed |= display.is_some_and(|value| value != logical);
-                    *display = Some(logical);
-                }
+        match &mut self.scroll {
+            Some(value) if !snap => changed |= approach(value, input.scroll, SCROLL_RATE, dt, 0.5),
+            display => {
+                changed |= display.is_some_and(|value| value != input.scroll);
+                *display = Some(input.scroll);
             }
         }
         self.active = changed;
@@ -167,10 +157,6 @@ impl Motion {
         self.scroll.unwrap_or(logical)
     }
 
-    pub fn home_scroll(&self, logical: f32) -> f32 {
-        self.home_scroll.unwrap_or(logical)
-    }
-
     /// Opacity of the page content while a page switch fades it in.
     pub fn page_alpha(&self) -> f32 {
         self.page_since.map_or(1., |since| {
@@ -188,13 +174,11 @@ mod tests {
     fn input<'a>(focus: &'a Target, subpage: &'a Option<Subpage>, reduced: bool) -> Inputs<'a> {
         Inputs {
             focus,
-            page: Page::Apps,
+            page: Page::Home,
             section: 0,
             subpage,
-            filter: 0,
             query: "",
             scroll: 0.,
-            home_scroll: 0.,
             reduced,
             pointer: false,
         }
@@ -248,7 +232,7 @@ mod tests {
         motion.advance(&values, start + Duration::from_millis(16));
         let display = motion.scroll(300.);
         assert!(display > 0. && display < 300.);
-        values.filter = 2;
+        values.query = "n";
         motion.advance(&values, start + Duration::from_millis(32));
         assert_eq!(motion.scroll(300.), 300.);
     }

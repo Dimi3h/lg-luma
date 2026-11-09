@@ -28,7 +28,7 @@ try {
     '--preferences',
     preferences,
     '--script',
-    'apps',
+    'home',
     '--frames',
     '18',
     '--dump-state',
@@ -47,7 +47,7 @@ try {
       '--preferences',
       preferences,
       '--script',
-      `apps,type:${app.title},back`,
+      `home,type:${app.title},back`,
       '--frames',
       '18',
       '--screenshot',
@@ -64,7 +64,8 @@ try {
     assert.equal(report.capture.glyph_failures, 0, `Invalid caption for ${logo}`);
     assert.ok(report.capture.vector_meshes > 0);
     const input = await sharp(screenshot)
-      .extract({ left: 78, top: 264, width: 282, height: 238 })
+      // The single search result is the grid's second card, after Search.
+      .extract({ left: 369, top: 509, width: 282, height: 238 })
       .png()
       .toBuffer();
     cards.push({ input, left: (index % 6) * 282, top: Math.floor(index / 6) * 238 });

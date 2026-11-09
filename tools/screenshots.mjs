@@ -24,7 +24,6 @@ const configuration = {
   language: 'en',
   background: 'dunes',
   hour_24: false,
-  show_home_names: false,
   show_weather: true,
   weather_location: null,
   hidden: [],
@@ -33,11 +32,12 @@ const configuration = {
 };
 try {
   for (const [name, script] of [
-    ['home', 'home,down'],
-    ['apps', 'apps,down'],
-    ['settings', 'settings,down'],
+    ['home', 'home'],
+    // The grid below the first row, with the top shelf scrolled away.
+    ['apps', 'home,down,down'],
+    ['settings', 'settings'],
     // Widgets lists Date, Greeting, Weather, Shortcuts, then Inputs.
-    ['inputs', 'settings,down,down,down,enter,down,down,down,down,enter'],
+    ['inputs', 'settings,down,down,enter,down,down,down,down,enter'],
   ]) {
     // Independent state makes screenshots stable regardless of capture order.
     await fs.writeFile(preferences, JSON.stringify(configuration));
