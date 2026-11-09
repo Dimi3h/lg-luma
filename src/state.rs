@@ -18,13 +18,21 @@ pub const APPS_COLUMNS: usize = 6;
 /// Automatic inventory retries before the error shows: with the 6.5 s Luna timeout about 50 s.
 pub const INVENTORY_RETRIES: u32 = 5;
 pub const INVENTORY_RETRY_DELAY: Duration = Duration::from_secs(2);
-/// Below the first row the grid scrolls so the focused row sits here, as on tvOS: the top
-/// shelf moves away and returns when focus comes back to the first row.
-pub const GRID_ANCHOR: f32 = 170.;
+/// With more rows than fit beneath the shelf, the grid scrolls only as far as needed to show
+/// the focused row, and never above this line (just below the clock).
+pub const GRID_TOP_LIMIT: f32 = 150.;
 pub const BACKGROUND_FADE: f32 = 0.4;
 /// The clock line; scrolled content is not hit-testable above it.
 pub const MAIN_TOP: f32 = 120.;
 pub const CYCLE_FADE: f32 = 1.6;
+
+/// A card of the main screen's grid (inputs, apps and the system cards).
+fn is_grid_card(target: &Target) -> bool {
+    matches!(
+        target,
+        Target::App(_) | Target::Input(_) | Target::Search | Target::SettingsCard
+    )
+}
 
 pub fn unix_now() -> u64 {
     std::time::SystemTime::now()
@@ -590,8 +598,8 @@ impl State {
                     SETTINGS_BOTTOM_PADDING
                 }
             } else {
-                // Room for a lifted card and its focused caption.
-                crate::view::CAPTION_SPACE + 16.
+                // Room for the focused caption inside the 60 px bottom safe area.
+                crate::view::CAPTION_SPACE + 60.
             }
     }
 
@@ -802,13 +810,39 @@ impl State {
         let previous = self.scroll;
         if let Some(control) = controls.iter().find(|c| c.target == self.focus) {
             if self.page == Page::Home {
-                // tvOS keeps the top shelf while the first row has focus; below it the grid
-                // moves up so the focused row sits at a fixed height.
+                // Up to three rows fit beneath the compact shelf, so the page stays put. With
+                // more, the grid scrolls only as far as the focused row needs (the shelf
+                // collapses as it does) and returns when the first row has focus again.
                 self.scroll = if self.in_first_row(&self.focus) || !control.scrollable {
                     0.
                 } else {
-                    (control.rect.y + self.scroll - GRID_ANCHOR)
-                        .clamp(0., self.scroll_limit(controls).max(0.))
+                    let mut scroll = self.scroll;
+                    let bottom = self.scroll_bottom();
+                    if control.rect.y + control.rect.h > bottom {
+                        scroll += control.rect.y + control.rect.h - bottom;
+                    }
+                    if control.rect.y < GRID_TOP_LIMIT {
+                        scroll -= GRID_TOP_LIMIT - control.rect.y;
+                    }
+                    // Scroll in whole rows, so the top visible row sits just below the clock
+                    // instead of half under it; the last step may leave room beneath.
+                    let first = controls
+                        .iter()
+                        .filter(|c| c.scrollable && is_grid_card(&c.target))
+                        .map(|c| c.rect.y + self.scroll)
+                        .fold(f32::MAX, f32::min);
+                    let align = |value: f32| {
+                        let base = first - GRID_TOP_LIMIT;
+                        if value <= 0. {
+                            0.
+                        } else {
+                            base + ((value - base) / crate::view::ROW_PITCH).ceil().max(0.)
+                                * crate::view::ROW_PITCH
+                        }
+                    };
+                    align(scroll)
+                        .min(align(self.scroll_limit(controls)))
+                        .max(0.)
                 };
             } else if matches!(self.focus, Target::Sidebar(_)) {
                 self.scroll = 0.;

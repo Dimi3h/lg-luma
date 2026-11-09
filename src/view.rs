@@ -38,10 +38,10 @@ const PANEL_RADIUS: f32 = 30.;
 // tvOS text styles (size / leading, Medium unless noted; Inter replaces SF Pro, and text of
 // 32 px and up uses Inter Display). Tracking is light: titles about -2%, body text none.
 // Nothing in Luma is smaller than Caption 2.
-const TITLE1: TextStyle = TextStyle::new(76.)
+const TITLE2: TextStyle = TextStyle::new(57.)
     .weight(650)
     .tracking(-0.02)
-    .leading(96. / 76.);
+    .leading(68. / 57.);
 const TITLE3: TextStyle = TextStyle::new(48.)
     .weight(600)
     .tracking(-0.018)
@@ -872,6 +872,10 @@ pub fn scene(state: &State, assets: &Assets, now: OffsetDateTime) -> Scene {
     out
 }
 
+/// The clock's style and line; on the main screen the date follows it on the same line.
+const CLOCK_STYLE: TextStyle = BODY.weight(550);
+const CLOCK_Y: f32 = HEADER.y + (HEADER.h - 36.) / 2.;
+
 fn header(out: &mut Scene, state: &State, now: OffsetDateTime) {
     let clock = state.preferences.language.clock(
         now,
@@ -880,8 +884,8 @@ fn header(out: &mut Scene, state: &State, now: OffsetDateTime) {
     );
     out.text(
         clock,
-        Rect::new(SAFE_X, HEADER.y + (HEADER.h - 36.) / 2., 320., 36.),
-        BODY.weight(550),
+        Rect::new(SAFE_X, CLOCK_Y, 320., 36.),
+        CLOCK_STYLE,
         c(0xffffff, 0.72),
         false,
     );
@@ -1264,20 +1268,42 @@ fn brand_mark(out: &mut Scene, assets: &Assets, app: &App, rect: Rect, language:
     }
 }
 
-/// The top shelf: the date line, the greeting and the weather summary.
-const HOME_TOP: f32 = 236.;
-pub const DATE_HEIGHT: f32 = 38.;
-pub const GREETING_HEIGHT: f32 = 96. + 10.;
+/// The compact top shelf: the date shares the clock's line, and the greeting and one row of
+/// weather sit directly beneath it, so three rows of cards fit on the screen without scrolling.
+pub const SHELF_TOP: f32 = 108.;
+pub const GREETING_HEIGHT: f32 = 68. + 6.;
+pub const WEATHER_ROW_HEIGHT: f32 = 38.;
 const GREETING_WIDTH: f32 = 1500.;
-/// The first card row beneath the shelf: inputs when shown, otherwise the app grid.
-pub const GRID_Y: f32 = 520.;
-/// The shelf has faded out once the page has scrolled this far.
-const SHELF_FADE: f32 = 260.;
+/// Space between the shelf and the first card row (room for the lifted card).
+const SHELF_GAP: f32 = 46.;
+/// The first card row when the shelf is empty: clear of the clock line and a lifted card.
+const GRID_MIN_Y: f32 = 150.;
+/// The shelf has faded out once the page has scrolled one row.
+const SHELF_FADE: f32 = ROW_PITCH;
+
+/// Logical top of the first card row (inputs when shown, otherwise the apps), right beneath
+/// whatever the shelf shows.
+pub fn grid_y(state: &State) -> f32 {
+    let shelf = if state.preferences.show_greeting {
+        GREETING_HEIGHT
+    } else {
+        0.
+    } + if state.preferences.show_weather {
+        WEATHER_ROW_HEIGHT
+    } else {
+        0.
+    };
+    if shelf > 0. {
+        SHELF_TOP + shelf + SHELF_GAP
+    } else {
+        GRID_MIN_Y
+    }
+}
 
 /// Logical (unscrolled) top of the grid's first row.
 pub fn grid_top(state: &State) -> f32 {
     let inputs = state.home_inputs().len();
-    GRID_Y + inputs.div_ceil(APPS_COLUMNS) as f32 * ROW_PITCH
+    grid_y(state) + inputs.div_ceil(APPS_COLUMNS) as f32 * ROW_PITCH
 }
 
 /// Position of the `index`th card of a six-column block starting at `top`.
@@ -1297,46 +1323,46 @@ fn home(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
     let language = state.preferences.language;
     let s = state.scroll;
     let content_start = out.draw.len();
-    // Scrolled rows fade out beneath the clock.
+    let shelf_start = out.draw.len();
+    if state.preferences.show_date {
+        // On the clock's line, after the clock (drawn by `header`).
+        let clock = language.clock(
+            now,
+            state.preferences.hour_24,
+            state.preferences.show_seconds,
+        );
+        let x = SAFE_X + assets.width(&clock, CLOCK_STYLE).ceil() + 18.;
+        let (date, style) = assets.single_line(
+            &state.preferences.date_format.format(language, now),
+            CLOCK_STYLE.weight(450),
+            1920. - SAFE_X - x,
+        );
+        out.text(
+            date,
+            Rect::new(x, CLOCK_Y - s, 1920. - SAFE_X - x, 36.),
+            style,
+            c(0xffffff, 0.56),
+            false,
+        );
+    }
+    // Scrolled rows fade out beneath the clock (the date above stays out of this fade).
     out.draw.push(Draw::EdgeFade(Some([
         HEADER.y + HEADER.h - 16.,
         HEADER.y + HEADER.h + 36.,
         1090.,
         1100.,
     ])));
-    let shelf_start = out.draw.len();
-    let summary = state
-        .preferences
-        .show_weather
-        .then(|| weather_summary_layout(state, assets));
-    let shift = summary
-        .as_ref()
-        .map_or(0., |summary| (summary.height + 12.) / 2.);
-    let top = HOME_TOP - shift - s;
-    let date_height = if state.preferences.show_date {
-        DATE_HEIGHT
-    } else {
-        0.
-    };
-    if state.preferences.show_date {
-        out.text(
-            state.preferences.date_format.format(language, now),
-            Rect::new(SAFE_X, top, 1200., 32.),
-            CAPTION1,
-            c(0xffffff, 0.75),
-            false,
-        );
-    }
+    let top = SHELF_TOP - s;
     if state.preferences.show_greeting {
         let greeting = language.greeting(now.hour(), &state.preferences.greeting_name);
-        let fitted = assets.fit_text(&greeting, TITLE1, GREETING_WIDTH);
-        let line = TITLE1.size * TITLE1.line_height;
-        let height = line * fitted.size / TITLE1.size;
+        let fitted = assets.fit_text(&greeting, TITLE2, GREETING_WIDTH);
+        let line = TITLE2.size * TITLE2.line_height;
+        let height = line * fitted.size / TITLE2.size;
         out.text(
             &greeting,
             Rect::new(
-                SAFE_X - 4.,
-                top + date_height + (line - height) / 2.,
+                SAFE_X - 3.,
+                top + (line - height) / 2.,
                 GREETING_WIDTH,
                 height,
             ),
@@ -1345,19 +1371,17 @@ fn home(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
             false,
         );
     }
-    if let Some(summary) = summary {
+    if state.preferences.show_weather {
+        let mut summary = weather_summary_layout(state, assets);
+        // One row only, so the shelf height (and the grid beneath it) never changes.
+        summary.parts.retain(|part| part.3.y < WEATHER_ROW_HEIGHT);
+        summary.height = summary.height.min(WEATHER_ROW_HEIGHT);
         let greeting_height = if state.preferences.show_greeting {
             GREETING_HEIGHT
         } else {
             0.
         };
-        weather_summary(
-            out,
-            state,
-            assets,
-            summary,
-            top + date_height + greeting_height,
-        );
+        weather_summary(out, state, assets, summary, top + greeting_height);
     }
     // tvOS dims the shelf as focus leaves the first row; it follows the eased scroll.
     let shelf = (1. - state.display_scroll() / SHELF_FADE).clamp(0., 1.);
@@ -1365,16 +1389,17 @@ fn home(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
         out.fade(shelf_start, shelf, 1.);
     }
     if state.moving.is_some() {
+        // On the clock's line, at the right.
         out.text(
             language.t("moveApps"),
-            Rect::new(1240., GRID_Y - 64. - s, 600., 32.),
+            Rect::new(1240., CLOCK_Y, 600., 36.),
             CAPTION1.right(),
             SECONDARY,
             false,
         );
     }
     for (index, input) in state.home_inputs().into_iter().enumerate() {
-        let mut rect = card_rect(index, GRID_Y);
+        let mut rect = card_rect(index, grid_y(state));
         rect.y -= s;
         input_card(out, state, assets, input, rect);
     }
@@ -4086,19 +4111,19 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 (rect.x, rect.y, rect.w, rect.h),
-                (SAFE_X - 4., HOME_TOP + DATE_HEIGHT, GREETING_WIDTH, 96.)
+                (SAFE_X - 3., SHELF_TOP, GREETING_WIDTH, 68.)
             );
-            // tvOS Title 1, emphasized (bold) with tight tracking.
-            assert_eq!(style.size, TITLE1.size);
-            assert_eq!(style.weight, TITLE1.weight);
-            assert_eq!(style.tracking, TITLE1.tracking);
+            // tvOS Title 2, emphasized (bold) with tight tracking, in the compact shelf.
+            assert_eq!(style.size, TITLE2.size);
+            assert_eq!(style.weight, TITLE2.weight);
+            assert_eq!(style.tracking, TITLE2.tracking);
         }
     }
 
     #[test]
     fn long_localized_greetings_fit_on_one_line_without_changing_the_name() {
         let assets = assets();
-        let base = TITLE1;
+        let base = TITLE2;
         for language in Language::ALL {
             for hour in [2, 9, 15, 20] {
                 for name in [
@@ -4107,7 +4132,7 @@ mod tests {
                 ] {
                     let greeting = language.greeting(hour, &name);
                     let fitted = assets.fit_text(&greeting, base, 1500.);
-                    assert!(fitted.size > 0. && fitted.size < base.size);
+                    assert!(fitted.size > 0. && fitted.size <= base.size);
                     assert!(assets.width(&greeting, fitted) < 1500.);
                     assert_eq!(assets.lines(&greeting, fitted, 1500.), 1);
                     assert!(greeting.contains(&name));
@@ -4120,7 +4145,7 @@ mod tests {
     fn fitting_remeasures_when_shrinking_changes_the_optical_font() {
         let assets = assets();
         let greeting = "W".repeat(100);
-        let fitted = assets.fit_text(&greeting, TITLE1, 1500.);
+        let fitted = assets.fit_text(&greeting, TITLE2, 1500.);
         assert!(fitted.size < 32.);
         assert!(assets.width(&greeting, fitted) < 1500.);
         assert_eq!(assets.lines(&greeting, fitted, 1500.), 1);
@@ -4181,67 +4206,61 @@ mod tests {
     }
 
     #[test]
-    fn hidden_home_widgets_collapse_without_moving_favorites_or_inputs() {
+    fn hidden_home_widgets_collapse_the_shelf_and_the_grid_follows() {
         let assets = assets();
         let mut state = State::new(Preferences::default());
         state.set_inventory(demo_inventory(), None);
-        let mut original = Scene::new();
-        home(&mut original, &state, &assets, OffsetDateTime::UNIX_EPOCH);
+        let first_card = |scene: &Scene| {
+            scene
+                .controls
+                .iter()
+                .find(|control| matches!(control.target, Target::App(_)))
+                .unwrap()
+                .rect
+        };
         let weather_y = |scene: &Scene| {
             scene
                 .controls
                 .iter()
                 .find(|control| control.target == Target::WeatherConfigure)
-                .unwrap()
-                .rect
-                .y
+                .map(|control| control.rect.y)
         };
-        let original_y = weather_y(&original);
-        for show_date in [false, true] {
-            for show_greeting in [false, true] {
-                state.preferences.show_date = show_date;
-                state.preferences.show_greeting = show_greeting;
-                let mut rendered = Scene::new();
-                home(&mut rendered, &state, &assets, OffsetDateTime::UNIX_EPOCH);
-                let removed = if show_date { 0. } else { DATE_HEIGHT }
-                    + if show_greeting { 0. } else { GREETING_HEIGHT };
-                assert!((weather_y(&rendered) - (original_y - removed)).abs() < 0.001);
-                for control in original
-                    .controls
-                    .iter()
-                    .filter(|control| matches!(control.target, Target::App(_) | Target::Input(_)))
-                {
-                    let other = rendered
-                        .controls
-                        .iter()
-                        .find(|other| other.target == control.target)
-                        .unwrap();
-                    assert_eq!(
-                        (control.rect.x, control.rect.y),
-                        (other.rect.x, other.rect.y)
-                    );
-                }
-                if show_date && !show_greeting {
-                    let date_y = rendered
-                        .draw
-                        .iter()
-                        .find_map(|draw| match draw {
-                            Draw::Text(label, rect, ..)
-                                if label
-                                    == &state
-                                        .preferences
-                                        .language
-                                        .date(OffsetDateTime::UNIX_EPOCH) =>
-                            {
-                                Some(rect.y)
-                            }
-                            _ => None,
-                        })
-                        .unwrap();
-                    // Weather's control includes padding around the summary itself.
-                    assert!((weather_y(&rendered) - date_y).abs() < 60.);
-                }
-            }
-        }
+        let mut original = Scene::new();
+        home(&mut original, &state, &assets, OffsetDateTime::UNIX_EPOCH);
+        let original_card = first_card(&original);
+        let original_weather = weather_y(&original).unwrap();
+        // The date shares the clock's line, so hiding it moves nothing.
+        state.preferences.show_date = false;
+        let mut rendered = Scene::new();
+        home(&mut rendered, &state, &assets, OffsetDateTime::UNIX_EPOCH);
+        assert_eq!(first_card(&rendered).y, original_card.y);
+        // Without the greeting, the weather and the grid move up by its height.
+        state.preferences.show_date = true;
+        state.preferences.show_greeting = false;
+        let mut rendered = Scene::new();
+        home(&mut rendered, &state, &assets, OffsetDateTime::UNIX_EPOCH);
+        assert!(
+            (weather_y(&rendered).unwrap() - (original_weather - GREETING_HEIGHT)).abs() < 0.001
+        );
+        assert_eq!(first_card(&rendered).y, original_card.y - GREETING_HEIGHT);
+        let date = state.preferences.language.date(OffsetDateTime::UNIX_EPOCH);
+        let date_y = rendered
+            .draw
+            .iter()
+            .find_map(|draw| match draw {
+                Draw::Text(label, rect, ..) if *label == date => Some(rect.y),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            date_y < HEADER.y + HEADER.h,
+            "The date sits on the clock's line"
+        );
+        // With an empty shelf the grid sits just below the clock.
+        state.preferences.show_weather = false;
+        let mut rendered = Scene::new();
+        home(&mut rendered, &state, &assets, OffsetDateTime::UNIX_EPOCH);
+        assert_eq!(weather_y(&rendered), None);
+        assert_eq!(first_card(&rendered).y, GRID_MIN_Y);
     }
 }

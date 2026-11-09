@@ -218,12 +218,12 @@ fn the_main_grid_scrolls_vertically_and_nothing_is_hit_beneath_the_clock() {
         Some(Target::App("sample".into()))
     );
     assert!(state.hit_test(&cards, 100., 1080.).is_none());
-    // Lists keep room below the last row for a lifted card and its focused caption.
+    // The grid keeps its focused caption inside the 60 px bottom safe area.
     state.scroll = 0.;
     assert!(state.wheel_scroll(&cards, Some((100., 600.)), 0, -100));
     let viewport = state.content_viewport();
     let limit = cards[0].rect.y + cards[0].rect.h
-        - (viewport.y + viewport.h - crate::view::CAPTION_SPACE - 16.);
+        - (viewport.y + viewport.h - crate::view::CAPTION_SPACE - 60.);
     assert_eq!(state.scroll, limit);
 }
 
@@ -289,19 +289,31 @@ fn up_and_down_follow_grid_indices_including_offscreen_rows() {
 }
 
 #[test]
-fn the_shelf_scrolls_away_below_the_first_row_and_returns_with_it() {
+fn the_shelf_scrolls_away_only_past_three_rows_and_returns_with_the_first() {
     let mut state = ready();
     state.preferences.reduced_motion = true;
     let grid = state.grid();
-    state.focus = grid[7].clone();
+    assert!(
+        grid.len() > 3 * crate::state::APPS_COLUMNS,
+        "The demo has more than three rows"
+    );
+    // The second and third rows fit beneath the compact shelf: nothing moves.
+    for index in [7, 14] {
+        state.focus = grid[index].clone();
+        state.reveal_focus(&controls(&state));
+        assert_eq!(state.scroll, 0., "Row of card {index}");
+    }
+    // The fourth row scrolls only as far as it needs, collapsing the shelf.
+    state.focus = grid[19].clone();
     state.reveal_focus(&controls(&state));
+    assert!(state.scroll > 0.);
     let row = controls(&state)
         .into_iter()
-        .find(|control| control.target == grid[7])
+        .find(|control| control.target == grid[19])
         .unwrap()
         .rect;
-    assert!(state.scroll > 0.);
-    assert_eq!(row.y, crate::state::GRID_ANCHOR);
+    assert!(row.y + row.h + view::CAPTION_SPACE <= 1020. + 0.01);
+    assert!(row.y >= crate::state::GRID_TOP_LIMIT);
     state.focus = grid[1].clone();
     state.reveal_focus(&controls(&state));
     assert_eq!(state.scroll, 0.);
@@ -312,6 +324,59 @@ fn the_shelf_scrolls_away_below_the_first_row_and_returns_with_it() {
         matches!(draw, crate::renderer::Draw::Text(label, _, _, color, _) if label == greeting && color[3] < 0.1)
     });
     assert!(faded);
+}
+
+#[test]
+fn eighteen_cards_fit_in_three_rows_beneath_a_compact_shelf_without_scrolling() {
+    let mut state = State::new(Preferences::default());
+    state.preferences.reduced_motion = true;
+    let mut inventory = demo_inventory();
+    inventory.apps.truncate(16);
+    state.set_inventory(inventory, None);
+    let grid = state.grid();
+    // Search, sixteen apps and Settings.
+    assert_eq!(grid.len(), 18);
+    for target in &grid {
+        state.focus = target.clone();
+        state.reveal_focus(&controls(&state));
+        assert_eq!(state.scroll, 0., "{target:?}");
+    }
+    let rendered = scene(&state);
+    let cards: Vec<_> = rendered
+        .controls
+        .iter()
+        .filter(|control| grid.contains(&control.target))
+        .map(|control| control.rect)
+        .collect();
+    assert_eq!(cards.len(), 18);
+    let first = cards.iter().map(|rect| rect.y).fold(f32::MAX, f32::min);
+    let last = cards.iter().map(|rect| rect.y + rect.h).fold(0., f32::max);
+    // Inside the 80 × 60 safe area, including the lift and the focused caption.
+    assert!(
+        cards
+            .iter()
+            .all(|rect| rect.x >= 80. && rect.x + rect.w <= 1840.)
+    );
+    assert!(
+        last + view::CAPTION_SPACE <= 1020.,
+        "Last row ends at {last}"
+    );
+    assert_eq!(first, view::grid_y(&state));
+    // The HIG row gap: 100 px between rows.
+    assert_eq!(view::ROW_PITCH - view::CARD_HEIGHT, 100.);
+    // The shelf sits directly beneath the clock line: date on it, greeting and weather below.
+    // The test scene renders at the Unix epoch (midnight).
+    let greeting = state.preferences.language.greeting(0, "");
+    let greeting_rect = rendered
+        .draw
+        .iter()
+        .find_map(|draw| match draw {
+            crate::renderer::Draw::Text(label, rect, ..) if *label == greeting => Some(*rect),
+            _ => None,
+        })
+        .unwrap();
+    assert!(greeting_rect.y < view::HEADER.y + view::HEADER.h + 20.);
+    assert!(greeting_rect.y + greeting_rect.h < first);
 }
 
 #[test]
@@ -2669,7 +2734,8 @@ fn grid_rows_scroll_beneath_the_clock_and_fade_out_there() {
         .collect();
     assert_eq!(fades.len(), 1);
     assert!(
-        fades[0][1] > view::HEADER.y + view::HEADER.h && fades[0][1] < crate::state::GRID_ANCHOR
+        fades[0][1] > view::HEADER.y + view::HEADER.h
+            && fades[0][1] <= crate::state::GRID_TOP_LIMIT
     );
     let card = rendered
         .draw
@@ -2696,7 +2762,7 @@ fn clock_date_and_home_input_descriptions_use_tvos_text_styles() {
         state.preferences.language = language;
         let rendered = scene(&state);
         let now = time::OffsetDateTime::UNIX_EPOCH;
-        // Clock in Body, date in Caption 1 (tvOS sizes; nothing below Caption 2).
+        // Clock and date share one line in Body (tvOS sizes; nothing below Caption 2).
         for (label, size) in [
             (
                 language.clock(
@@ -2706,7 +2772,7 @@ fn clock_date_and_home_input_descriptions_use_tvos_text_styles() {
                 ),
                 29.,
             ),
-            (language.date(now), 25.),
+            (language.date(now), 29.),
         ] {
             assert!(rendered.draw.iter().any(|draw| matches!(draw,
                 Draw::Text(text, rect, style, ..) if text == &label && style.size == size && rect.h >= size
@@ -2780,8 +2846,8 @@ fn one_screen_has_no_tab_bar_and_inputs_appear_only_when_enabled() {
         .iter()
         .find(|control| control.target == Target::Search)
         .unwrap();
-    assert_eq!(first_input.rect.y, view::GRID_Y);
-    assert_eq!(search.rect.y, view::GRID_Y + view::ROW_PITCH);
+    assert_eq!(first_input.rect.y, view::grid_y(&state));
+    assert_eq!(search.rect.y, view::grid_y(&state) + view::ROW_PITCH);
     // Up from the first app row enters the inputs in the same column.
     state.focus = Target::Search;
     state.direction(Direction::Up, &with_inputs);

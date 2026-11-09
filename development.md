@@ -170,8 +170,11 @@ Back from Greeting restores its Widgets row; App names returns to General. Input
 also uses **Clear name**.
 Choice checkmarks identify saved values, while the bright row fill identifies only the current focus.
 
-Luma has one main screen, as the tvOS Home Screen: the clock at the top left, the top shelf (date,
-greeting and weather) and beneath it one six-column grid of every app. There is no tab bar and no
+Luma has one main screen, as the tvOS Home Screen: a compact top shelf (the clock with the date on
+the same line, the greeting and one row of weather directly beneath) and under it one six-column
+grid of every app. Three rows of cards fit beneath the shelf inside the 80 × 60 safe area (the
+first row at y 266 with greeting and weather shown, the focused caption of the third ending at
+988), so up to 18 cards need no scrolling. Hiding the greeting or weather moves the grid up. There is no tab bar and no
 TV-settings button (the remote's own Settings button remains). The grid starts with a **Search**
 card, then the pinned favourites in their saved order, then every other visible app by title, and
 ends with a **Settings** card that opens Settings full screen. Pinning an app moves it into the
@@ -180,10 +183,10 @@ Back finishes it without launching.
 
 Up/Down follow the six-column grid indices, including offscreen rows, so the shelf cannot steal
 mid-grid navigation; Left/Right stay within a row. Up from the first row reaches the input cards
-when shown, then the shelf's weather button when no location is set. While the first row has
-focus the shelf is in view; focusing a lower row scrolls the grid so that row sits near the top,
-moving and dimming the shelf away, and returning to the first row brings it back (eased by
-`src/motion.rs`). Wheel scrolling moves the page directly. Pointer hover/down never moves the
+when shown, then the shelf's weather button when no location is set. With more than three rows,
+focusing a row below the third scrolls the grid by whole rows so the top visible row sits just
+below the clock, collapsing (moving and dimming) the shelf; returning to the first row brings it
+back (eased by `src/motion.rs`). Wheel scrolling moves the page directly. Pointer hover/down never moves the
 clicked control.
 
 The Search card opens the search keyboard; while a query is active its matches replace the grid
@@ -412,12 +415,13 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
 `src/view.rs`; motion lives in `src/motion.rs`.
 
 - **Layout**: an 80 × 60 safe area; six columns of 260 × 156 (5:3) cards with 40 between them and
-  100 between rows (pitch 300 × 256), holding Search, every app and Settings beneath the top
-  shelf; optional input cards form a row above the apps.
+  100 between rows (pitch 300 × 256), holding Search, every app and Settings beneath the compact
+  top shelf; optional input cards form a row above the apps and count towards the three rows that
+  fit without scrolling.
 - **Type**: the tvOS text styles with Inter instead of SF Pro. The bundled Inter 4.1 subset keeps
-  its `opsz` axis, so text of 32 px and up (Title 1, Title 3, Headline) uses Inter Display and
+  its `opsz` axis, so text of 32 px and up (Title 2, Title 3, Headline) uses Inter Display and
   smaller text uses Inter (one font file, instantiated by `tools/font-weights.py`). Tracking is
-  light (titles about -2%, body text none). The date reads in sentence case. Title 1 (76/96, greeting),
+  light (titles about -2%, body text none). The date reads in sentence case. Title 2 (57/68, greeting),
   Title 3 (48/56, overlay and sidebar titles), Headline (38/46, section headings), Callout (31/38),
   Body (29/36, rows and captions), Caption 1 (25/32, values and status) and Caption 2 (23/30, the
   smallest text anywhere).
