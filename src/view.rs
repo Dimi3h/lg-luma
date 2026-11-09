@@ -154,6 +154,7 @@ impl Assets {
     }
 
     fn width(&self, value: &str, style: TextStyle) -> f32 {
+        let style = scaled(style);
         let key = format!(
             "{}{}",
             if style.size >= 32. { "display-" } else { "" },
@@ -189,6 +190,7 @@ impl Assets {
     }
 
     fn lines(&self, value: &str, style: TextStyle, width: f32) -> usize {
+        let style = scaled(style);
         let key = format!(
             "{}{}",
             if style.size >= 32. { "display-" } else { "" },
@@ -239,6 +241,24 @@ pub struct Scene {
     raised: Vec<Draw>,
 }
 
+/// Settings › General › Text size: Larger scales the body text styles (40 px and below) by this
+/// much; titles keep their size so the main screen's three rows still fit.
+pub const LARGER_TEXT: f32 = 1.15;
+
+thread_local! {
+    /// The text scale of the scene being built: set by `scene` from the preference and used
+    /// alike when text is measured (`Assets::width`, `lines`) and when it is drawn.
+    static TEXT_SCALE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.) };
+}
+
+/// `style` as drawn: body styles grow with Larger text, measured in unscaled units elsewhere.
+fn scaled(mut style: TextStyle) -> TextStyle {
+    if style.size <= 40. {
+        style.size *= TEXT_SCALE.with(std::cell::Cell::get);
+    }
+    style
+}
+
 /// Grows `rect` around its centre by `share` of its size.
 fn grow(rect: Rect, share: f32) -> Rect {
     let dx = rect.w * share / 2.;
@@ -287,8 +307,20 @@ impl Scene {
         color: Color,
         center: bool,
     ) {
+        // Larger text grows the box around its vertical centre, keeping its width.
+        let grown = scaled(style).size / style.size;
+        let rect = if grown != 1. {
+            Rect::new(
+                rect.x,
+                rect.y - rect.h * (grown - 1.) / 2.,
+                rect.w,
+                rect.h * grown,
+            )
+        } else {
+            rect
+        };
         self.draw
-            .push(Draw::Text(text.into(), rect, style, color, center));
+            .push(Draw::Text(text.into(), rect, scaled(style), color, center));
     }
     fn image(&mut self, path: String, rect: Rect, radius: f32, contain: bool) {
         self.draw.push(Draw::Image(path, rect, radius, contain));
@@ -666,6 +698,13 @@ pub fn recents_replaces_page(state: &State) -> bool {
 }
 
 pub fn scene(state: &State, assets: &Assets, now: OffsetDateTime) -> Scene {
+    TEXT_SCALE.with(|scale| {
+        scale.set(if state.preferences.larger_text {
+            LARGER_TEXT
+        } else {
+            1.
+        })
+    });
     if let Some((started, first)) = state.screensaver {
         return screensaver(state, assets, now, started, first);
     }
@@ -2854,6 +2893,7 @@ fn settings_path(state: &State) -> Vec<&str> {
         Some(Subpage::HiddenApps) => vec![language.t("hiddenApps")],
         Some(Subpage::Screensaver) => vec![language.t("screensaver")],
         Some(Subpage::Appearance) => vec![language.t("appearance")],
+        Some(Subpage::TextSize) => vec![language.t("textSize")],
         None => vec![],
     };
     let mut path = vec![section];
@@ -3134,6 +3174,18 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                 .into_iter()
                 .map(|option| (option.name(), None, option == language))
                 .collect(),
+            Subpage::TextSize => vec![
+                (
+                    language.t("textDefault"),
+                    None,
+                    !state.preferences.larger_text,
+                ),
+                (
+                    language.t("textLarger"),
+                    None,
+                    state.preferences.larger_text,
+                ),
+            ],
             Subpage::Appearance => crate::model::Appearance::ALL
                 .into_iter()
                 .map(|mode| {
@@ -3250,6 +3302,17 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                     false,
                 ),
                 (11, "hiddenApps", "eye-off", Some(hidden.as_str()), true),
+                (
+                    15,
+                    "textSize",
+                    "type",
+                    Some(language.t(if state.preferences.larger_text {
+                        "textLarger"
+                    } else {
+                        "textDefault"
+                    })),
+                    true,
+                ),
                 (
                     14,
                     "appearance",

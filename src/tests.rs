@@ -3765,3 +3765,57 @@ fn favourites_jiggle_while_one_is_moved_without_moving_hit_regions() {
     assert!(state.moving.is_none());
     assert_eq!(view::jiggle(&state, "netflix"), [0., 0.]);
 }
+
+#[test]
+fn larger_text_scales_body_styles_keeps_titles_and_still_fits_three_rows() {
+    use crate::renderer::Draw;
+    let old: Preferences = serde_json::from_value(json!({"favorites": []})).unwrap();
+    assert!(!old.larger_text);
+    let mut state = State::new(Preferences::default());
+    let mut inventory = demo_inventory();
+    inventory.apps.truncate(17);
+    state.set_inventory(inventory, None);
+    state.preferences.reduced_motion = true;
+    let sizes = |state: &State, label: &str| {
+        scene(state)
+            .draw
+            .iter()
+            .find_map(|draw| match draw {
+                Draw::Text(text, rect, style, ..) if text == label => Some((style.size, *rect)),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let greeting = state.preferences.language.greeting(0, "");
+    let (body, _) = sizes(&state, "Set weather location");
+    let (title, _) = sizes(&state, &greeting);
+    state.preferences.larger_text = true;
+    let (larger, _) = sizes(&state, "Set weather location");
+    assert!((larger / body - view::LARGER_TEXT).abs() < 0.001);
+    assert_eq!(sizes(&state, &greeting).0, title, "Titles keep their size");
+    // The last row's focused caption stays inside the safe area.
+    let last = state.grid().last().unwrap().clone();
+    state.focus = state.grid()[12].clone();
+    let rendered = scene(&state);
+    let caption = rendered
+        .draw
+        .iter()
+        .filter_map(|draw| match draw {
+            Draw::Text(_, rect, ..) => Some(rect.y + rect.h),
+            _ => None,
+        })
+        .fold(0., f32::max);
+    assert!(caption <= 1020., "Lowest text ends at {caption}");
+    state.focus = last;
+    state.reveal_focus(&controls(&state));
+    assert_eq!(state.scroll, 0.);
+    // Settings › General › Text size.
+    state.open(Page::Settings);
+    state.focus = Target::Setting(15);
+    state.direction(Direction::Right, &controls(&state));
+    assert_eq!(state.subpage, Some(crate::state::Subpage::TextSize));
+    assert_eq!(state.focus, Target::Choice(1));
+    state.direction(Direction::Up, &controls(&state));
+    assert_eq!(state.activate(), vec![Effect::Save]);
+    assert!(!state.preferences.larger_text);
+}

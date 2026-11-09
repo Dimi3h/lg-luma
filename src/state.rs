@@ -193,6 +193,8 @@ pub enum Subpage {
     Screensaver,
     /// Settings › General › Appearance: Dark, Light or Automatic.
     Appearance,
+    /// Settings › General › Text size: Default or Larger.
+    TextSize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -1368,6 +1370,7 @@ impl State {
             Some(Subpage::HiddenApps) => Target::Setting(11),
             Some(Subpage::Screensaver) => Target::Setting(12),
             Some(Subpage::Appearance) => Target::Setting(14),
+            Some(Subpage::TextSize) => Target::Setting(15),
             None => Target::Sidebar(self.section),
         };
         self.scroll = 0.;
@@ -1486,6 +1489,7 @@ impl State {
                     Some(Subpage::HiddenApps) => self.hidden_apps().len().max(1),
                     Some(Subpage::Screensaver) => SCREENSAVER_MINUTES.len(),
                     Some(Subpage::Appearance) => crate::model::Appearance::ALL.len(),
+                    Some(Subpage::TextSize) => 2,
                     Some(Subpage::DateFormat) => crate::model::DateFormat::ALL.len(),
                     _ => 3,
                 };
@@ -1573,7 +1577,7 @@ impl State {
             }
             if matches!(
                 self.focus,
-                Target::Setting(1 | 4 | 7 | 11 | 12 | 14)
+                Target::Setting(1 | 4 | 7 | 11 | 12 | 14 | 15)
                     | Target::Widget(0..=4)
                     | Target::InputMode(_)
                     | Target::WeatherLocation
@@ -2508,6 +2512,15 @@ impl State {
                         return vec![];
                     }
                     13 => self.preferences.screensaver_clock = !self.preferences.screensaver_clock,
+                    15 => {
+                        self.subpage = Some(Subpage::TextSize);
+                        self.scroll = 0.;
+                        self.focus = Target::Choice(usize::from(self.preferences.larger_text));
+                        if !self.preferences.reduced_motion {
+                            self.panel_started = Some(Instant::now());
+                        }
+                        return vec![];
+                    }
                     14 => {
                         self.subpage = Some(Subpage::Appearance);
                         self.scroll = 0.;
@@ -2639,6 +2652,7 @@ impl State {
                             Language::ALL[index.min(Language::ALL.len() - 1)];
                         self.weather.cancel_search();
                     }
+                    Some(Subpage::TextSize) => self.preferences.larger_text = index == 1,
                     Some(Subpage::Appearance) => {
                         let modes = crate::model::Appearance::ALL;
                         self.preferences.appearance = modes[index.min(modes.len() - 1)];

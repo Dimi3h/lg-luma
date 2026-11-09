@@ -1058,5 +1058,17 @@
   "appearanceAuto": {
     "en": "Automatic",
     "nl": "Automatisch"
+  },
+  "textSize": {
+    "en": "Text size",
+    "nl": "Tekstgrootte"
+  },
+  "textDefault": {
+    "en": "Default",
+    "nl": "Standaard"
+  },
+  "textLarger": {
+    "en": "Larger",
+    "nl": "Groter"
   }
 }

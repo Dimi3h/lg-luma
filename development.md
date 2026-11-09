@@ -488,6 +488,11 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   TV does not answer are left out; a refused change shows a quiet notice and re-reads the status.
   Back closes the panel. Desktop builds simulate the TV and never sleep. All of it is unverified on
   a TV.
+- **Text size** (Settings › General: Default or Larger): Larger scales every text style of
+  40 px and below (Headline, Callout, Body, Captions) by 1.15; titles keep their size. The scale
+  is applied in one place for measuring (`Assets::width`/`lines`, so fitting and ellipsis follow
+  it) and drawing (`Scene::text`, whose box grows around its vertical centre). The main screen
+  still fits three rows: the third row's focused caption ends near y 993, inside the safe area.
 - **Jiggle**: while a favourite is being moved, every favourite wobbles a little, each out of
   phase at about 3 Hz. As with the tilt there is no rotation primitive, so the face moves up to
   about 2 px and its logo layer about 4 px more, which reads as a small rotation. Hit regions

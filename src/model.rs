@@ -277,6 +277,8 @@ pub struct Preferences {
     pub screensaver_clock: bool,
     #[serde(deserialize_with = "deserialize_appearance")]
     pub appearance: Appearance,
+    /// Settings › General › Text size: Larger (about 1.15×) for body text.
+    pub larger_text: bool,
     pub hour_24: bool,
     pub reduced_motion: bool,
     pub show_seconds: bool,
@@ -323,6 +325,7 @@ impl Default for Preferences {
             screensaver_minutes: 10,
             screensaver_clock: true,
             appearance: Appearance::Dark,
+            larger_text: false,
             hour_24: false,
             reduced_motion: false,
             show_seconds: false,
