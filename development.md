@@ -150,20 +150,20 @@ Existing greeting, weather, shortcut and input preferences are unchanged. Scroll
 reserve 64 logical pixels below their last item for both remote focus and wheel scrolling,
 with a tighter 48-pixel spacing for Languages and Backgrounds.
 **Widgets → Greeting → Show widget** is the first row and hides only the greeting text, preserving the saved name,
-date and weather. Weather moves directly below the date when the greeting is hidden, without
-moving the grid or inputs. It defaults to enabled for existing and new installations.
+date and weather. Weather moves up beneath the clock line when the greeting is hidden, and the
+grid follows it. It defaults to enabled for existing and new installations.
 **Widgets → Date** contains **Show widget** (enabled by default) and **Date format**. Choose the
 existing localized weekday/month/day display (default), `DD.MM.YYYY`, `MM/DD/YYYY`, or `YYYY-MM-DD`.
-Choosing a format returns to its Date row; Back from Date restores its Widgets row. Hiding the
-date removes its reserved space above the greeting/weather and preserves the chosen format.
+Choosing a format returns to its Date row; Back from Date restores its Widgets row. The date
+shares the clock's line, so hiding it moves nothing; the chosen format is preserved.
 Lists render behind the fixed sidebar, navigation and background actions without viewport
 clipping; they fade out just above their first row, beneath the content title line that shows the
 section and subpage path (tvOS-style breadcrumbs). Pointer interaction and remote focus retain their
 safe content viewports, which start below that title line.
 The **Greeting** subpage contains **Name** and **Clear name**. Selecting Name opens the text keyboard
 (the system keyboard on the TV) and the name is appended to the Home greeting ("Good evening, Ana.").
-Long greetings scale down to fit their existing single-line area, centred vertically without
-moving the weather summary or the grid. Short greetings retain their original size.
+Long greetings scale down to fit their single-line area, centred vertically without moving the
+weather summary or the grid. Short greetings retain their original size.
 The keyboard starts empty; closing it without a name preserves the saved value. Clear name removes
 it. Preferences are saved when the keyboard closes, including automatic system-keyboard dismissal.
 Back from Greeting restores its Widgets row; App names returns to General. Input name removal
@@ -175,9 +175,9 @@ the same line, the greeting and one row of weather directly beneath) and under i
 grid of every app. Three rows of cards fit beneath the shelf inside the 80 × 60 safe area (the
 first row at y 266 with greeting and weather shown, the focused caption of the third ending at
 988), so up to 18 cards need no scrolling. Hiding the greeting or weather moves the grid up. There is no tab bar and no
-TV-settings button (the remote's own Settings button remains). The grid starts with a **Search**
-card, then the pinned favourites in their saved order, then every other visible app by title, and
-ends with a **Settings** card that opens Settings full screen. Pinning an app moves it into the
+TV-settings button (the remote's own Settings button remains). The grid starts with the
+pinned favourites in their saved order, then every other visible app by title, and ends with a
+**Settings** card that opens Settings full screen. Pinning an app moves it into the
 favourites block; unpinning moves it back. Reorder mode moves a favourite within that block; OK or
 Back finishes it without launching.
 
@@ -189,10 +189,11 @@ below the clock, collapsing (moving and dimming) the shelf; returning to the fir
 back (eased by `src/motion.rs`). Wheel scrolling moves the page directly. Pointer hover/down never moves the
 clicked control.
 
-The Search card opens the search keyboard; while a query is active its matches replace the grid
-(Search stays first, Settings last) and Back clears it, returning focus to Search. Search also
-finds hidden apps, dimmed and marked **Hidden**, which is how they are shown again (options →
-**Show app**). Category filters were removed.
+There is no app search (this fork removed it; with few apps the grid holds them all). Hidden apps
+leave the grid and are listed by title in **Settings → General → Hidden apps**, whose row shows how
+many there are; OK on one shows it on the main screen again, and an empty state explains the list
+when nothing is hidden. The keyboard remains for text fields such as the weather location.
+Category filters were removed.
 
 TV editing uses the system keyboard through SDL-webOS. Desktop editing uses the custom panel.
 
@@ -415,7 +416,7 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
 `src/view.rs`; motion lives in `src/motion.rs`.
 
 - **Layout**: an 80 × 60 safe area; six columns of 260 × 156 (5:3) cards with 40 between them and
-  100 between rows (pitch 300 × 256), holding Search, every app and Settings beneath the compact
+  100 between rows (pitch 300 × 256), holding every app and Settings beneath the compact
   top shelf; optional input cards form a row above the apps and count towards the three rows that
   fit without scrolling.
 - **Type**: the tvOS text styles with Inter instead of SF Pro. The bundled Inter 4.1 subset keeps
@@ -429,8 +430,7 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   2.5%, buttons 6%) with a large soft shadow, and a light rim appears (resting cards have none).
   A focused list row is drawn above its neighbours so its shadow falls over them. Focused rows and buttons turn
   opaque white with dark labels; selected items (the sidebar section, the background) stay
-  highlighted at their resting size; pressed items return to their resting size; hidden apps in
-  search results are dimmed and lose their shadow. Hit regions stay at the
+  highlighted at their resting size; pressed items return to their resting size. Hit regions stay at the
   unscaled rectangles; only drawing scales.
 - **Motion**: a gained focus lifts on a light spring (damping 0.76 at 34 rad/s: about 2.3%
   overshoot, at rest after about 200 ms); losing focus, scrolling (the main grid and shelf,
@@ -444,7 +444,7 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   upload worker writes `wallpaper-blur.jpg` and `original-blur.jpg` for uploads. Glass panels
   (`Scene::glass`) draw that copy at the same screen coordinates inside their rounded rectangle
   (`Draw::Backdrop`, one textured pass), add a soft highlight band along the top edge and a 1 px
-  edge (`Draw::Rim`) that is white (about 36%) at the top and faintly dark at the bottom. The Search and Settings cards, the
+  edge (`Draw::Rim`) that is white (about 36%) at the top and faintly dark at the bottom. The Settings card, the
   settings sidebar and rows, context menus, alerts, keyboard, notices and companion dialogs use it; menus, alerts and Recents put the blurred
   copy behind the whole stage. Uploads made before this change have no blurred copy and fall back
   to a dark translucent fill. App cards get a glassy rim that strengthens on focus. There is no
@@ -544,7 +544,7 @@ and the [UK streaming catalogue](https://github.com/tjeffree/webOS-Streaming-Agg
 These sources do not establish that every alias is available on every region/firmware combination.
 
 Every curated logo has an app in `demo_inventory()`, including all 27 expanded streaming/music
-brands. Open them with `pnpm dev --script apps`, then scroll or search the Apps grid. A unit check
+brands. Open them with `pnpm dev --script home` and scroll the grid. A unit check
 keeps the SVG directory, curated catalogue and demo inventory aligned. `pnpm test:brands` renders
 every card through the actual desktop renderer and writes `.build/brands-gallery.png` for visual
 review. Like the other smoke scripts, it uses isolated preferences and no TV or real weather API.

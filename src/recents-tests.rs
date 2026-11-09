@@ -209,7 +209,7 @@ fn back_dismissal_consumes_repeats_native_exit_and_release_without_quitting() {
         None
     );
     assert_eq!(state.page, Page::Home);
-    assert_eq!(state.focus, Target::Search);
+    assert_eq!(state.focus, Target::SettingsCard);
 }
 
 #[test]
@@ -495,7 +495,7 @@ fn failed_actions_keep_history_and_stale_replies_cannot_reopen_or_replace_a_sess
     let generation = state.recents.generation;
     state.recent_response(generation, Command::Launch("netflix".into()), Ok(None));
     assert!(!state.recents_open());
-    assert_eq!(state.focus, Target::Search);
+    assert_eq!(state.focus, Target::SettingsCard);
 }
 
 #[test]

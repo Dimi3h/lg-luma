@@ -29,7 +29,6 @@ struct Context {
     page: Page,
     section: usize,
     subpage: Option<Subpage>,
-    query: String,
 }
 
 #[derive(Default)]
@@ -56,7 +55,6 @@ pub struct Inputs<'a> {
     pub page: Page,
     pub section: usize,
     pub subpage: &'a Option<Subpage>,
-    pub query: &'a str,
     pub scroll: f32,
     pub reduced: bool,
     /// Wheel scrolling and pointer hover keep display and hit regions identical.
@@ -183,7 +181,6 @@ impl Motion {
             page: input.page,
             section: input.section,
             subpage: input.subpage.clone(),
-            query: input.query.to_owned(),
         };
         let switched = self.context.as_ref() != Some(&context);
         let page_switched = self
@@ -279,7 +276,6 @@ mod tests {
             page: Page::Home,
             section: 0,
             subpage,
-            query: "",
             scroll: 0.,
             reduced,
             pointer: false,
@@ -336,7 +332,7 @@ mod tests {
         motion.advance(&values, start + Duration::from_millis(16));
         let display = motion.scroll(300.);
         assert!(display > 0. && display < 300.);
-        values.query = "n";
+        values.section = 1;
         motion.advance(&values, start + Duration::from_millis(32));
         assert_eq!(motion.scroll(300.), 300.);
     }

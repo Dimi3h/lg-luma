@@ -407,10 +407,6 @@
     "en": "Location search is unavailable. Check your connection and try again.",
     "nl": "Locaties zoeken is niet beschikbaar. Controleer je verbinding en probeer het opnieuw."
   },
-  "search": {
-    "en": "Search",
-    "nl": "Zoeken"
-  },
   "focusTilt": {
     "en": "Focus tilt",
     "nl": "Kantelen bij focus"
@@ -418,10 +414,6 @@
   "favoriteBadges": {
     "en": "Favorite badges",
     "nl": "Hartje bij favorieten"
-  },
-  "findApp": {
-    "en": "Find an app",
-    "nl": "Zoek een app"
   },
   "clearCategory": {
     "en": "Clear category filter",
@@ -434,10 +426,6 @@
   "hidden": {
     "en": "Hidden ({count})",
     "nl": "Verborgen ({count})"
-  },
-  "noMatches": {
-    "en": "Nothing here. Yet.",
-    "nl": "Nog niets hier."
   },
   "noHidden": {
     "en": "No hidden apps.",
@@ -458,10 +446,6 @@
   "hiddenHint": {
     "en": "Apps you hide will appear here.",
     "nl": "Apps die je verbergt, verschijnen hier."
-  },
-  "noMatchesHint": {
-    "en": "No apps match “{query}”. Try another name.",
-    "nl": "Geen apps gevonden voor “{query}”. Probeer een andere naam."
   },
   "greetingNight": {
     "en": "One more moment.",
@@ -672,8 +656,8 @@
     "nl": "{app} staat weer in je bibliotheek."
   },
   "appHidden": {
-    "en": "{app} hidden. You can restore it from Apps.",
-    "nl": "{app} verborgen. Je kunt de app herstellen via Apps."
+    "en": "{app} hidden. Show it again in Settings › General › Hidden apps.",
+    "nl": "{app} verborgen. Je kunt de app weer tonen via Instellingen › Algemeen › Verborgen apps."
   },
   "refreshNotice": {
     "en": "Refreshing your apps and inputs…",
@@ -690,10 +674,6 @@
   "appOpenError": {
     "en": "This app couldn’t be opened.",
     "nl": "Deze app kon niet worden geopend."
-  },
-  "dismissSearch": {
-    "en": "Clear search",
-    "nl": "Zoekopdracht wissen"
   },
   "languageMenu": {
     "en": "Language",
@@ -994,5 +974,9 @@
   "tileEditorEnded": {
     "en": "Editing session ended",
     "nl": "Bewerkingssessie beëindigd"
+  },
+  "hiddenApps": {
+    "en": "Hidden apps",
+    "nl": "Verborgen apps"
   }
 }

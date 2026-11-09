@@ -23,22 +23,20 @@ fn ready() -> State {
 }
 
 #[test]
-fn home_relaunch_returns_from_search_and_settings() {
+fn home_relaunch_returns_from_scrolled_home_and_settings() {
     for page in [Page::Home, Page::Settings] {
         let mut state = ready();
         state.open(page);
-        state.query = "YouTube".into();
         state.scroll = 400.;
         state.subpage = Some(crate::state::Subpage::Clock);
         state.pointer = true;
-        state.pressed = Some(Target::Search);
+        state.pressed = Some(Target::SettingsCard);
         state.dirty = false;
 
         assert!(state.return_home().is_empty());
         assert_eq!(state.page, Page::Home);
         // The grid opens on the first favourite.
         assert_eq!(state.focus, Target::App("netflix".into()));
-        assert!(state.query.is_empty());
         assert_eq!(state.scroll, 0.);
         assert!(state.subpage.is_none());
         assert!(!state.pointer);
@@ -54,11 +52,11 @@ fn home_relaunch_dismisses_overlays_without_cancelling_mutations() {
     for overlay in [
         Overlay::Options {
             id: "test.app".into(),
-            restore: Target::Search,
+            restore: Target::SettingsCard,
         },
         Overlay::Delete {
             id: "test.app".into(),
-            restore: Target::Search,
+            restore: Target::SettingsCard,
         },
         Overlay::WallpaperUpload,
         Overlay::BackgroundOptions {
@@ -239,10 +237,13 @@ fn remote_routes_through_the_shelf_grid_and_settings() {
     assert_eq!(state.focus, Target::WeatherConfigure);
     state.direction(Direction::Down, &controls(&state));
     assert_eq!(state.focus, Target::App("netflix".into()));
+    // Netflix is the first card now that there is no Search card.
     state.direction(Direction::Left, &controls(&state));
-    assert_eq!(state.focus, Target::Search);
-    state.direction(Direction::Left, &controls(&state));
-    assert_eq!(state.focus, Target::Search, "Rows do not wrap");
+    assert_eq!(
+        state.focus,
+        Target::App("netflix".into()),
+        "Rows do not wrap"
+    );
     // Settings is the grid's last card and opens the Settings page.
     state.focus = Target::SettingsCard;
     assert!(state.activate().is_empty());
@@ -269,7 +270,7 @@ fn remote_routes_through_the_shelf_grid_and_settings() {
 fn up_and_down_follow_grid_indices_including_offscreen_rows() {
     let mut state = ready();
     let grid = state.grid();
-    assert_eq!(grid.first(), Some(&Target::Search));
+    assert_eq!(grid.first(), Some(&Target::App("netflix".into())));
     assert_eq!(grid.last(), Some(&Target::SettingsCard));
     for index in [1, 7, 13] {
         state.focus = grid[index].clone();
@@ -331,10 +332,10 @@ fn eighteen_cards_fit_in_three_rows_beneath_a_compact_shelf_without_scrolling() 
     let mut state = State::new(Preferences::default());
     state.preferences.reduced_motion = true;
     let mut inventory = demo_inventory();
-    inventory.apps.truncate(16);
+    inventory.apps.truncate(17);
     state.set_inventory(inventory, None);
     let grid = state.grid();
-    // Search, sixteen apps and Settings.
+    // Seventeen apps and Settings.
     assert_eq!(grid.len(), 18);
     for target in &grid {
         state.focus = target.clone();
@@ -380,7 +381,8 @@ fn eighteen_cards_fit_in_three_rows_beneath_a_compact_shelf_without_scrolling() 
 }
 
 #[test]
-fn hidden_apps_leave_the_grid_and_are_found_and_restored_through_search() {
+fn hidden_apps_leave_the_grid_and_return_from_settings_hidden_apps() {
+    use crate::state::Subpage;
     let mut state = ready();
     state.open(Page::Home);
     state.focus = Target::App("netflix".into());
@@ -390,19 +392,90 @@ fn hidden_apps_leave_the_grid_and_are_found_and_restored_through_search() {
     assert!(state.preferences.hidden.contains(&"netflix".into()));
     assert_eq!(state.focus, Target::App("youtube.leanback.v4".into()));
     assert!(!state.grid().contains(&Target::App("netflix".into())));
-    state.query = "netflix".into();
-    assert_eq!(state.apps().len(), 1);
-    assert_eq!(state.apps()[0].id, "netflix");
-    state.focus = Target::App("netflix".into());
-    state.options();
-    state.focus = Target::Option(1);
-    state.activate();
+    // The notice points to where hidden apps live now.
+    let notice = state.notice.clone().unwrap().0;
+    assert!(
+        notice.contains(state.preferences.language.t("hiddenApps")),
+        "{notice}"
+    );
+    // Settings › General › Hidden apps lists it; OK shows it again.
+    state.open(Page::Settings);
+    state.focus = Target::Setting(11);
+    assert!(
+        controls(&state)
+            .iter()
+            .any(|c| c.target == Target::Setting(11))
+    );
+    state.direction(Direction::Right, &controls(&state));
+    assert_eq!(state.subpage, Some(Subpage::HiddenApps));
+    assert_eq!(state.focus, Target::Choice(0));
+    let rendered = scene(&state);
+    assert!(
+        rendered.draw.iter().any(
+            |draw| matches!(draw, crate::renderer::Draw::Text(label, ..) if label == "Netflix")
+        )
+    );
+    assert_eq!(state.activate(), vec![Effect::Save]);
     assert!(state.preferences.hidden.is_empty());
-    assert_eq!(state.focus, Target::App("netflix".into()));
-    // Back clears the search and returns to the Search card.
+    assert!(state.grid().contains(&Target::App("netflix".into())));
+    // With nothing hidden the subpage shows its empty state, which holds focus.
+    assert_eq!(state.subpage, Some(Subpage::HiddenApps));
+    assert_eq!(state.focus, Target::Choice(0));
+    let empty = scene(&state);
+    let hint = state.preferences.language.t("hiddenHint");
+    assert!(
+        empty
+            .draw
+            .iter()
+            .any(|draw| matches!(draw, crate::renderer::Draw::Text(label, ..) if label == hint))
+    );
+    assert!(empty.controls.iter().any(|c| c.target == Target::Choice(0)));
+    assert!(
+        state.activate().is_empty(),
+        "The empty state does nothing on OK"
+    );
     assert!(state.back().is_empty());
-    assert!(state.query.is_empty());
-    assert_eq!(state.focus, Target::Search);
+    assert_eq!(state.subpage, None);
+    assert_eq!(state.focus, Target::Setting(11));
+}
+
+#[test]
+fn hidden_apps_lists_only_installed_hidden_apps_by_title_and_keeps_focus_in_the_list() {
+    use crate::state::Subpage;
+    let mut state = ready();
+    state.preferences.hidden = vec![
+        "youtube.leanback.v4".into(),
+        "netflix".into(),
+        "uninstalled.app".into(),
+    ];
+    let titles: Vec<_> = state
+        .hidden_apps()
+        .iter()
+        .map(|app| app.title.clone())
+        .collect();
+    assert_eq!(titles, ["Netflix", "YouTube"]);
+    state.open(Page::Settings);
+    state.focus = Target::Setting(11);
+    state.activate();
+    assert_eq!(state.subpage, Some(Subpage::HiddenApps));
+    state.direction(Direction::Down, &controls(&state));
+    assert_eq!(state.focus, Target::Choice(1));
+    state.activate();
+    // YouTube is shown again; focus stays on the remaining last row.
+    assert!(
+        !state
+            .preferences
+            .hidden
+            .contains(&"youtube.leanback.v4".into())
+    );
+    assert_eq!(state.focus, Target::Choice(0));
+    // The General row shows how many are hidden.
+    state.back();
+    let count = scene(&state)
+        .draw
+        .into_iter()
+        .any(|draw| matches!(draw, crate::renderer::Draw::Text(label, ..) if label == "1"));
+    assert!(count);
 }
 
 #[test]
@@ -436,27 +509,36 @@ fn reorder_persists_order_and_keeps_selected_identity() {
 }
 
 #[test]
-fn keyboard_is_modal_and_back_preserves_then_clears_search() {
+fn there_is_no_app_search_and_the_keyboard_stays_for_text_fields() {
     let mut state = ready();
     state.open(crate::state::Page::Home);
-    state.focus = Target::Search;
+    let home = controls(&state);
+    assert!(home.iter().all(|c| !matches!(c.target, Target::Key(_))));
+    assert_eq!(
+        home.iter()
+            .filter(|c| c.target == Target::SettingsCard)
+            .count(),
+        1
+    );
+    let search = state.preferences.language.t("search");
+    assert!(
+        !scene(&state)
+            .draw
+            .iter()
+            .any(|draw| matches!(draw, crate::renderer::Draw::Text(label, ..) if label == search))
+    );
+    // The weather location still uses the modal keyboard.
+    state.focus = Target::WeatherConfigure;
     state.activate();
+    assert!(state.text_input_active());
     assert!(
         controls(&state)
             .iter()
             .all(|c| matches!(c.target, Target::Key(_) | Target::CloseDialog))
     );
-    state.text("netflix");
+    state.text("wenen");
     state.delete();
-    state.text("x");
-    state.back();
-    assert_eq!(state.query, "netflix");
-    assert_eq!(state.focus, Target::Search);
-    assert_eq!(state.apps().len(), 1);
-    state.back();
-    assert!(state.query.is_empty());
-    assert_eq!(state.focus, Target::Search);
-    assert_eq!(state.page, Page::Home);
+    assert_eq!(state.editing_text(), "wene");
 }
 
 #[test]
@@ -468,8 +550,8 @@ fn partial_refresh_preserves_valid_inputs_and_never_invents_tv_apps() {
     );
     assert!(state.inventory.apps.is_empty());
     assert_eq!(state.inventory.inputs.len(), 3);
-    // Without TV apps the grid still opens on its Search card.
-    assert_eq!(state.first_content(), Target::Search);
+    // Without TV apps the grid still opens on its Settings card.
+    assert_eq!(state.first_content(), Target::SettingsCard);
 }
 
 #[test]
@@ -648,7 +730,7 @@ fn pointer_focus_does_not_scroll_the_clicked_control() {
     state.pointer_focus(Target::App("netflix".into()));
     assert_eq!(state.scroll, 150.);
     // Remote focus on the first row brings the shelf back.
-    state.focus(Target::Search, &controls(&state));
+    state.focus(Target::App("netflix".into()), &controls(&state));
     assert_eq!(state.scroll, 0.);
 }
 
@@ -1282,8 +1364,8 @@ fn opening_side_popup_preserves_card_artwork_geometry_with_or_without_captions()
                     .filter_map(|draw| match draw {
                         crate::renderer::Draw::Image(path, rect, ..)
                         | crate::renderer::Draw::TintedImage(path, rect, ..)
-                            // Netflix, the first favourite, is the grid's second card.
-                            if path.contains("heart-filled") && (350. ..700.).contains(&rect.x) =>
+                            // Netflix, the first favourite, is the grid's first card.
+                            if path.contains("heart-filled") && (60. ..350.).contains(&rect.x) =>
                         {
                             Some([rect.x, rect.y, rect.w, rect.h])
                         }
@@ -1564,7 +1646,6 @@ fn reduced_motion_disables_panel_wallpaper_and_notification_animation() {
 fn pinning_a_hidden_app_restores_it_and_leaves_hidden_when_empty() {
     let mut state = ready();
     state.open(crate::state::Page::Home);
-    state.query = "jellyfin".into();
     state.preferences.hidden.push("org.jellyfin.webos".into());
     state.focus = Target::App("org.jellyfin.webos".into());
     state.options();
@@ -2800,7 +2881,7 @@ fn clock_date_and_home_input_descriptions_use_tvos_text_styles() {
 fn one_screen_has_no_tab_bar_and_inputs_appear_only_when_enabled() {
     let mut state = ready();
     let rendered = scene(&state);
-    // No Home/Apps/Settings tabs or TV-settings button: Search first, Settings last.
+    // No Home/Apps/Settings tabs, TV-settings button or Search card: apps first, Settings last.
     for label in ["Home", "Apps"] {
         assert!(!rendered.draw.iter().any(|draw| matches!(draw,
             crate::renderer::Draw::Text(text, ..) if text == label)));
@@ -2808,14 +2889,9 @@ fn one_screen_has_no_tab_bar_and_inputs_appear_only_when_enabled() {
     let grid: Vec<_> = rendered
         .controls
         .iter()
-        .filter(|control| {
-            matches!(
-                control.target,
-                Target::Search | Target::App(_) | Target::SettingsCard
-            )
-        })
+        .filter(|control| matches!(control.target, Target::App(_) | Target::SettingsCard))
         .collect();
-    assert_eq!(grid.first().unwrap().target, Target::Search);
+    assert_eq!(grid.first().unwrap().target, Target::App("netflix".into()));
     assert_eq!(grid.last().unwrap().target, Target::SettingsCard);
     assert!(
         grid.iter().all(
@@ -2842,18 +2918,18 @@ fn one_screen_has_no_tab_bar_and_inputs_appear_only_when_enabled() {
         .iter()
         .find(|control| matches!(control.target, Target::Input(_)))
         .unwrap();
-    let search = with_inputs
+    let first_app = with_inputs
         .iter()
-        .find(|control| control.target == Target::Search)
+        .find(|control| control.target == Target::App("netflix".into()))
         .unwrap();
     assert_eq!(first_input.rect.y, view::grid_y(&state));
-    assert_eq!(search.rect.y, view::grid_y(&state) + view::ROW_PITCH);
+    assert_eq!(first_app.rect.y, view::grid_y(&state) + view::ROW_PITCH);
     // Up from the first app row enters the inputs in the same column.
-    state.focus = Target::Search;
+    state.focus = first_app.target.clone();
     state.direction(Direction::Up, &with_inputs);
     assert_eq!(state.focus, first_input.target);
     state.direction(Direction::Down, &with_inputs);
-    assert_eq!(state.focus, Target::Search);
+    assert_eq!(state.focus, first_app.target);
 }
 
 #[test]

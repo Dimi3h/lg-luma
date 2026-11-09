@@ -33,8 +33,8 @@ const configuration = {
 try {
   for (const [name, script] of [
     ['home', 'home'],
-    // The grid below the first row, with the top shelf scrolled away.
-    ['apps', 'home,down,down'],
+    // The grid below the third row, with the top shelf scrolled away.
+    ['apps', 'home,down,down,down'],
     ['settings', 'settings'],
     // Widgets lists Date, Greeting, Weather, Shortcuts, then Inputs.
     ['inputs', 'settings,down,down,enter,down,down,down,down,enter'],

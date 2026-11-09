@@ -399,20 +399,23 @@ fn script(
         }
         "wait" => vec![],
         action if action.starts_with("type:") => {
+            // Typing needs a text field: there is no app search on the main screen.
             let field = if state.text_input_active() {
-                state.keyboard_field
+                Some(state.keyboard_field)
             } else {
                 match state.subpage {
-                    Some(state::Subpage::Greeting) => state::TextField::Name,
-                    Some(state::Subpage::WeatherLocation) => state::TextField::Location,
-                    Some(state::Subpage::Input(_)) => state::TextField::InputName,
-                    _ => state::TextField::Apps,
+                    Some(state::Subpage::Greeting) => Some(state::TextField::Name),
+                    Some(state::Subpage::WeatherLocation) => Some(state::TextField::Location),
+                    Some(state::Subpage::Input(_)) => Some(state::TextField::InputName),
+                    _ => None,
                 }
             };
-            if !state.text_input_active() {
-                state.open_keyboard(field);
+            if let Some(field) = field {
+                if !state.text_input_active() {
+                    state.open_keyboard(field);
+                }
+                state.text(&action[5..]);
             }
-            state.text(&action[5..]);
             vec![]
         }
         "await-search" => vec![],
@@ -1095,7 +1098,7 @@ fn run() -> Result<(), String> {
                             .filter_map(|app| app.icon.clone()),
                     );
                     if initial_focus
-                        && state.focus == Target::Search
+                        && state.focus == Target::SettingsCard
                         && state.page == state::Page::Home
                     {
                         state.focus = state.first_content();
@@ -1862,7 +1865,7 @@ fn run() -> Result<(), String> {
         return Err("Frame budget ended before the input script completed".into());
     }
     if let Some(path) = options.dump {
-        let state = serde_json::json!({ "page": state.page, "focus": state.focus, "query": state.query,
+        let state = serde_json::json!({ "page": state.page, "focus": state.focus,
             "preferences": state.preferences, "apps": state.apps().iter().map(|a| &a.id).collect::<Vec<_>>(),
             "update_status": state.update_status, "available_update": state.available_update,
             "error": state.error, "scroll": state.scroll, "subpage": state.subpage, "modal": state.overlay.is_some(), "weather": state.weather,

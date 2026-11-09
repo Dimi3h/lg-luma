@@ -146,23 +146,27 @@ try {
   assert.ok(hidden.preferences.hidden.includes('netflix'));
   assert.deepEqual(hidden.focus, { App: 'youtube.leanback.v4' });
   assert.ok(!hidden.apps.includes('netflix'), 'Hidden apps leave the grid');
-  // Reload from disk, find the hidden Netflix through Search, and show it again.
-  const restored = await scenario('restored', 'home,type:netflix,back,right,menu,down,down,enter');
+  // Reload from disk and show the hidden Netflix again from Settings › General › Hidden apps.
+  const hiddenAppsPage = 'settings,enter,down,down,down,down,down,down,enter';
+  const hiddenList = await scenario('hidden-apps', hiddenAppsPage);
+  assert.equal(hiddenList.subpage, 'HiddenApps');
+  assert.deepEqual(hiddenList.focus, { Choice: 0 });
+  assert.ok(hiddenList.ui_text.includes('Netflix'));
+  const restored = await scenario('restored', `${hiddenAppsPage},enter`);
   assert.deepEqual(restored.preferences.hidden, []);
-  const searched = await scenario('search', 'home,type:YouTube,back');
-  assert.equal(searched.query, 'YouTube');
-  assert.deepEqual(searched.apps, ['youtube.leanback.v4']);
-  for (const [id, title] of [
-    ['coupangplay', 'Coupang Play'],
-    ['com.frograms.watchaplay.webos', 'Watcha Play'],
-    ['pooq', 'Wavve'],
-    ['com.cmb.rainbowtv', 'Rainbow TV'],
-    ['com.lgtvod.kr.app', 'LG TV VOD'],
-  ]) {
-    const koreanApp = await scenario(`korean-${id}`, `home,type:${title},back,right`);
-    assert.deepEqual(koreanApp.apps, [id]);
-    assert.ok(koreanApp.ui_text.includes(title));
-  }
+  assert.ok(restored.ui_text.includes('No hidden apps.'), 'The empty state follows');
+  const noSearch = await scenario('no-search', 'home,type:YouTube');
+  assert.ok(!noSearch.ui_text.includes('Search'), 'There is no Search card');
+  assert.equal(noSearch.modal, false, 'Typing on the main screen opens no keyboard');
+  assert.ok(noSearch.apps.includes('netflix') && noSearch.apps.length > 1);
+  for (const id of [
+    'coupangplay',
+    'com.frograms.watchaplay.webos',
+    'pooq',
+    'com.cmb.rainbowtv',
+    'com.lgtvod.kr.app',
+  ])
+    assert.ok(noSearch.apps.includes(id), `${id} is in the grid`);
   const settings = await scenario('settings', 'settings,down,enter,down,enter,enter');
   assert.equal(settings.preferences.background, 'forest');
   const saved = await scenario('saved', 'home,hold,right,back');
@@ -223,7 +227,8 @@ try {
   assert.equal(inputs.preferences.show_inputs, false);
   const inputCards = await scenario('inputs-shown', `${inputsPage},enter,home,up`);
   assert.equal(inputCards.preferences.show_inputs, true);
-  assert.deepEqual(inputCards.focus, { Input: 'com.webos.app.hdmi2' });
+  // Up from the first app (column one, now that there is no Search card) enters HDMI 1.
+  assert.deepEqual(inputCards.focus, { Input: 'com.webos.app.hdmi1' });
   const inputsHidden = await scenario('inputs-hidden', `${inputsPage},enter,home,up`);
   assert.equal(inputsHidden.preferences.show_inputs, false);
   assert.equal(inputsHidden.focus, 'WeatherConfigure');
@@ -495,14 +500,16 @@ try {
     preferences,
     JSON.stringify({ favorites: edgeFavorites, show_weather: false }),
   );
-  // Second row, first column: the grid's seventh card (after Search and five favourites).
-  const secondRow = await scenario('grid-second-row-click', 'home,click:210:854');
-  assert.deepEqual(secondRow.focus, { App: edgeFavorites[5] });
+  // Second row, first column: the grid's seventh card (y 484 beneath the greeting).
+  const secondRow = await scenario('grid-second-row-click', 'home,click:210:560');
+  assert.deepEqual(secondRow.focus, { App: edgeFavorites[6] });
   assert.equal(secondRow.scroll, 0, 'Clicking a card must not move it');
-  const scrolledClick = await scenario('grid-scrolled-click', 'home,down,down,click:510:248');
-  assert.ok(scrolledClick.scroll > 0, 'Focus below the first row scrolls the shelf away');
+  const thirdRow = await scenario('grid-third-row', 'home,down,down');
+  assert.equal(thirdRow.scroll, 0, 'Three rows fit beneath the shelf without scrolling');
+  const scrolledClick = await scenario('grid-scrolled-click', 'home,down,down,down,click:510:248');
+  assert.ok(scrolledClick.scroll > 0, 'Focus below the third row scrolls the shelf away');
   assert.ok(scrolledClick.focus.App, 'The visible card under the pointer takes focus');
-  const scrolledBack = await scenario('grid-shelf-returns', 'home,down,down,up,up');
+  const scrolledBack = await scenario('grid-shelf-returns', 'home,down,down,down,up,up,up');
   assert.equal(scrolledBack.scroll, 0, 'The first row brings the shelf back');
   await fs.writeFile(preferences, JSON.stringify({ show_weather: false }));
   const gradientDisabled = await scenario(

@@ -30,7 +30,7 @@ pub const CYCLE_FADE: f32 = 1.6;
 fn is_grid_card(target: &Target) -> bool {
     matches!(
         target,
-        Target::App(_) | Target::Input(_) | Target::Search | Target::SettingsCard
+        Target::App(_) | Target::Input(_) | Target::SettingsCard
     )
 }
 
@@ -58,8 +58,6 @@ pub enum Target {
     RecentRetry,
     App(String),
     Input(String),
-    /// The grid's Search card, which opens the search keyboard.
-    Search,
     /// The grid's last card, which opens Settings.
     SettingsCard,
     Sidebar(usize),
@@ -163,11 +161,12 @@ pub enum Subpage {
     Temperature,
     Language,
     TextRendering,
+    /// Settings › General › Hidden apps: hidden apps as rows, OK shows one again.
+    HiddenApps,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub enum TextField {
-    Apps,
     Location,
     Name,
     InputName,
@@ -213,7 +212,6 @@ pub struct State {
     pub focus: Target,
     pub inventory: Inventory,
     pub preferences: Preferences,
-    pub query: String,
     pub section: usize,
     pub subpage: Option<Subpage>,
     pub scroll: f32,
@@ -258,10 +256,9 @@ impl State {
     pub fn new(preferences: Preferences) -> Self {
         Self {
             page: Page::Home,
-            focus: Target::Search,
+            focus: Target::SettingsCard,
             inventory: Inventory::default(),
             preferences,
-            query: String::new(),
             section: 0,
             subpage: None,
             scroll: 0.,
@@ -290,7 +287,7 @@ impl State {
             update: crate::update::InstallStatus::default(),
             panel_started: None,
             weather: weather::Weather::default(),
-            keyboard_field: TextField::Apps,
+            keyboard_field: TextField::Location,
             greeting_name_draft: String::new(),
             input_name: String::new(),
             recents: crate::recents::Recents::default(),
@@ -304,7 +301,6 @@ impl State {
             page: self.page,
             section: self.section,
             subpage: &self.subpage,
-            query: &self.query,
             scroll: self.scroll,
             reduced: self.preferences.reduced_motion,
             pointer: self.pointer,
@@ -322,7 +318,7 @@ impl State {
     pub fn note_focus_rect(&mut self, controls: &[Control]) {
         let card = matches!(
             self.focus,
-            Target::App(_) | Target::Input(_) | Target::Search | Target::SettingsCard
+            Target::App(_) | Target::Input(_) | Target::SettingsCard
         );
         let rect = card
             .then(|| controls.iter().find(|control| control.target == self.focus))
@@ -503,7 +499,6 @@ impl State {
         self.weather.cancel_search();
         self.page = page;
         self.scroll = 0.;
-        self.query.clear();
         self.overlay = None;
         self.moving = None;
         self.subpage = None;
@@ -516,23 +511,14 @@ impl State {
     }
 
     /// The main grid's apps: pinned favourites in their saved order, then every other visible
-    /// app by title. While searching, every app whose title matches, hidden ones included
-    /// (search is how hidden apps are found and shown again), favourites first.
+    /// app by title. Hidden apps are listed in Settings › General › Hidden apps instead.
     pub fn apps(&self) -> Vec<&App> {
         let ids = self.preferences.favorites(&self.inventory.apps);
-        let hidden = |app: &App| self.preferences.hidden.contains(&app.id);
-        let query = self.query.to_lowercase();
         let mut apps: Vec<_> = self
             .inventory
             .apps
             .iter()
-            .filter(|app| {
-                if query.is_empty() {
-                    !hidden(app)
-                } else {
-                    app.title.to_lowercase().contains(&query)
-                }
-            })
+            .filter(|app| !self.preferences.hidden.contains(&app.id))
             .collect();
         apps.sort_by(|a, b| {
             let rank = |app: &App| {
@@ -547,9 +533,21 @@ impl State {
         apps
     }
 
-    /// Every focusable grid card in order: Search, the apps, then Settings.
+    /// Hidden apps that are still installed, by title (Settings › General › Hidden apps).
+    pub fn hidden_apps(&self) -> Vec<&App> {
+        let mut apps: Vec<_> = self
+            .inventory
+            .apps
+            .iter()
+            .filter(|app| self.preferences.hidden.contains(&app.id))
+            .collect();
+        apps.sort_by_key(|app| app.title.to_lowercase());
+        apps
+    }
+
+    /// Every focusable grid card in order: the apps, then Settings.
     pub fn grid(&self) -> Vec<Target> {
-        let mut grid = vec![Target::Search];
+        let mut grid = Vec::new();
         grid.extend(
             self.apps()
                 .into_iter()
@@ -744,15 +742,15 @@ impl State {
         }
     }
 
-    /// Where focus lands when a page opens: the first favourite (the grid's second card,
-    /// after Search) on the main screen, General in Settings.
+    /// Where focus lands when a page opens: the first favourite (the grid's first card) on the
+    /// main screen, General in Settings.
     pub fn first_content(&self) -> Target {
         match self.page {
             Page::Home if self.inventory_failed_empty() => Target::Retry,
             Page::Home => self
                 .apps()
                 .first()
-                .map_or(Target::Search, |app| Target::App(app.id.clone())),
+                .map_or(Target::SettingsCard, |app| Target::App(app.id.clone())),
             Page::Settings => Target::Sidebar(0),
         }
     }
@@ -771,7 +769,7 @@ impl State {
                 .iter()
                 .position(|input| &input.id == id)
                 .is_some_and(|index| index < APPS_COLUMNS),
-            Target::App(_) | Target::Search | Target::SettingsCard => self
+            Target::App(_) | Target::SettingsCard => self
                 .grid()
                 .iter()
                 .position(|item| item == target)
@@ -1076,6 +1074,7 @@ impl State {
             }
             Some(Subpage::Language) => Target::Setting(4),
             Some(Subpage::TextRendering) => Target::Setting(7),
+            Some(Subpage::HiddenApps) => Target::Setting(11),
             None => Target::Sidebar(self.section),
         };
         self.scroll = 0.;
@@ -1186,6 +1185,8 @@ impl State {
                         | Subpage::TextRendering,
                     ) => 2,
                     Some(Subpage::Language) => Language::ALL.len(),
+                    // Without hidden apps the empty state holds focus.
+                    Some(Subpage::HiddenApps) => self.hidden_apps().len().max(1),
                     Some(Subpage::DateFormat) => crate::model::DateFormat::ALL.len(),
                     _ => 3,
                 };
@@ -1273,7 +1274,7 @@ impl State {
             }
             if matches!(
                 self.focus,
-                Target::Setting(1 | 4 | 7)
+                Target::Setting(1 | 4 | 7 | 11)
                     | Target::Widget(_)
                     | Target::InputMode(_)
                     | Target::WeatherLocation
@@ -1674,7 +1675,6 @@ impl State {
     pub fn hold(&mut self) {
         if self.page == Page::Home
             && self.overlay.is_none()
-            && self.query.is_empty()
             && let Target::App(id) = &self.focus
             && self
                 .preferences
@@ -1720,15 +1720,7 @@ impl State {
                         .take(INPUT_NAME_LIMIT.saturating_sub(length)),
                 );
                 self.dirty = true;
-                return;
             }
-            self.query.extend(
-                text.chars()
-                    .filter(|c| !c.is_control())
-                    .take(120usize.saturating_sub(self.query.chars().count())),
-            );
-            self.scroll = 0.;
-            self.dirty = true;
         }
     }
 
@@ -1742,8 +1734,6 @@ impl State {
                 self.greeting_name_draft.pop();
             } else if self.keyboard_field == TextField::InputName {
                 self.input_name.pop();
-            } else {
-                self.query.pop();
             }
             self.dirty = true;
         }
@@ -1879,9 +1869,6 @@ impl State {
             self.greeting_name_draft = query;
         } else if self.keyboard_field == TextField::InputName {
             self.input_name = query;
-        } else {
-            self.query = query;
-            self.scroll = 0.;
         }
         self.dirty = true;
     }
@@ -1891,7 +1878,6 @@ impl State {
             TextField::Location => &self.weather.query,
             TextField::Name => &self.greeting_name_draft,
             TextField::InputName => &self.input_name,
-            TextField::Apps => &self.query,
         }
     }
     pub fn open_keyboard(&mut self, field: TextField) {
@@ -1914,7 +1900,6 @@ impl State {
                 TextField::Location => Target::WeatherQuery,
                 TextField::Name => Target::GreetingName,
                 TextField::InputName => Target::InputRename,
-                TextField::Apps => Target::Search,
             };
             self.panel_started = None;
             self.dirty = true;
@@ -1942,7 +1927,6 @@ impl State {
             TextField::Location => Target::WeatherSearch,
             TextField::Name => Target::GreetingName,
             TextField::InputName => Target::InputRename,
-            TextField::Apps => Target::Search,
         }
     }
 
@@ -1998,9 +1982,6 @@ impl State {
                     }
                     return vec![Effect::Launch(id)];
                 }
-            }
-            Target::Search => {
-                self.open_keyboard(TextField::Apps);
             }
             Target::WeatherConfigure => {
                 self.open(Page::Settings);
@@ -2184,6 +2165,15 @@ impl State {
                     2 => self.preferences.reduced_motion = !self.preferences.reduced_motion,
                     8 => self.preferences.focus_tilt = !self.preferences.focus_tilt,
                     10 => self.preferences.favorite_badges = !self.preferences.favorite_badges,
+                    11 => {
+                        self.subpage = Some(Subpage::HiddenApps);
+                        self.scroll = 0.;
+                        self.focus = Target::Choice(0);
+                        if !self.preferences.reduced_motion {
+                            self.panel_started = Some(Instant::now());
+                        }
+                        return vec![];
+                    }
                     4 => {
                         self.subpage = Some(Subpage::Language);
                         self.focus = Target::Choice(self.preferences.language.index());
@@ -2296,6 +2286,25 @@ impl State {
                         self.preferences.language =
                             Language::ALL[index.min(Language::ALL.len() - 1)];
                         self.weather.cancel_search();
+                    }
+                    Some(Subpage::HiddenApps) => {
+                        // Showing an app again keeps the list open on the next hidden app.
+                        let Some((id, title)) = self
+                            .hidden_apps()
+                            .get(index)
+                            .map(|app| (app.id.clone(), app.title.clone()))
+                        else {
+                            return vec![];
+                        };
+                        self.preferences.hidden.retain(|hidden| hidden != &id);
+                        let remaining = self.hidden_apps().len();
+                        self.focus = Target::Choice(index.min(remaining.saturating_sub(1)));
+                        self.notify(
+                            self.preferences
+                                .language
+                                .format("appRestored", &[("app", &title)]),
+                        );
+                        return vec![Effect::Save];
                     }
                     Some(Subpage::TextRendering) => {
                         let mode = TextRendering::ALL[index.min(TextRendering::ALL.len() - 1)];
@@ -2435,7 +2444,6 @@ impl State {
                     TextField::Location => self.weather.edit(String::new()),
                     TextField::Name => self.greeting_name_draft.clear(),
                     TextField::InputName => self.input_name.clear(),
-                    TextField::Apps => self.query.clear(),
                 },
                 "Done" => {
                     self.overlay = None;
@@ -2517,13 +2525,6 @@ impl State {
             } else {
                 self.focus = Target::Sidebar(self.section);
             }
-            self.scroll = 0.;
-            return vec![];
-        }
-        if !self.query.is_empty() {
-            // Search results replace the grid; Back restores it with Search focused.
-            self.query.clear();
-            self.focus = Target::Search;
             self.scroll = 0.;
             return vec![];
         }

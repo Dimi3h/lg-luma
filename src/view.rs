@@ -1407,23 +1407,10 @@ fn home(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
     let apps = state.apps();
     let favorites = state.preferences.favorites(&state.inventory.apps);
     let names = state.preferences.show_app_names;
-    let searching = !state.query.is_empty();
-    system_card(
-        out,
-        state,
-        assets,
-        Target::Search,
-        card_rect(0, grid_y),
-        "search",
-        &if searching {
-            format!("“{}”", state.query)
-        } else {
-            language.t("search").to_owned()
-        },
-    );
     let loading = state.loading && state.inventory.apps.is_empty();
     let error = state.inventory_failed_empty();
     if loading {
+        // The Settings card comes first while there are no apps yet.
         for index in 1..APPS_COLUMNS {
             out.shape(card_rect(index, grid_y), CARD_RADIUS, c(0xffffff, 0.06));
         }
@@ -1434,12 +1421,12 @@ fn home(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
             state,
             assets,
             app,
-            card_rect(index + 1, grid_y),
+            card_rect(index, grid_y),
             names,
-            !searching && favorites.contains(&app.id),
+            favorites.contains(&app.id),
         );
     }
-    let last = apps.len() + 1;
+    let last = apps.len();
     system_card(
         out,
         state,
@@ -1451,30 +1438,19 @@ fn home(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
     );
     // Without apps (a failed inventory, or a search without matches), explain beneath the
     // grid's cards.
-    if (error || (searching && apps.is_empty())) && !loading {
-        let hint = state
-            .error
-            .clone()
-            .unwrap_or_else(|| language.format("noMatchesHint", &[("query", &state.query)]));
+    // Without apps after a failed inventory, explain beneath the grid's cards.
+    if error && !loading {
+        let hint = state.error.clone().unwrap_or_default();
         empty(
             out,
             state,
             assets,
             EmptyState {
-                rect: Rect::new(
-                    SAFE_X,
-                    grid_y + ROW_PITCH,
-                    1760.,
-                    if error { 264. } else { 200. },
-                ),
-                icon: if error { "alert" } else { "search" },
-                title: if error {
-                    language.t("aLittleHelp")
-                } else {
-                    language.t("noMatches")
-                },
+                rect: Rect::new(SAFE_X, grid_y + ROW_PITCH, 1760., 264.),
+                icon: "alert",
+                title: language.t("aLittleHelp"),
                 hint: &hint,
-                action: error.then_some(Target::Retry),
+                action: Some(Target::Retry),
             },
         );
     }
@@ -1482,8 +1458,8 @@ fn home(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
     out.shift(content_start, 0., s - state.display_scroll());
 }
 
-/// Search and Settings as grid cards, as tvOS shows them on its Home Screen: a glass face
-/// with a large glyph and the name, lifting like an app card when focused.
+/// Settings as a grid card, as tvOS shows it on its Home Screen: a glass face with a large
+/// glyph and the name, lifting like an app card when focused.
 fn system_card(
     out: &mut Scene,
     state: &State,
@@ -2357,6 +2333,7 @@ fn settings_path(state: &State) -> Vec<&str> {
         Some(Subpage::Clock) => vec![language.t("clock")],
         Some(Subpage::Language) => vec![language.t("language")],
         Some(Subpage::TextRendering) => vec![language.t("textRendering")],
+        Some(Subpage::HiddenApps) => vec![language.t("hiddenApps")],
         None => vec![],
     };
     let mut path = vec![section];
@@ -2492,6 +2469,49 @@ fn settings_sidebar(out: &mut Scene, state: &State, assets: &Assets) {
     }
 }
 
+/// Settings › General › Hidden apps: one row per hidden app; OK shows it on the main screen
+/// again. Without hidden apps an empty state explains where they come from.
+fn hidden_apps_settings(out: &mut Scene, state: &State, assets: &Assets) {
+    let language = state.preferences.language;
+    let s = state.scroll;
+    let apps = state.hidden_apps();
+    if apps.is_empty() {
+        let rect = settings_rect(SETTINGS_TOP - s, 240.);
+        empty(
+            out,
+            state,
+            assets,
+            EmptyState {
+                rect,
+                icon: "eye-off",
+                title: language.t("noHidden"),
+                hint: language.t("hiddenHint"),
+                action: None,
+            },
+        );
+        // The empty state holds focus, so Back and Left behave as on any subpage.
+        out.control(Target::Choice(0), rect, false);
+        return;
+    }
+    for (index, app) in apps.iter().enumerate() {
+        row(
+            out,
+            state,
+            assets,
+            Row {
+                target: Target::Choice(index),
+                rect: settings_rect(SETTINGS_TOP + index as f32 * (ROW_H + ROW_GAP) - s, ROW_H),
+                title: &app.title,
+                icon: None,
+                value: Some(language.t("showApp")),
+                description: None,
+                selected: false,
+                chevron: false,
+            },
+        );
+    }
+}
+
 fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
     let language = state.preferences.language;
     let s = state.scroll;
@@ -2506,8 +2526,10 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                 | Subpage::Greeting
                 | Subpage::Date
                 | Subpage::Clock
+                | Subpage::HiddenApps
         ) {
             match subpage {
+                Subpage::HiddenApps => hidden_apps_settings(out, state, assets),
                 Subpage::WeatherLocation => location_settings(out, state, assets),
                 Subpage::Weather => weather_settings(out, state, assets),
                 Subpage::Shortcuts => shortcut_settings(out, state, assets),
@@ -2584,7 +2606,8 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
             | Subpage::Inputs
             | Subpage::Greeting
             | Subpage::Date
-            | Subpage::Clock => {
+            | Subpage::Clock
+            | Subpage::HiddenApps => {
                 unreachable!()
             }
             Subpage::Language => Language::ALL
@@ -2640,6 +2663,7 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
     }
     match state.section {
         0 => {
+            let hidden = state.hidden_apps().len().to_string();
             for (position, (index, key, icon, value, chevron)) in [
                 (
                     0,
@@ -2687,6 +2711,7 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                     }),
                     false,
                 ),
+                (11, "hiddenApps", "eye-off", Some(hidden.as_str()), true),
             ]
             .into_iter()
             .enumerate()
@@ -3793,7 +3818,6 @@ fn keyboard(out: &mut Scene, state: &State, assets: &Assets) {
             TextField::Location => language.t("cityPostcode"),
             TextField::Name => language.t("greetingName"),
             TextField::InputName => language.t("inputName"),
-            TextField::Apps => language.t("findApp"),
         },
         Rect::new(panel.x + 40., panel.y + 32., 1000., 56.),
         TITLE3,

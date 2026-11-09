@@ -216,7 +216,7 @@ fn polling_only_runs_on_visible_focused_tv_input_screens_outside_interactions() 
     assert!(!active(&state));
     state.loading = false;
     state.overlay = Some(Overlay::Recents {
-        restore: Target::Search,
+        restore: Target::SettingsCard,
     });
     assert!(!active(&state));
     state.overlay = None;
