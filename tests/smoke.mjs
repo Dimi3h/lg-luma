@@ -85,7 +85,8 @@ try {
   assert.ok(!recents.ui_text.includes('Recent apps'));
   assert.ok(!recents.ui_text.includes('Pick up where you left off.'));
   assert.ok(!recents.ui_text.includes('Desktop preview · Sample history'));
-  assert.ok(!recents.ui_text.includes('Netflix'));
+  // As in the tvOS app switcher, only the focused card is titled.
+  assert.ok(recents.ui_text.includes('Netflix'));
   assert.ok(!recents.ui_text.includes('YouTube'));
   assert.ok(!recents.ui_text.includes('1 / 8'));
   assert.ok(!recents.ui_text.includes('Close all'));
@@ -147,10 +148,11 @@ try {
   const hidden = await scenario('apps', 'apps,down,enter,down,down,enter');
   assert.ok(hidden.preferences.hidden.includes('netflix'));
   assert.deepEqual(hidden.focus, { App: 'youtube.leanback.v4' });
-  // Reload from disk, find Netflix in Hidden, and restore it.
+  // Reload from disk, find Netflix in Hidden, and restore it. Up from the grid returns to the
+  // selected segment ("All"), so Hidden is five segments to the right.
   const restored = await scenario(
     'restored',
-    'apps,down,up,right,right,right,right,enter,down,enter,down,down,enter',
+    'apps,down,up,right,right,right,right,right,enter,down,enter,down,down,enter',
   );
   assert.deepEqual(restored.preferences.hidden, []);
   const searched = await scenario('search', 'apps,type:YouTube,back');
@@ -214,7 +216,7 @@ try {
     'settings,down,down,enter,up,enter,enter',
   );
   assert.equal(bundledRestored.preferences.background, 'forest');
-  const clock = await scenario('clock', 'settings,click:900:284');
+  const clock = await scenario('clock', 'settings,click:900:370');
   assert.equal(clock.subpage, 'Clock');
   assert.equal(clock.focus, 'ClockFormat');
   assert.ok(clock.ui_text.includes('Clock format'));
@@ -327,12 +329,16 @@ try {
   assert.equal(appNames.preferences.show_app_names, true);
   const customNames = await scenario(
     'home-names-enabled',
-    `${appNamesEditor},enter,down,enter,back,home`,
+    `${appNamesEditor},enter,down,enter,back,home,down`,
   );
   assert.equal(customNames.preferences.show_home_names, true);
   assert.equal(customNames.preferences.show_app_names, false);
-  assert.ok(customNames.ui_text.includes('Netflix'));
-  const hiddenNames = await scenario('app-names-disabled', 'apps');
+  // tvOS captions only the focused card (the first favorite; an earlier scenario reordered).
+  assert.equal(
+    ['Netflix', 'YouTube'].filter((title) => customNames.ui_text.includes(title)).length,
+    1,
+  );
+  const hiddenNames = await scenario('app-names-disabled', 'apps,down');
   assert.equal(hiddenNames.preferences.show_app_names, false);
   assert.ok(!hiddenNames.ui_text.includes('Netflix'));
 
@@ -494,18 +500,15 @@ try {
     preferences,
     JSON.stringify({ favorites: edgeFavorites, show_weather: false }),
   );
-  const edgeRight = await scenario('favorites-edge-right', 'home,click:1860:600');
+  const edgeRight = await scenario('favorites-edge-right', 'home,click:1895:600');
   assert.deepEqual(edgeRight.focus, { App: edgeFavorites[6] });
   assert.equal(edgeRight.home_scroll, 0, 'Clicking the fragment must not move it');
   const edgeLeft = await scenario(
     'favorites-edge-left',
-    `home,down,${Array(6).fill('right').join(',')},click:40:600`,
+    `home,down,${Array(6).fill('right').join(',')},click:20:600`,
   );
   assert.deepEqual(edgeLeft.focus, { App: edgeFavorites[0] });
-  assert.ok(
-    Math.abs(edgeLeft.home_scroll - 281.6) < 0.01,
-    'Pointer focus preserves strip position',
-  );
+  assert.ok(Math.abs(edgeLeft.home_scroll - 300) < 0.01, 'Pointer focus preserves strip position');
   await fs.writeFile(preferences, JSON.stringify({ show_weather: false }));
   const gradientDisabled = await scenario(
     'wallpaper-gradient-disabled',

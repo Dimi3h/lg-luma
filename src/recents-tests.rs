@@ -333,10 +333,11 @@ fn recents_has_only_cards_without_action_buttons_or_footer() {
     );
     assert!(scene.draw.iter().all(|draw| !matches!(draw,
         Draw::Text(value, ..) if value == "1 / 8" || value.contains("Close app") || value.contains("OK  Open"))));
-    assert!(
-        scene.draw.iter().all(|draw| !matches!(draw,
-        Draw::Text(value, ..) if value == "Netflix" || value == "YouTube" || value == "Close all"))
-    );
+    // Like the tvOS app switcher, only the focused card is titled.
+    assert!(scene.draw.iter().any(|draw| matches!(draw,
+        Draw::Text(value, ..) if value == "Netflix")));
+    assert!(scene.draw.iter().all(|draw| !matches!(draw,
+        Draw::Text(value, ..) if value == "YouTube" || value == "Close all")));
     assert!(
         scene
             .controls
@@ -739,7 +740,7 @@ fn netflix_logo(state: &State) -> crate::state::Rect {
 }
 
 #[test]
-fn stacked_cards_hit_the_front_card_in_overlaps_and_rear_cards_only_where_exposed() {
+fn row_cards_hit_the_focused_card_and_smaller_neighbours_beside_it() {
     let mut state = ready();
     state.preferences.reduced_motion = true;
     state.open_recents();
@@ -747,7 +748,8 @@ fn stacked_cards_hit_the_front_card_in_overlaps_and_rear_cards_only_where_expose
     let front = recent_bounds(&state, "netflix");
     let rear = recent_bounds(&state, "youtube.leanback.v4");
     assert!(rear.w < front.w && rear.h < front.h);
-    assert!(rear.x < front.x + front.w);
+    // One row without overlap: the neighbour starts after the focused card.
+    assert!(rear.x > front.x + front.w);
     let controls = controls(&state);
     assert_eq!(
         state.hit_test(&controls, 1200., 540.),
@@ -792,13 +794,13 @@ fn closing_lifts_the_card_and_fills_its_slot_without_a_refresh_jump() {
     advance_recents(&mut state, 80);
     let entering = recent_bounds(&state, "youtube.leanback.v4");
     assert!(entering.x < before_next.x);
-    assert!(entering.w > before_next.w && entering.w < 900.);
+    assert!(entering.w > before_next.w && entering.w < 840.);
     for _ in 0..50 {
         advance_recents(&mut state, 16);
     }
     let settled = recent_bounds(&state, "youtube.leanback.v4");
     assert_eq!(settled.center(), (960., 540.));
-    assert_eq!(settled.w, 900.);
+    assert_eq!(settled.w, 840.);
     assert!(state.recents.dismissals.is_empty());
     assert!(!state.animating());
 }

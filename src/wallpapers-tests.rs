@@ -108,6 +108,27 @@ fn uploads_retain_full_resolution_unshaded_images_and_discover_legacy_fallbacks(
 }
 
 #[test]
+fn uploads_get_small_blurred_glass_copies_and_older_uploads_fall_back() {
+    let fixture = Fixture::new();
+    let item = store(&fixture.wallpapers(), &image(1920, 1080), || true).unwrap();
+    let found = &catalog(&fixture.wallpapers())[0];
+    assert_eq!(found.blurred, [true; 2]);
+    for shaded in [true, false] {
+        let path = found.blurred(shaded).unwrap();
+        let glass = image::open(&path).unwrap().to_rgb8();
+        assert_eq!(glass.dimensions(), GLASS_SIZE);
+        assert_eq!(path.ends_with(GLASS_FILES[0]), shaded);
+    }
+    // Uploads from before glass panels have no copies; panels then use a plain fill.
+    for file in GLASS_FILES {
+        fs::remove_file(item.directory.join(file)).unwrap();
+    }
+    let legacy = &catalog(&fixture.wallpapers())[0];
+    assert_eq!(legacy.blurred, [false; 2]);
+    assert!(legacy.blurred(true).is_none() && legacy.blurred(false).is_none());
+}
+
+#[test]
 fn deletion_protects_selected_and_bundled_backgrounds_and_only_removes_the_requested_upload() {
     let fixture = Fixture::new();
     let bytes = image(1920, 1080);
@@ -239,6 +260,7 @@ fn gallery_capacity_is_checked_before_decoding_or_creating_another_upload() {
                 id,
                 directory: directory.clone(),
                 has_original: false,
+                blurred: [false; 2],
             })
             .unwrap(),
         )

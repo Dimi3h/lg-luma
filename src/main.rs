@@ -16,6 +16,7 @@ mod input_refresh;
 #[cfg(all(feature = "webos", target_os = "linux", target_arch = "arm"))]
 mod luna;
 mod model;
+mod motion;
 mod platform;
 mod raster;
 mod recents;
@@ -441,8 +442,10 @@ fn compose(
     width: f32,
     now: OffsetDateTime,
 ) -> view::Scene {
+    state.sync_motion();
     let scene = view::scene_with_pill(state, assets, pill, width, now);
     if !state.pointer && state.overlay.is_none() && state.reveal_focus(&scene.controls) {
+        state.sync_motion();
         view::scene_with_pill(state, assets, pill, width, now)
     } else {
         scene

@@ -6,6 +6,7 @@ fn custom(index: u32) -> Wallpaper {
         id: format!("custom-{index:032x}"),
         directory: PathBuf::from(format!("/preview/wallpapers/custom-{index:032x}")),
         has_original: true,
+        blurred: [false; 2],
     }
 }
 
@@ -122,8 +123,10 @@ fn cycling_button_toggles_on_off_without_opening_a_page_or_moving_controls() {
             })
             .unwrap();
         assert!(style.align_right);
-        assert!((value.x - title.x - title.w - 24.).abs() < 0.001);
-        assert!((button.x + button.w - value.x - value.w - 24.2).abs() < 0.001);
+        assert!((value.x - title.x - title.w - 20.).abs() < 0.001);
+        // Focus grows the button around its centre; the value keeps its inset.
+        let lifted = button.w * crate::view::ROW_LIFT / 2.;
+        assert!((button.x + button.w + lifted - value.x - value.w - 28.).abs() < 0.001);
         for (old, new) in before.iter().zip(&enabled.controls) {
             assert_eq!(old.target, new.target);
             assert_eq!(
@@ -404,12 +407,12 @@ fn upload_button_is_compact_and_rotation_is_right_aligned_in_every_language() {
                 _ => None,
             })
             .unwrap();
-        assert!((upload.x + upload.w - title.x - title.w - 24.2).abs() < 0.01);
+        assert!((upload.x + upload.w - title.x - title.w - 28.).abs() < 0.01);
     }
 }
 
 #[test]
-fn gallery_scrolls_behind_fixed_controls_without_clipping_or_fades() {
+fn gallery_scrolls_behind_fixed_controls_and_fades_beneath_the_title_line() {
     let mut state = ready();
     state.open(2);
     state.section = 1;
@@ -446,16 +449,24 @@ fn gallery_scrolls_behind_fixed_controls_without_clipping_or_fades() {
         .find(|c| c.target == Target::Background(3))
         .unwrap();
     assert_eq!(old.rect.y - new.rect.y, state.scroll);
-    assert!(!scrolled.draw.iter().any(|draw| matches!(
+    // No clipping; cards fade out just above the first row, beneath the title line.
+    assert!(
+        !scrolled
+            .draw
+            .iter()
+            .any(|draw| matches!(draw, Draw::Clip(Some(_)) | Draw::EdgeFadeX(Some(_))))
+    );
+    assert!(scrolled.draw.iter().any(|draw| matches!(
         draw,
-        Draw::Clip(Some(_)) | Draw::EdgeFade(Some(_)) | Draw::EdgeFadeX(Some(_))
+        Draw::EdgeFade(Some(fade)) if fade[1] <= crate::view::SETTINGS_TOP
     )));
     let last_card = scrolled
         .draw
         .iter()
         .rposition(|draw| {
             matches!(draw,
-                Draw::Image(_, rect, ..) if rect.w == 360. && rect.h == 202.5
+                Draw::Image(_, rect, ..) if rect.w == crate::view::GALLERY_WIDTH
+                    && rect.h == crate::view::GALLERY_HEIGHT
             )
         })
         .unwrap();
@@ -494,9 +505,10 @@ fn scrolled_backgrounds_cannot_capture_upload_or_sidebar_pointer_hits() {
         state.hit_test(&gallery, x, y),
         Some(Target::UploadWallpaper)
     );
-    assert_eq!(state.hit_test(&gallery, 1000., 200.), None);
+    // Between the title-line actions and the gallery viewport nothing is hit.
+    assert_eq!(state.hit_test(&gallery, 1000., 218.), None);
     assert_eq!(
-        state.hit_test(&gallery, 300., 280.),
+        state.hit_test(&gallery, 300., 360.),
         Some(Target::Sidebar(1))
     );
     assert_eq!(
@@ -652,7 +664,16 @@ fn background_popup_is_modal_lifts_the_same_thumbnail_and_restores_its_parent() 
             .collect::<Vec<_>>(),
         vec![Target::UseBackground, Target::DeleteBackground]
     );
-    assert!(popup.draw.iter().any(|draw| matches!(draw, Draw::Image(_, rect, ..) if rect.x == before.x && rect.y == before.y && rect.w == before.w && rect.h == 202.5)));
+    // The popup keeps the thumbnail lifted around its own centre.
+    let (cx, cy) = before.center();
+    assert!(
+        popup
+            .draw
+            .iter()
+            .any(|draw| matches!(draw, Draw::Image(_, rect, ..)
+        if (rect.center().0 - cx).abs() < 0.01 && (rect.center().1 - cy).abs() < 0.01
+            && rect.w > before.w && (rect.w / rect.h - before.w / before.h).abs() < 0.01))
+    );
     state.direction(Direction::Down, &popup.controls);
     assert_eq!(state.focus, Target::DeleteBackground);
     state.activate();

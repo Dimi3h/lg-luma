@@ -278,10 +278,14 @@ try {
     preferences,
     JSON.stringify({ language: 'en', show_home_names: true, reduced_motion: true }),
   );
+  // tvOS-sized rows: the first eight languages fit; later ones scroll into full view.
+  const eighth = await scenario('eighth-language', `${picker},${Array(6).fill('down').join(',')}`);
+  assert.deepEqual(eighth.focus, { Choice: 7 });
+  assert.equal(eighth.scroll, 0, 'The first eight language rows fit without scrolling');
   const vietnamesePicker = `${picker},${Array(8).fill('down').join(',')}`;
   const vietnameseFocused = await scenario('vi-picker', vietnamesePicker);
   assert.deepEqual(vietnameseFocused.focus, { Choice: 9 });
-  assert.equal(vietnameseFocused.scroll, 0, 'The first ten language rows fit without scrolling');
+  assert.ok(vietnameseFocused.scroll > 0, 'Vietnamese must scroll fully into view');
   assert.ok(vietnameseFocused.ui_text.includes('Tiếng Việt'));
   const chineseFocused = await scenario('zh-picker-last', `${vietnamesePicker},down,down,down`);
   assert.deepEqual(chineseFocused.focus, { Choice: 12 });

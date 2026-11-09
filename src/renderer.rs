@@ -69,6 +69,11 @@ pub enum Draw {
     TintedImage(String, Rect, f32, bool, Color),
     /// Installed icon and its backdrop, composited before opacity and edge fading.
     AppImage(Arc<crate::app_artwork::Artwork>, Rect, f32, Color),
+    /// A blurred wallpaper copy sampled at the same screen coordinates, clipped to a rounded
+    /// rectangle: the base of a Liquid Glass panel.
+    Backdrop(String, Rect, f32, Color),
+    /// A rounded border of the given width whose colour runs from top to bottom: glass rims.
+    Rim(Rect, f32, f32, Color, Color),
     Clip(Option<Rect>),
     EdgeFade(Option<[f32; 4]>),
     /// Horizontal counterpart: [left fade-in start, end, right fade-out start, end].
@@ -292,10 +297,10 @@ fn profile_skip(command: &Draw) -> bool {
         {
             "wallpaper"
         }
-        Draw::Image(..) | Draw::TintedImage(..) => "image",
+        Draw::Image(..) | Draw::TintedImage(..) | Draw::Backdrop(..) => "image",
         Draw::AppImage(..) => "app",
         Draw::Shape(..) => "shape",
-        Draw::RoundedGradient(..) => "gradient",
+        Draw::RoundedGradient(..) | Draw::Rim(..) => "gradient",
         Draw::Shadow(..) => "shadow",
         Draw::Text(..) => "text",
         Draw::Clip(_) | Draw::EdgeFade(_) | Draw::EdgeFadeX(_) => return false,
@@ -990,6 +995,40 @@ impl Renderer {
         if path.ends_with("@2x.jpg") {
             self.stats.high_resolution_wallpaper = true;
         }
+        let Some((id, width, height)) = self.texture(&path) else {
+            return;
+        };
+        if contain {
+            let scale = (rect.w / width as f32).min(rect.h / height as f32);
+            let w = width as f32 * scale;
+            let h = height as f32 * scale;
+            rect = Rect::new(rect.x + (rect.w - w) / 2., rect.y + (rect.h - h) / 2., w, h);
+        }
+        if scrims.is_empty() {
+            self.quad(rect, [0., 0., 1., 1.], plain_radius(radius), 0., tint, id);
+        } else {
+            self.folded_quad(rect, id, scrims);
+        }
+    }
+
+    /// Samples a blurred wallpaper at the screen position it lies over, so translucent glass
+    /// shows the (static) background through it without a real-time blur pass.
+    fn backdrop(&mut self, path: &str, rect: Rect, radius: f32, tint: Color) {
+        let Some((id, ..)) = self.texture(path) else {
+            return;
+        };
+        let uv = [
+            rect.x / 1920.,
+            rect.y / 1080.,
+            (rect.x + rect.w) / 1920.,
+            (rect.y + rect.h) / 1080.,
+        ];
+        self.quad(rect, uv, plain_radius(radius), 0., tint, id);
+    }
+
+    /// Loads (once) and marks a raster texture as used this frame.
+    fn texture(&mut self, path: &str) -> Option<(GLuint, u32, u32)> {
+        let path = path.to_owned();
         let frame = self.frame;
         let started = Instant::now();
         let loaded = !self.textures.contains_key(&path);
@@ -1011,21 +1050,10 @@ impl Renderer {
         }
         let Some(texture) = entry else {
             self.stats.missing_images += 1;
-            return;
+            return None;
         };
         texture.frame = frame;
-        let id = texture.id;
-        if contain {
-            let scale = (rect.w / texture.width as f32).min(rect.h / texture.height as f32);
-            let w = texture.width as f32 * scale;
-            let h = texture.height as f32 * scale;
-            rect = Rect::new(rect.x + (rect.w - w) / 2., rect.y + (rect.h - h) / 2., w, h);
-        }
-        if scrims.is_empty() {
-            self.quad(rect, [0., 0., 1., 1.], plain_radius(radius), 0., tint, id);
-        } else {
-            self.folded_quad(rect, id, scrims);
-        }
+        Some((texture.id, texture.width, texture.height))
     }
 
     /// Edges on whole drawable pixels. The TV scales its 1080p graphics plane up 2x, which
@@ -1272,6 +1300,18 @@ impl Renderer {
                 Draw::AppImage(image, rect, radius, tint) => {
                     self.app_image(image, *rect, *radius, *tint)
                 }
+                Draw::Backdrop(path, rect, radius, tint) => {
+                    self.backdrop(path, *rect, *radius, *tint)
+                }
+                Draw::Rim(rect, radius, width, top, bottom) => self.gradient_quad(
+                    *rect,
+                    [0., 0., 1., 1.],
+                    *radius,
+                    *width,
+                    [*top, *bottom],
+                    self.white.id,
+                    None,
+                ),
                 Draw::Clip(clip) => self.clip = *clip,
                 Draw::EdgeFade(fade) => self.set_fade(0, *fade),
                 Draw::EdgeFadeX(fade) => self.set_fade(4, *fade),

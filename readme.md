@@ -1,6 +1,7 @@
 # Luma
 
-A native launcher for rooted LG webOS TVs, inspired by Apple TV.
+A native launcher for rooted LG webOS TVs, styled after Apple tvOS: a glass tab bar, rows of
+5:3 app cards that lift on focus with their title beneath, and Liquid Glass-style panels.
 
 https://github.com/user-attachments/assets/2156d640-b8fa-4ea4-a02c-0db4c93bcc5a
 

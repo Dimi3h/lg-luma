@@ -99,6 +99,18 @@ for (const file of await fs.readdir(path.join(source, 'wallpapers'))) {
       .jpeg({ quality: 96 })
       .toFile(path.join(out, 'wallpapers', `${id}${scale === 2 ? '@2x' : ''}.jpg`));
   }
+  // Liquid Glass approximation: GLES2 has no backdrop blur, so glass panels sample a small,
+  // blurred copy of each background at the same screen position. Its contrast is reduced and
+  // a light glass tint (about 10% white) is baked in, saving a pass per panel on the TV.
+  // The same treatment is applied to uploads in src/wallpapers.rs.
+  for (const variant of ['', '-plain']) {
+    await sharp(path.join(out, 'wallpapers', `${id}${variant}.jpg`))
+      .resize(480, 270)
+      .blur(10)
+      .linear(0.72, 26)
+      .jpeg({ quality: 85 })
+      .toFile(path.join(out, 'wallpapers', `${id}${variant}-blur.jpg`));
+  }
   await sharp(input)
     .resize(480, 270, { fit: 'cover' })
     .jpeg({ quality: 82 })
@@ -107,7 +119,13 @@ for (const file of await fs.readdir(path.join(source, 'wallpapers'))) {
 // webOS shows `splashBackground` (a static image, scaled to 1080p) until the window opens. One
 // 1080p PNG per background lets the package start on the user's wallpaper instead of a grey card.
 for (const file of await fs.readdir(path.join(out, 'wallpapers'))) {
-  if (!file.endsWith('.jpg') || file.includes('@2x') || file.includes('-plain')) continue;
+  if (
+    !file.endsWith('.jpg') ||
+    file.includes('@2x') ||
+    file.includes('-plain') ||
+    file.includes('-blur')
+  )
+    continue;
   await sharp(path.join(out, 'wallpapers', file))
     .resize(1920, 1080, { fit: 'cover' })
     .png({ compressionLevel: 9 })

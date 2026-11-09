@@ -135,9 +135,11 @@ or `HH:MM:SS`, defaulting to `HH:MM`). Choosing a format returns to its row in C
 from Clock restores its General row. With seconds shown, the header clock redraws once per second
 instead of once per minute. Existing saved hour and seconds preferences are retained.
 General has an **App names** subpage with independent **Show on Home** and **Show on Apps** toggles.
-Home captions default to off and Apps captions default to on, stored independently in `show_home_names`
-and `show_app_names`. The legacy `show_names` preference does not override these defaults. Hidden
-captions do not reserve layout space.
+As on tvOS, **On** shows the title beneath the focused card only, fading in with the focus lift;
+**Off** never shows titles. Home captions default to off and Apps captions default to on, stored
+independently in `show_home_names` and `show_app_names`. The legacy `show_names` preference does
+not override these defaults. Captions never reserve layout space or extend a card's hit region:
+grid rows keep the tvOS spacing either way.
 **Settings → Widgets** groups **Date**, **Greeting**, **Weather**, **Shortcuts**, and **Inputs** as separate subpages.
 Weather location and temperature choices return to Weather; Back from a widget returns to its row
 in Widgets. Input visibility/naming choices return to Inputs, then its Widgets row.
@@ -151,8 +153,10 @@ moving favorites or inputs. It defaults to enabled for existing and new installa
 existing localized weekday/month/day display (default), `DD.MM.YYYY`, `MM/DD/YYYY`, or `YYYY-MM-DD`.
 Choosing a format returns to its Date row; Back from Date restores its Widgets row. Hiding the
 date removes its reserved space above the greeting/weather and preserves the chosen format.
-Lists render behind the fixed sidebar, navigation and background actions, without viewport clipping
-or edge fades. Pointer interaction and remote focus retain their safe content viewports.
+Lists render behind the fixed sidebar, navigation and background actions without viewport
+clipping; they fade out just above their first row, beneath the content title line that shows the
+section and subpage path (tvOS-style breadcrumbs). Pointer interaction and remote focus retain their
+safe content viewports, which start below that title line.
 The **Greeting** subpage contains **Name** and **Clear name**. Selecting Name opens the text keyboard
 (the system keyboard on the TV) and the name is appended to the Home greeting ("Good evening, Ana.").
 Long greetings scale down to fit their existing single-line area, centred vertically without
@@ -165,12 +169,13 @@ Choice checkmarks identify saved values, while the bright row fill identifies on
 
 Home favorites form one horizontal strip, never a second row. Left/Right follows saved order,
 including reorder mode, and reveals complete cards. Up returns to Home navigation; Down enters
-the nearest input in the first row. The strip position survives page changes. Wheel movement over
+the nearest input card in the first row. The strip position survives page changes. Wheel movement over
 favorites scrolls horizontally; elsewhere it scrolls vertically. Pointer hover/down never moves
 the clicked control. Apps Up/Down follows the six-column grid order, including offscreen rows,
-and only the first row's Up route reaches the category toolbar. Scrolling Apps content fades into
-the existing wallpaper at the header/footer, with one alpha mask for surfaces, shadows, rings,
-vector icons/logos and text. The wallpaper/header are unmasked; no blur texture is needed.
+and only the first row's Up route reaches the Apps tab bar, returning to its selected segment
+(**All** or a category), as on tvOS. **All** replaces the former clear-filter button; choosing a
+category segment selects it rather than toggling it. Apps content scrolls behind the glass tab
+bar and search field.
 
 TV editing uses the system keyboard through SDL-webOS. Desktop editing uses the custom panel.
 
@@ -200,16 +205,17 @@ include them. Both Back and Exit access policies are claimed before video initia
 native Exit signal opens the switcher without waiting for another timer; repeat/dismissal events
 are consumed until release, so the same press cannot dismiss an overlay and then reopen it from Home.
 
-The switcher uses an overlapping landscape-card stack on a dimmed wallpaper, a short, reversible
-crossfade to and from the actual parent interface, and a non-bouncy, interruptible depth transition.
-The front card is largest; neighboring cards recede in scale and brightness. Cards are painted and
-hit-tested back-to-front, so only exposed portions of rear cards can be selected with the pointer.
+The switcher follows the tvOS app switcher: one horizontal row of large landscape cards on a
+dimmed, blurred wallpaper, a short, reversible crossfade to and from the actual parent interface,
+and a non-bouncy, interruptible transition. The focused card is centred, lifted with a deep shadow
+and titled beneath; its neighbours are smaller and dimmer at the sides, without overlapping. Cards
+are painted and hit-tested back-to-front.
 Reopening during dismissal reverses from the current opacity and keeps the visible cards.
 Dismissal restores parent input immediately while the outgoing cards finish fading. The transition
 does not move card hit targets; pointer interruption pauses only carousel movement, not the fade.
 Reduced motion makes the crossfade, navigation and close transitions immediate.
 Pointer hover/down preserves the current card positions and interrupts remote carousel movement.
-The backdrop uses 86% opacity so more of the wallpaper shows through. There are no app captions, action buttons,
+The backdrop is the blurred wallpaper under a 50% dimming layer. Only the focused card has a caption; there are no action buttons,
 empty-state subtitle, heading, separate dismiss button, card count, footer instructions or Home
 header shortcut. Up immediately lifts the focused card off the top of the screen; after a successful
 close, the remaining cards slide into the gap and the next card comes forward. A failed close
@@ -385,6 +391,43 @@ the legacy installation-local preferences. Reapplying an active Home mount also 
 and no TV calls. Verify the system-rendered splash on a real TV by changing Background, quitting Luma,
 and relaunching its normal tile; desktop checks cannot establish SAM/compositor image caching behavior.
 
+## tvOS design language
+
+Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, at the logical
+1920×1080 layout where tvOS points map 1:1 to pixels. The constants live at the top of
+`src/view.rs`; motion lives in `src/motion.rs`.
+
+- **Layout**: an 80 × 60 safe area; six columns of 260 × 156 (5:3) cards with 40 between them and
+  100 between rows (pitch 300 × 256). Home favourites are the "top row" with six full cards and the
+  seventh cut off at the right edge; inputs follow as a second row of cards.
+- **Type**: the tvOS text styles with Inter instead of SF Pro: Title 1 (76/96, greeting),
+  Title 3 (48/56, overlay and sidebar titles), Headline (38/46, section headings), Callout (31/38),
+  Body (29/36, rows and captions), Caption 1 (25/32, values and status) and Caption 2 (23/30, the
+  smallest text anywhere).
+- **Focus** lifts instead of drawing a ring: the focused card grows 10% around its centre (rows
+  2.5%, buttons 6%) with a large soft shadow, and its rim brightens. Focused rows and buttons turn
+  opaque white with dark labels; selected items (the current tab, segment, sidebar section,
+  background) stay highlighted at their resting size; pressed items return to their resting size;
+  hidden apps in the Hidden filter are dimmed and lose their shadow. Hit regions stay at the
+  unscaled rectangles; only drawing scales.
+- **Motion**: focus lift, scroll position (Home strip, Apps grid, Settings lists) and page switches
+  ease with a critically damped exponential (about 200 ms for focus, 250 ms for scrolling, a 200 ms
+  fade-in for pages). Controls always use the logical, unanimated positions; the drawn content
+  follows. Wheel and pointer scrolling, list changes and **Reduced motion** snap immediately.
+  `State::animating()` keeps presenting only while a value is moving.
+- **Liquid Glass**: GLES2 has no backdrop blur, so `pnpm assets` writes a 480 × 270 blurred copy
+  of every background, with lower contrast and a light glass tint baked in (`wallpapers/<id>-blur.jpg` and `<id>-plain-blur.jpg`), and the
+  upload worker writes `wallpaper-blur.jpg` and `original-blur.jpg` for uploads. Glass panels
+  (`Scene::glass`) draw that copy at the same screen coordinates inside their rounded rectangle
+  (`Draw::Backdrop`, one textured pass), add a short highlight along the top edge and a 1.5 px
+  gradient rim (`Draw::Rim`) that is brightest at the top. The tab bar, Apps tab bar and search, settings sidebar and rows, context menus,
+  alerts, keyboard, notices and companion dialogs use it; menus, alerts and Recents put the blurred
+  copy behind the whole stage. Uploads made before this change have no blurred copy and fall back
+  to a dark translucent fill. App cards get a glassy rim that strengthens on focus. There is no
+  real-time blur or refraction.
+- **Corners** remain circular. A continuous (squircle) corner needs a superellipse distance in
+  `paint.frag` for every rounded pixel, which has not been measured on Mali-class TVs.
+
 ## Vector rendering
 
 `assets/ui-icons/` holds standalone SVGs exported from the original Lucide/control artwork,
@@ -472,7 +515,7 @@ The gallery also runs as part of `pnpm test:smoke`. Asset source/licence details
 
 Live TV (`com.webos.app.livetv`) and Web Browser (`com.webos.app.browser`) also have dedicated
 SVG-backed demo cards: a blue/cyan TV display with a live indicator, and a matching globe with a
-navigation pointer. Both are original Luma vector artwork. The existing card caption remains available when
+navigation pointer. Both are original Luma vector artwork. The focused card's caption remains available when
 names are visible. `Brand::artwork_size()` sets optical sizing per brand, keeping heavy wordmarks
 such as Hulu, Joyn and Plex closer to the visual weight of Apple TV, YouTube, Das Erste and ARTE.
 
@@ -590,7 +633,7 @@ measurable.
 
 Each frame redraws only what changed since the frame its back buffer holds. `src/damage.rs`
 compares consecutive scenes command by command, realigning after inserted or removed commands
-such as a focus ring; the union of changes since the buffer's frame (EGL buffer age) is the only
+such as a focus shadow; the union of changes since the buffer's frame (EGL buffer age) is the only
 area cleared and drawn, with a scissor intersected with each clip, and commands entirely outside
 it are not laid out. `EGL_KHR_partial_update` also tells the driver which tiles to keep (webOS
 Mali); `EGL_EXT_buffer_age` alone still allows the smaller redraw. The EGL entry points come from

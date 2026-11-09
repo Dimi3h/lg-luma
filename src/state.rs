@@ -17,12 +17,13 @@ pub const APPS_COLUMNS: usize = 6;
 /// Automatic inventory retries before the error shows: with the 6.5 s Luna timeout about 50 s.
 pub const INVENTORY_RETRIES: u32 = 5;
 pub const INVENTORY_RETRY_DELAY: Duration = Duration::from_secs(2);
-pub const HOME_STRIP_LEFT: f32 = 84.;
-// Six favourites in full and the seventh cut off and fading out at the right (Apple TV rows):
-// the strip ends after the sixth tile, so a focused tile never sits in the fade.
-pub const HOME_STRIP_RIGHT: f32 = 1748.;
-pub const HOME_TILE_WIDTH: f32 = 256.;
-pub const HOME_TILE_PITCH: f32 = 281.6;
+/// The tvOS safe area's left edge: favourites start here, on the six-column grid.
+pub const HOME_STRIP_LEFT: f32 = 80.;
+// Six favourites in full and the seventh cut off at the right edge (Apple TV rows): the
+// strip ends after the sixth card at the safe area, so a focused card never sits in the fade.
+pub const HOME_STRIP_RIGHT: f32 = 1840.;
+pub const HOME_TILE_WIDTH: f32 = 260.;
+pub const HOME_TILE_PITCH: f32 = 300.;
 pub const HOME_FADE_LEFT: f32 = 8.;
 pub const HOME_FADE_RIGHT: f32 = 1910.;
 pub const BACKGROUND_FADE: f32 = 0.4;
@@ -248,6 +249,8 @@ pub struct State {
     pub greeting_name_draft: String,
     pub input_name: String,
     pub recents: crate::recents::Recents,
+    /// Display-only easing of focus, scrolling and page switches.
+    pub motion: crate::motion::Motion,
 }
 
 impl State {
@@ -291,7 +294,44 @@ impl State {
             greeting_name_draft: String::new(),
             input_name: String::new(),
             recents: crate::recents::Recents::default(),
+            motion: crate::motion::Motion::default(),
         }
+    }
+
+    fn motion_inputs(&self) -> crate::motion::Inputs<'_> {
+        crate::motion::Inputs {
+            focus: &self.focus,
+            page: self.page,
+            section: self.section,
+            subpage: &self.subpage,
+            filter: self.filter,
+            query: &self.query,
+            scroll: self.scroll,
+            home_scroll: self.home_scroll,
+            reduced: self.preferences.reduced_motion,
+            pointer: self.pointer,
+        }
+    }
+
+    /// Registers the current focus before a scene is composed (see `Motion::sync`).
+    pub fn sync_motion(&mut self) {
+        let mut motion = std::mem::take(&mut self.motion);
+        motion.sync(&self.motion_inputs());
+        self.motion = motion;
+    }
+
+    /// How far `target` is lifted by focus, 0 at rest and 1 fully focused.
+    pub fn focus_level(&self, target: &Target) -> f32 {
+        self.motion.focus_level(target, &self.focus)
+    }
+
+    /// The scroll offset content is drawn with; controls keep `scroll`.
+    pub fn display_scroll(&self) -> f32 {
+        self.motion.scroll(self.scroll)
+    }
+
+    pub fn display_home_scroll(&self) -> f32 {
+        self.motion.home_scroll(self.home_scroll)
     }
 
     pub fn notify(&mut self, text: impl Into<String>) {
@@ -371,6 +411,9 @@ impl State {
     }
 
     pub fn tick(&mut self) {
+        let mut motion = std::mem::take(&mut self.motion);
+        self.dirty |= motion.advance(&self.motion_inputs(), Instant::now());
+        self.motion = motion;
         let recents_open = self.recents_open();
         if recents_open || self.recents.visibility > 0. {
             self.dirty |= self.recents.animate(
@@ -391,7 +434,7 @@ impl State {
         if self
             .notice
             .as_ref()
-            .is_some_and(|(_, start)| start.elapsed() < Duration::from_millis(120))
+            .is_some_and(|(_, start)| start.elapsed() < Duration::from_millis(240))
             && !self.preferences.reduced_motion
         {
             self.dirty = true;
@@ -428,11 +471,12 @@ impl State {
                 || self.recents.cards_animating(self.pointer)))
             || self.previous_background.is_some()
             || self.panel_started.is_some()
+            || self.motion.animating()
             || (!self.preferences.reduced_motion
                 && self
                     .notice
                     .as_ref()
-                    .is_some_and(|(_, start)| start.elapsed() < Duration::from_millis(120)))
+                    .is_some_and(|(_, start)| start.elapsed() < Duration::from_millis(240)))
     }
 
     /// Home's lifecycle relaunch returns directly to Home, even from an overlay.
@@ -506,6 +550,16 @@ impl State {
     }
 
     pub fn content_viewport(&self) -> Rect {
+        if self.page == Page::Settings {
+            // Settings lists fade out beneath the title line above their first row.
+            let top = crate::view::SETTINGS_TOP - 16.;
+            return Rect::new(
+                crate::view::SETTINGS_X - 40.,
+                top,
+                1920. - (crate::view::SETTINGS_X - 40.),
+                1080. - top,
+            );
+        }
         Rect::new(64., 108.8, 1792., 1080. - 108.8)
     }
 
@@ -521,7 +575,8 @@ impl State {
                     SETTINGS_BOTTOM_PADDING
                 }
             } else {
-                12.
+                // Room for a lifted card and its focused caption.
+                crate::view::CAPTION_SPACE + 16.
             }
     }
 
@@ -537,12 +592,19 @@ impl State {
 
     pub fn apps_viewport(&self) -> Rect {
         let content = self.content_viewport();
-        Rect::new(content.x, 244.8, content.w, content.y + content.h - 244.8)
+        let top = crate::view::APPS_GRID_Y - 32.;
+        Rect::new(content.x, top, content.w, content.y + content.h - top)
     }
 
     pub fn backgrounds_viewport(&self) -> Rect {
         let content = self.content_viewport();
-        Rect::new(620., 244.8, 1160., content.y + content.h - 244.8)
+        let top = crate::view::SETTINGS_TOP - 12.;
+        Rect::new(
+            crate::view::SETTINGS_X - 20.,
+            top,
+            crate::view::SETTINGS_W + 40.,
+            content.y + content.h - top,
+        )
     }
 
     pub fn hit_test(&self, controls: &[Control], x: f32, y: f32) -> Option<Target> {
@@ -736,7 +798,7 @@ impl State {
                 .apps()
                 .first()
                 .map(|app| Target::App(app.id.clone()))
-                .unwrap_or(Target::Filter(1)),
+                .unwrap_or(Target::ClearFilter),
             Page::Settings => Target::Sidebar(0),
         }
     }
@@ -783,6 +845,8 @@ impl State {
                     self.backgrounds_viewport().y + 8.
                 } else if self.page == Page::Apps {
                     self.apps_viewport().y + 8.
+                } else if self.page == Page::Settings {
+                    crate::view::SETTINGS_TOP - 12.
                 } else {
                     120.8
                 };
@@ -1383,7 +1447,12 @@ impl State {
                     // Its grid index still defines the route; reveal_focus then
                     // scrolls it into view, without letting the fixed nav steal Up.
                     let next = match direction {
-                        Direction::Up if index < APPS_COLUMNS => Some(Target::Filter(1)),
+                        // tvOS returns to the selected segment of the page's tab bar.
+                        Direction::Up if index < APPS_COLUMNS => Some(if self.filter == 0 {
+                            Target::ClearFilter
+                        } else {
+                            Target::Filter(self.filter)
+                        }),
                         Direction::Up => Some(Target::App(apps[index - APPS_COLUMNS].id.clone())),
                         Direction::Down
                             if (index / APPS_COLUMNS + 1) * APPS_COLUMNS < apps.len() =>
@@ -1976,12 +2045,12 @@ impl State {
                 }
             }
             Target::Filter(index) => {
-                self.filter = if self.filter == index { 0 } else { index };
+                // Segments select; All (ClearFilter) is the way back to every app.
+                self.filter = index;
                 self.scroll = 0.;
             }
             Target::ClearFilter => {
                 self.filter = 0;
-                self.focus = Target::Filter(1);
                 self.scroll = 0.;
             }
             Target::ClearSearch => {

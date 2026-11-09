@@ -166,6 +166,23 @@ fn controls(state: &State) -> Vec<crate::state::Control> {
     scene(state).controls
 }
 
+/// Centres of full-width settings rows drawn with the opaque white focused surface. Focus
+/// grows a row around its centre, so the centre (not its top) matches the control.
+fn highlighted_rows(scene: &view::Scene) -> Vec<f32> {
+    scene
+        .draw
+        .iter()
+        .filter_map(|draw| match draw {
+            crate::renderer::Draw::RoundedGradient(rect, _, top, _)
+                if rect.w > view::SETTINGS_W - 1. && top[3] == 1. && top[0] == 1. =>
+            {
+                Some(rect.center().1)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
 fn favorites_edge_fragments_share_draw_hit_and_wheel_viewports() {
     let mut state = ready();
@@ -177,15 +194,16 @@ fn favorites_edge_fragments_share_draw_hit_and_wheel_viewports() {
         .map(|app| app.id.clone())
         .collect();
     state.preferences.favorites = Some(favorites.clone());
+    // The seventh card shows cut off beyond the safe area at the right edge.
     assert_eq!(
-        state.hit_test(&controls(&state), 1860., 600.),
+        state.hit_test(&controls(&state), 1895., 600.),
         Some(Target::App(favorites[6].clone()))
     );
-    assert!(state.wheel_scroll(&controls(&state), Some((1860., 600.)), 0, -1));
+    assert!(state.wheel_scroll(&controls(&state), Some((1895., 600.)), 0, -1));
     assert!((state.home_scroll - crate::state::HOME_TILE_PITCH).abs() < 0.01);
     assert_eq!(state.scroll, 0.);
     assert_eq!(
-        state.hit_test(&controls(&state), 40., 600.),
+        state.hit_test(&controls(&state), 20., 600.),
         Some(Target::App(favorites[0].clone()))
     );
     let scroll = state.home_scroll;
@@ -197,7 +215,7 @@ fn favorites_edge_fragments_share_draw_hit_and_wheel_viewports() {
     let scene = scene(&state);
     let viewport = state.favorites_viewport();
     assert!(scene.draw.iter().any(|draw| matches!(draw, crate::renderer::Draw::Clip(Some(rect)) if rect.x == viewport.x && rect.w == viewport.w)));
-    assert!(state.wheel_scroll(&scene.controls, Some((40., 600.)), 0, 1));
+    assert!(state.wheel_scroll(&scene.controls, Some((20., 600.)), 0, 1));
     assert_eq!(state.home_scroll, 0.);
     assert_eq!(state.scroll, 0.);
 }
@@ -226,7 +244,9 @@ fn widening_favorites_does_not_widen_apps_or_unclip_offscreen_rows() {
     assert!(!state.wheel_scroll(&controls, Some((1860., 600.)), 0, -1));
     assert_eq!(state.home_scroll, 0.);
     let viewport = state.content_viewport();
-    let scroll_limit = controls[0].rect.y + controls[0].rect.h - (viewport.y + viewport.h - 12.);
+    // Lists keep room below the last row for a lifted card and its focused caption.
+    let scroll_limit = controls[0].rect.y + controls[0].rect.h
+        - (viewport.y + viewport.h - crate::view::CAPTION_SPACE - 16.);
     assert_eq!(state.scroll, 90_f32.min(scroll_limit));
 }
 
@@ -464,6 +484,7 @@ fn gallery_and_grid_navigation_scroll_to_keep_focus_visible() {
         id: "custom-00000000000000000000000000000001".into(),
         directory: PathBuf::from("/preview/wallpapers/custom-00000000000000000000000000000001"),
         has_original: true,
+        blurred: [false; 2],
     }]);
     state.open(2);
     state.section = 1;
@@ -699,6 +720,12 @@ fn home_and_apps_render_only_their_own_caption_preference() {
         state.preferences.show_app_names = apps;
         for (page, expected) in [(0, home), (1, apps)] {
             state.open(page);
+            // tvOS shows a title only beneath the focused card.
+            let resting = scene(&state);
+            assert!(!resting.draw.iter().any(
+                |draw| matches!(draw, crate::renderer::Draw::Text(value, ..) if value == "Netflix"),
+            ));
+            state.focus = Target::App("netflix".into());
             let scene = scene(&state);
             let caption = scene.draw.iter().any(
                 |draw| matches!(draw, crate::renderer::Draw::Text(value, ..) if value == "Netflix"),
@@ -710,9 +737,9 @@ fn home_and_apps_render_only_their_own_caption_preference() {
                 .find(|c| c.target == Target::App("netflix".into()))
                 .unwrap();
             assert_eq!(
-                card.rect.h > 154.4,
-                expected,
-                "Hidden captions must not reserve space"
+                card.rect.h,
+                view::CARD_HEIGHT,
+                "Captions never reserve space or extend the hit region"
             );
         }
     }
@@ -733,20 +760,9 @@ fn input_name_actions_only_highlight_the_focused_row_and_keep_the_saved_mode() {
     for target in [Target::InputRename, Target::InputNameReset] {
         state.pointer_focus(target.clone());
         let scene = scene(&state);
-        let highlighted: Vec<_> = scene
-            .draw
-            .iter()
-            .filter_map(|draw| match draw {
-                crate::renderer::Draw::RoundedGradient(rect, ..)
-                    if rect.x == 640. && rect.w == 1120. =>
-                {
-                    Some(rect.y)
-                }
-                _ => None,
-            })
-            .collect();
+        let highlighted = highlighted_rows(&scene);
         let focused = scene.controls.iter().find(|c| c.target == target).unwrap();
-        assert_eq!(highlighted, vec![focused.rect.y]);
+        assert_eq!(highlighted, vec![focused.rect.center().1]);
         assert!(scene.draw.iter().any(|draw| matches!(draw, crate::renderer::Draw::TintedImage(path, ..) if path.ends_with("check.lvec"))));
         assert_eq!(
             state
@@ -775,24 +791,13 @@ fn clock_choices_only_highlight_focus_while_preserving_saved_checkmarks() {
     for index in 0..2 {
         state.pointer_focus(Target::Choice(index));
         let scene = scene(&state);
-        let highlighted: Vec<_> = scene
-            .draw
-            .iter()
-            .filter_map(|draw| match draw {
-                crate::renderer::Draw::RoundedGradient(rect, ..)
-                    if rect.x == 640. && rect.w == 1120. =>
-                {
-                    Some(rect.y)
-                }
-                _ => None,
-            })
-            .collect();
+        let highlighted = highlighted_rows(&scene);
         let focused = scene
             .controls
             .iter()
             .find(|c| c.target == Target::Choice(index))
             .unwrap();
-        assert_eq!(highlighted, vec![focused.rect.y]);
+        assert_eq!(highlighted, vec![focused.rect.center().1]);
         let checks = scene.draw.iter().filter(|draw| matches!(draw, crate::renderer::Draw::TintedImage(path, ..) if path.ends_with("check.lvec"))).count();
         assert_eq!(checks, 1);
         assert!(!state.preferences.hour_24);
@@ -886,17 +891,21 @@ fn system_version_is_inside_the_update_status_card_without_a_separate_row() {
     state.section = crate::state::SYSTEM_SECTION;
     state.panel_started = None;
     let system = scene(&state);
+    // One glass status card holds the update state and the installed version.
     assert!(system.draw.iter().any(|draw| matches!(
         draw,
-        crate::renderer::Draw::Shape(rect, _, _, color)
-            if rect.x == 640. && rect.y == 164.8 && rect.w == 1120. && rect.h == 220. && color[3] == 0.72
+        crate::renderer::Draw::Backdrop(_, rect, ..)
+            if rect.x == view::SETTINGS_X && rect.y == view::SETTINGS_TOP && rect.w == view::SETTINGS_W && rect.h == 256.
     )));
     assert!(system.draw.iter().any(|draw| matches!(
         draw,
         crate::renderer::Draw::Text(label, _, style, color, _)
-            if label == "Current version: test" && style.size == 20.8 && style.weight == 450 && color[3] == 0.73
+            if label == "Current version: test" && style.size == 29. && style.weight == 400 && color[3] < 1.
     )));
-    assert_eq!(state.hit_test(&system.controls, 900., 200.), None);
+    assert_eq!(
+        state.hit_test(&system.controls, 900., view::SETTINGS_TOP + 60.),
+        None
+    );
     state.focus = Target::Sidebar(crate::state::SYSTEM_SECTION);
     state.direction(Direction::Right, &system.controls);
     assert_eq!(state.focus, Target::CheckUpdates);
@@ -1063,10 +1072,11 @@ fn categories_and_search_have_clear_actions_and_conditional_hidden_control() {
     assert_eq!(state.focus, Target::Filter(5));
     state.activate();
     assert_eq!(state.apps().len(), 1);
+    // "All" is the first segment of the Apps tab bar; choosing it keeps focus there.
     state.focus = Target::ClearFilter;
     state.activate();
     assert_eq!(state.filter, 0);
-    assert_eq!(state.focus, Target::Filter(1));
+    assert_eq!(state.focus, Target::ClearFilter);
     state.query = "YouTube".into();
     state.focus = Target::ClearSearch;
     state.activate();
@@ -1144,17 +1154,18 @@ fn delete_confirmation_defaults_to_cancel_and_back_restores_side_popup() {
         .find(|c| c.target == Target::Option(2))
         .unwrap()
         .rect;
+    // A focused destructive action is the white focused surface with a red label.
     assert!(focused_scene.draw.iter().any(|draw| matches!(draw,
-        crate::renderer::Draw::Shape(rect, _, _, color) if rect.x == delete_rect.x && rect.y == delete_rect.y
-            && *color == [214. / 255., 59. / 255., 53. / 255., 1.])));
+        crate::renderer::Draw::RoundedGradient(rect, _, top, _) if rect.contains(delete_rect.center().0, delete_rect.center().1)
+            && rect.w >= delete_rect.w && *top == [1., 1., 1., 1.])));
     assert!(focused_scene.draw.iter().any(|draw| matches!(draw,
         crate::renderer::Draw::Text(label, rect, _, color, _) if label == "Delete app" && delete_rect.contains(rect.x, rect.y)
-            && *color == crate::renderer::WHITE)));
+            && color[0] > 0.8 && color[1] < 0.1)));
     assert!(state.activate().is_empty());
     assert!(matches!(state.overlay, Some(Overlay::Delete { .. })));
     assert_eq!(state.focus, Target::CancelDelete);
     let confirmation = scene(&state).modal.unwrap();
-    assert_eq!(confirmation.w, 640.);
+    assert_eq!(confirmation.w, 880.);
     assert!(confirmation.h < confirmation.w);
     assert!(
         controls(&state)
@@ -1200,7 +1211,9 @@ fn opening_side_popup_preserves_card_artwork_geometry_with_or_without_captions()
             state.options();
             let lifted = logo_rect(&scene(&state).draw);
             assert_eq!(lifted.len(), original.len() * 2);
-            for (actual, expected) in lifted.iter().zip(original.iter().cycle()) {
+            // The parent copy rests under the dimmed stage; the popup's copy keeps the
+            // focused card's lifted artwork bounds exactly.
+            for (actual, expected) in lifted[original.len()..].iter().zip(original.iter()) {
                 for (a, b) in actual.iter().zip(expected) {
                     assert!(
                         (a - b).abs() < 0.001,
@@ -1227,7 +1240,7 @@ fn opening_side_popup_preserves_card_artwork_geometry_with_or_without_captions()
             let popup_hearts = hearts(&scene(&state).draw);
             assert_eq!(popup_hearts.len(), original_hearts.len() + 1);
             if page == 1 {
-                assert_eq!(popup_hearts, vec![original_hearts[0], original_hearts[0]]);
+                assert_eq!(popup_hearts[1], original_hearts[0]);
             }
         }
     }
@@ -1452,11 +1465,20 @@ fn remote_toolbar_focus_normalizes_scroll_but_hover_does_not() {
 }
 
 #[test]
-fn long_captions_expand_rows_without_overlapping_the_next_row() {
+fn long_captions_stay_on_one_line_inside_the_row_gap() {
     let mut state = ready();
     state.open(1);
-    state.inventory.apps.iter_mut().find(|app| app.id == "netflix").unwrap().title = "A very long installed application title that needs more than two lines to remain fully readable".into();
-    let targets = controls(&state);
+    let long = "A very long installed application title that needs more than two lines to remain fully readable";
+    state
+        .inventory
+        .apps
+        .iter_mut()
+        .find(|app| app.id == "netflix")
+        .unwrap()
+        .title = long.into();
+    state.focus = Target::App("netflix".into());
+    let scene = scene(&state);
+    let targets = &scene.controls;
     let title = targets
         .iter()
         .find(|c| c.target == Target::App("netflix".into()))
@@ -1466,8 +1488,21 @@ fn long_captions_expand_rows_without_overlapping_the_next_row() {
         .iter()
         .find(|c| c.target == Target::App(next_id.clone()))
         .unwrap();
-    assert!(title.rect.h > 240.);
-    assert!(next.rect.y > title.rect.y + title.rect.h);
+    // Rows keep the HIG pitch; the focused caption is one line, ending with an ellipsis.
+    assert_eq!(title.rect.h, view::CARD_HEIGHT);
+    assert_eq!(next.rect.y - title.rect.y, view::ROW_PITCH);
+    let caption = scene
+        .draw
+        .iter()
+        .find_map(|draw| match draw {
+            crate::renderer::Draw::Text(label, rect, ..) if label.starts_with("A very long") => {
+                Some((label.clone(), *rect))
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert!(caption.0.ends_with('…'));
+    assert!(caption.1.y + caption.1.h < next.rect.y);
 }
 
 #[test]
@@ -1711,11 +1746,11 @@ fn settings_order_language_sort_and_shortcut_empty_card() {
     state.subpage = Some(Subpage::Shortcuts);
     let empty = scene(&state);
     assert!(empty.draw.iter().any(|draw| matches!(draw,
-        Draw::Shape(rect, radius, stroke, color) if rect.x == 640. && rect.y == 248.8 && rect.h == 220.
-            && *radius == 20. && *stroke == 0. && color[3] == 0.72
+        Draw::Backdrop(_, rect, ..) if rect.x == view::SETTINGS_X
+            && rect.y == view::SETTINGS_TOP + view::ROW_H + view::ROW_GAP && rect.h == 240.
     )));
     assert!(empty.draw.iter().any(|draw| matches!(draw,
-        Draw::Text(label, _, style, ..) if label == state.preferences.language.t("noTiles") && style.size == 24.
+        Draw::Text(label, _, style, ..) if label == state.preferences.language.t("noTiles") && style.size == 31.
     )));
     assert!(empty.draw.iter().any(|draw| matches!(draw,
         Draw::Text(label, ..) if label == "Press Configure to add your first shortcut."
@@ -2276,14 +2311,15 @@ fn shortcut_settings_offer_qr_editing_and_a_test_remove_popup() {
         vec![Target::Tile(tile.id.clone()), Target::TileEditor]
     );
     assert_eq!(
-        state.hit_test(&controls(&state), 800., 280.),
+        state.hit_test(&controls(&state), 800., view::SETTINGS_TOP + 140.),
         Some(Target::Tile(tile.id.clone()))
     );
     let page = scene(&state);
-    assert!(page.draw.iter().any(|draw| matches!(draw, crate::renderer::Draw::Text(label, _, _, color, _) if label == "Lamp" && color[3] == 0.73)));
+    // An unfocused shortcut is a glass description row with a primary (white) title.
+    assert!(page.draw.iter().any(|draw| matches!(draw, crate::renderer::Draw::Text(label, _, _, color, _) if label == "Lamp" && *color == crate::renderer::WHITE)));
     assert!(page.draw.iter().any(|draw| matches!(draw,
-        crate::renderer::Draw::Shape(rect, radius, _, color)
-            if rect.x == 640. && rect.h == 90.7 && *radius == 20. && color[3] == 0.72
+        crate::renderer::Draw::Backdrop(_, rect, radius, _)
+            if rect.x == view::SETTINGS_X && rect.h == view::DETAIL_ROW_H && *radius == 16.
     )));
     assert!(
         !page
@@ -2291,7 +2327,7 @@ fn shortcut_settings_offer_qr_editing_and_a_test_remove_popup() {
             .iter()
             .any(|control| matches!(control.target, Target::TileRemove(_)))
     );
-    assert!(!page.draw.iter().any(|draw| matches!(draw, crate::renderer::Draw::TintedImage(path, rect, ..) if path.ends_with("right.lvec") && rect.x >= 640.)));
+    assert!(!page.draw.iter().any(|draw| matches!(draw, crate::renderer::Draw::TintedImage(path, rect, ..) if path.ends_with("right.lvec") && rect.x >= view::SETTINGS_X && rect.y >= view::SETTINGS_TOP)));
     state.direction(Direction::Down, &controls(&state));
     assert_eq!(state.focus, Target::Tile(tile.id.clone()));
     state.activate();
@@ -2529,6 +2565,7 @@ fn settings_lists_keep_bottom_padding_for_remote_and_wheel_scrolling() {
                         id: format!("custom-{index:032x}"),
                         directory: std::path::PathBuf::from(".build/padding-fixture"),
                         has_original: true,
+                        blurred: [false; 2],
                     })
                     .collect(),
             );
@@ -2565,7 +2602,7 @@ fn settings_lists_keep_bottom_padding_for_remote_and_wheel_scrolling() {
 }
 
 #[test]
-fn language_list_scrolls_under_fixed_ui_without_clipping_or_fades() {
+fn language_list_scrolls_under_fixed_ui_and_fades_beneath_the_title_line() {
     use crate::{renderer::Draw, state::Subpage};
     let mut state = ready();
     state.preferences.reduced_motion = true;
@@ -2573,9 +2610,16 @@ fn language_list_scrolls_under_fixed_ui_without_clipping_or_fades() {
     state.subpage = Some(Subpage::Language);
     state.scroll = 180.;
     let rendered = scene(&state);
-    assert!(!rendered.draw.iter().any(|draw| matches!(
+    // No clipping or side fades; only a top fade so rows disappear beneath the title line.
+    assert!(
+        !rendered
+            .draw
+            .iter()
+            .any(|draw| matches!(draw, Draw::Clip(Some(_)) | Draw::EdgeFadeX(Some(_))))
+    );
+    assert!(rendered.draw.iter().any(|draw| matches!(
         draw,
-        Draw::Clip(Some(_)) | Draw::EdgeFade(Some(_)) | Draw::EdgeFadeX(Some(_))
+        Draw::EdgeFade(Some(fade)) if fade[1] <= view::SETTINGS_TOP && fade[2] >= 1080.
     )));
     let first = rendered
         .controls
@@ -2712,71 +2756,90 @@ fn apps_toolbar_stays_fixed_above_scrolling_cards_and_keeps_pointer_priority() {
 }
 
 #[test]
-fn app_categories_and_search_use_matching_pills_and_larger_heavier_labels() {
+fn app_tab_bar_segments_and_search_share_one_glass_row_with_body_labels() {
     use crate::renderer::Draw;
     let mut state = ready();
     state.open(1);
     let rendered = scene(&state);
-    for control in rendered
-        .controls
-        .iter()
-        .filter(|control| matches!(control.target, Target::Filter(_) | Target::Search))
-    {
-        assert_eq!(control.rect.h, 56.);
-        assert_eq!(control.rect.y, 164.8);
-        assert!(rendered.draw.iter().any(|draw| matches!(draw,
-            Draw::Shape(rect, radius, _, color) if rect.x == control.rect.x && rect.y == control.rect.y
-                && rect.w == control.rect.w && (*radius == 48. || *radius == 28.) && color[3] >= 0.72
-        )));
+    let bar = view::TOOLBAR;
+    for control in rendered.controls.iter().filter(|control| {
+        matches!(
+            control.target,
+            Target::Filter(_) | Target::ClearFilter | Target::Search
+        )
+    }) {
+        // Segments sit inside the glass capsule; search is a capsule of the same height.
+        assert!(control.rect.y >= bar.y && control.rect.y + control.rect.h <= bar.y + bar.h);
         assert!(rendered.draw.iter().any(|draw| matches!(draw,
             Draw::Text(_, rect, style, ..) if rect.x >= control.rect.x && rect.x < control.rect.x + control.rect.w
                 && rect.y > control.rect.y && rect.y < control.rect.y + control.rect.h
-                && style.size == 20.8 && style.weight == 550
+                && style.size == 29.
         )));
     }
+    let glass: Vec<_> = rendered
+        .draw
+        .iter()
+        .filter_map(|draw| match draw {
+            Draw::Backdrop(_, rect, radius, _) if rect.y == bar.y && rect.h == bar.h => {
+                Some(*radius)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(glass, vec![bar.h / 2., bar.h / 2.]);
 }
 
 #[test]
-fn category_focus_active_and_clear_button_share_the_pill_style() {
+fn tab_bar_segments_distinguish_selected_from_focused() {
     use crate::renderer::Draw;
+    let white = |rendered: &view::Scene, target: &Target| {
+        let control = rendered
+            .controls
+            .iter()
+            .find(|control| &control.target == target)
+            .unwrap()
+            .rect;
+        rendered
+            .draw
+            .iter()
+            .filter_map(|draw| match draw {
+                Draw::RoundedGradient(rect, _, top, _)
+                    if *top == [1., 1., 1., 1.]
+                        && rect.contains(control.center().0, control.center().1)
+                        && rect.h < 80. =>
+                {
+                    Some((rect.w - control.w, rect.h - control.h))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
     let mut state = ready();
     state.open(1);
     state.filter = 1;
     state.focus = Target::ClearFilter;
     let rendered = scene(&state);
-    let clear = rendered
-        .controls
-        .iter()
-        .find(|control| control.target == Target::ClearFilter)
-        .unwrap();
-    assert_eq!((clear.rect.w, clear.rect.h), (56., 56.));
-    assert!(rendered.draw.iter().any(|draw| matches!(draw,
-        Draw::RoundedGradient(rect, radius, ..) if rect.x == clear.rect.x && rect.y == clear.rect.y && *radius == 28.
-    )));
-    let category = rendered
-        .controls
-        .iter()
-        .find(|control| control.target == Target::Filter(1))
-        .unwrap();
-    assert!(rendered.draw.iter().any(|draw| matches!(draw,
-        Draw::Shape(rect, radius, stroke, color) if rect.x == category.rect.x && rect.y == category.rect.y
-            && *radius == 28. && *stroke == 1.5 && color[3] == 0.35
-    )));
+    // Focused "All": white and lifted. Selected Streaming: white at its resting size.
+    let all = white(&rendered, &Target::ClearFilter);
+    assert_eq!(all.len(), 1);
+    assert!(all[0].0 > 0. && all[0].1 > 0.);
+    assert_eq!(white(&rendered, &Target::Filter(1)), vec![(0., 0.)]);
+    assert!(white(&rendered, &Target::Filter(2)).is_empty());
     state.focus = Target::Filter(1);
     let focused = scene(&state);
-    assert!(focused.draw.iter().any(|draw| matches!(draw,
-        Draw::RoundedGradient(rect, radius, ..) if rect.x == category.rect.x && rect.y == category.rect.y && *radius == 28.
-    )));
+    assert!(white(&focused, &Target::Filter(1))[0].0 > 0.);
+    assert!(white(&focused, &Target::ClearFilter).is_empty());
 }
 
 #[test]
-fn clock_date_and_home_input_descriptions_use_larger_text() {
+fn clock_date_and_home_input_descriptions_use_tvos_text_styles() {
     use crate::renderer::Draw;
     for language in crate::i18n::Language::ALL {
         let mut state = ready();
         state.preferences.language = language;
         let rendered = scene(&state);
         let now = time::OffsetDateTime::UNIX_EPOCH;
+        // Clock in Body, date in Caption 1 (tvOS sizes; nothing below Caption 2).
         for (label, size) in [
             (
                 language.clock(
@@ -2784,9 +2847,9 @@ fn clock_date_and_home_input_descriptions_use_larger_text() {
                     state.preferences.hour_24,
                     state.preferences.show_seconds,
                 ),
-                24.,
+                29.,
             ),
-            (language.date(now), 18.4),
+            (language.date(now), 25.),
         ] {
             assert!(rendered.draw.iter().any(|draw| matches!(draw,
                 Draw::Text(text, rect, style, ..) if text == &label && style.size == size && rect.h >= size
@@ -2798,8 +2861,13 @@ fn clock_date_and_home_input_descriptions_use_larger_text() {
             state.preferences.input_name(input).is_some(),
             language,
         );
-        assert!(rendered.draw.iter().any(|draw| matches!(draw,
-            Draw::Text(text, rect, style, ..) if text == &description && style.size == 16.8 && rect.h == 25.2
+        // An input's status is its caption beneath the card while focused.
+        state.focus = Target::Input(input.id.clone());
+        let focused = scene(&state);
+        assert!(focused.draw.iter().any(|draw| matches!(draw,
+            Draw::Text(text, rect, style, ..) if (text == &description
+                || description.starts_with(text.trim_end_matches('…')))
+                && style.size >= 23. && rect.h == 32.
         )));
     }
 }
@@ -2812,10 +2880,11 @@ fn tv_settings_button_is_centered_alongside_navigation() {
         .iter()
         .find(|control| control.target == Target::TvSettings)
         .unwrap();
-    assert!((button.rect.y + button.rect.h / 2. - (42.5 + 68.6 / 2.)).abs() < 0.01);
-    assert_eq!(button.rect.h, 60.);
+    let bar = view::TAB_BAR;
+    assert!((button.rect.y + button.rect.h / 2. - (bar.y + bar.h / 2.)).abs() < 0.01);
+    assert_eq!(button.rect.h, bar.h);
     assert_eq!(button.rect.w, button.rect.h);
-    assert_eq!(button.rect.x + button.rect.w, 1836.);
+    assert_eq!(button.rect.x + button.rect.w, 1920. - view::SAFE_X);
     let (x, y) = button.rect.center();
     assert_eq!(
         ready().hit_test(&rendered.controls, x, y),
@@ -2841,7 +2910,7 @@ fn greeting_visibility_toggle_persists_without_clearing_name_or_hiding_date() {
         .iter()
         .find(|control| control.target == Target::GreetingToggle)
         .unwrap();
-    assert_eq!(toggle.rect.y, 164.8);
+    assert_eq!(toggle.rect.y, view::SETTINGS_TOP);
     assert!(rendered.draw.iter().any(|draw| matches!(draw,
         Draw::Text(label, ..) if label == state.preferences.language.t("showWidget")
     )));

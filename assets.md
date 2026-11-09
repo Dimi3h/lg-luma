@@ -44,7 +44,8 @@ YouTube's wordmark is white and its play mark red. Jellyfin retains its gradient
 CC BY-SA attribution. Source licence notices and this document travel inside the IPK.
 
 Generated `.build/assets/thumbnails/` are cropped/resized derivatives of the same wallpaper
-sources. Original sources remain in `assets/`; no artwork service is contacted on the TV.
+sources, as are the small blurred `wallpapers/*-blur.jpg` copies that glass panels sample (uploads
+get the same `wallpaper-blur.jpg`/`original-blur.jpg` copies beside the image). Original sources remain in `assets/`; no artwork service is contacted on the TV.
 
 ## Brand SVGs
 

@@ -2991,6 +2991,22 @@
     "sv": "Webbläsare",
     "cs": "Prohlížeč"
   },
+  "categoryAll": {
+    "en": "All",
+    "de": "Alle",
+    "es": "Todas",
+    "zh": "全部",
+    "zh-tw": "全部",
+    "pt": "Todos",
+    "it": "Tutte",
+    "ru": "Все",
+    "pl": "Wszystkie",
+    "fr": "Toutes",
+    "vi": "Tất cả",
+    "nl": "Alle",
+    "sv": "Alla",
+    "cs": "Vše"
+  },
   "categoryStreaming": {
     "zh-tw": "串流影音",
     "en": "Streaming",
