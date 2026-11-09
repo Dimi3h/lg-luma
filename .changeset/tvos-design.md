@@ -12,6 +12,7 @@ Restyle the launcher after current Apple tvOS (tvOS 26/27, Liquid Glass) and tur
 - **App names**: one On/Off setting in General; titles appear only beneath the focused card.
 - **Focus and motion**: the focused card, row or button lifts and grows with a deep shadow instead of drawing a ring, on a light spring with a slight overshoot; scrolling and page switches ease (about 200–250 ms). Reduced motion snaps all of it, and hit regions never move.
 - **Focus tilt** (Settings › General, on by default, off under Reduced motion): the focused card tilts towards the Magic Remote pointer or briefly towards a d-pad press, its layers separating (parallax) with a moving glint.
+- **Control Center**: OK (or a hold) on the clock, a hold on the shelf's weather button, or a click on the clock opens a tvOS-style glass panel from the right with Sleep (asks for a second OK), volume and mute, sound output, the inputs and the network status. TV calls run off the SDL thread; failures show a quiet notice.
 - **App artwork** (Settings › Widgets, on by default): the focused first-row app's background or splash image (else its icon) washes softly behind the top shelf, crossfading between apps; Reduced motion swaps instantly.
 - **Favorite badges** (Settings › General, off by default): the heart on pinned favourites is now optional.
 - **Typography and corners**: Inter Display (from the bundled Inter's optical-size axis) for large titles, lighter tracking, the date in sentence case, and continuous (superellipse) corners. Resting cards have no rim; it appears with the lift.

@@ -304,12 +304,13 @@ fn a_short_back_on_home_opens_recents_and_the_next_press_restores_the_app() {
 
 #[test]
 fn the_main_screen_header_is_only_the_clock() {
-    // tvOS has no tab bar on its Home Screen: nothing above the shelf is a control.
+    // tvOS has no tab bar on its Home Screen: above the shelf only the clock (which opens
+    // Control Center) is a control.
     let state = ready();
     assert!(
         controls(&state)
             .iter()
-            .all(|control| control.rect.y >= 120.)
+            .all(|control| control.rect.y >= 120. || control.target == Target::Clock)
     );
 }
 

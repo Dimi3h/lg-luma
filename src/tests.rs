@@ -233,8 +233,12 @@ fn remote_routes_through_the_shelf_grid_and_settings() {
     // Above the first row is the shelf's weather button (no location yet).
     state.direction(Direction::Up, &controls(&state));
     assert_eq!(state.focus, Target::WeatherConfigure);
+    // Above it the clock, the top of the screen.
     state.direction(Direction::Up, &controls(&state));
-    assert_eq!(state.focus, Target::WeatherConfigure);
+    assert_eq!(state.focus, Target::Clock);
+    state.direction(Direction::Up, &controls(&state));
+    assert_eq!(state.focus, Target::Clock);
+    state.direction(Direction::Down, &controls(&state));
     state.direction(Direction::Down, &controls(&state));
     assert_eq!(state.focus, Target::App("netflix".into()));
     // Netflix is the first card now that there is no Search card.
@@ -3493,4 +3497,86 @@ fn app_artwork_washes_the_shelf_for_first_row_apps_and_crossfades() {
     state.sync_wash();
     assert!(state.wash.is_none());
     assert!(!washed(&state));
+}
+
+#[test]
+fn control_center_opens_from_the_clock_and_drives_the_tv_only_through_its_worker() {
+    use crate::control_center::{Command, Reply, Status};
+    let mut state = ready();
+    state.open(Page::Home);
+    // Up from the first row reaches the shelf's weather button, then the clock.
+    state.direction(Direction::Up, &controls(&state));
+    state.direction(Direction::Up, &controls(&state));
+    assert_eq!(state.focus, Target::Clock);
+    assert!(controls(&state).iter().any(|c| c.target == Target::Clock));
+    state.direction(Direction::Down, &controls(&state));
+    assert_eq!(state.focus, Target::WeatherConfigure);
+    // Holding OK on the shelf opens it too.
+    state.hold();
+    assert!(matches!(state.overlay, Some(Overlay::ControlCenter { .. })));
+    assert_eq!(state.focus, Target::Control(0));
+    assert_eq!(state.control_outbox, [Command::Status]);
+    state.control_outbox.clear();
+    state.control_response(Reply {
+        command: Command::Status,
+        result: Ok(Status {
+            volume: Some(10),
+            muted: Some(false),
+            output: Some("tv_speaker".into()),
+            network: None,
+        }),
+    });
+    // Sleep needs a second OK, and moving away cancels it.
+    state.activate();
+    assert!(state.confirm_sleep && state.control_outbox.is_empty());
+    state.direction(Direction::Down, &controls(&state));
+    assert!(!state.confirm_sleep);
+    state.direction(Direction::Up, &controls(&state));
+    state.activate();
+    state.activate();
+    assert_eq!(state.control_outbox, [Command::Sleep]);
+    state.control_outbox.clear();
+    // Volume follows Left/Right; mute and output follow OK.
+    state.direction(Direction::Down, &controls(&state));
+    assert_eq!(state.focus, Target::Control(1));
+    state.direction(Direction::Right, &controls(&state));
+    state.direction(Direction::Right, &controls(&state));
+    state.direction(Direction::Left, &controls(&state));
+    assert_eq!(
+        state.control_outbox,
+        [
+            Command::SetVolume(11),
+            Command::SetVolume(12),
+            Command::SetVolume(11)
+        ]
+    );
+    state.control_outbox.clear();
+    state.direction(Direction::Down, &controls(&state));
+    state.activate();
+    assert_eq!(state.control_outbox, [Command::SetMuted(true)]);
+    state.direction(Direction::Down, &controls(&state));
+    state.activate();
+    assert_eq!(state.control.output.as_deref(), Some("external_arc"));
+    // A refused change shows a quiet notice and re-reads the TV.
+    state.control_outbox.clear();
+    state.control_response(Reply {
+        command: Command::SetOutput("external_arc".into()),
+        result: Err("denied".into()),
+    });
+    assert!(state.notice.is_some());
+    assert_eq!(state.control_outbox, [Command::Status]);
+    // The inputs follow; OK switches to one and closes the panel.
+    state.direction(Direction::Down, &controls(&state));
+    let Target::Input(id) = state.focus.clone() else {
+        panic!("Inputs follow the sound output: {:?}", state.focus);
+    };
+    assert_eq!(state.activate(), vec![Effect::Launch(id)]);
+    assert!(state.overlay.is_none());
+    // Back closes it and restores the shelf focus; a click on the clock opens it.
+    state.focus = Target::Clock;
+    state.activate();
+    assert!(matches!(state.overlay, Some(Overlay::ControlCenter { .. })));
+    assert!(state.back().is_empty());
+    assert!(state.overlay.is_none());
+    assert_eq!(state.focus, Target::Clock);
 }

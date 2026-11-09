@@ -19,7 +19,7 @@
 - No CJK fallback font ships: this fork's UI is English and Dutch only, so the Noto Sans SC/KR
   fonts were removed. Characters Inter lacks (for example CJK in an app title) draw as Inter's
   missing-glyph box.
-- Lucide interface icons: exported standalone SVG sources in `assets/ui-icons/`, ISC license
+- Lucide interface icons (including `volume`, `volume-x` and `speaker` for Control Center): exported standalone SVG sources in `assets/ui-icons/`, ISC license
   bundled at `assets/licenses/lucide.txt`. The Luma upload icon and the small `luma-mark.svg` reuse
   original project artwork under MIT. PlayStation/Apple TV input paths were supplied by the user;
   the brand marks belong to Sony/Apple. The Shield and Xbox input icons are the NVIDIA eye and Xbox logo from Simple

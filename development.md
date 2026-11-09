@@ -470,6 +470,24 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   tiny texture and stretches it, so linear filtering blurs it further; it costs one textured pass
   over the shelf only while a first-row app has focus. Curated brands without installed artwork use
   their card surface; desktop previews show those.
+- **Control Center**: the main screen's clock is a button. Up from the top card row reaches the
+  shelf's weather button (when no location is set) and then the clock; OK or a hold on the clock,
+  a hold on the weather button, or a pointer click on the clock opens a glass panel that slides in
+  from the right (250 ms; none under Reduced motion). Rows: **Sleep** (asks for a second OK, then
+  `luna://com.webos.service.tvpower/power/turnOff` with `{"reason":"remoteKey"}`), **Volume**
+  (Left/Right step by one through `luna://com.webos.audio/setVolume`, with a level bar),
+  **Mute** (`luna://com.webos.audio/setMuted`), **Sound output** (OK or Left/Right cycle TV
+  speakers, HDMI ARC, optical, Bluetooth and headphones through
+  `luna://com.webos.service.apiadapter/audio/changeSoundOutput`), then the visible inputs (OK
+  switches to one, reusing the input launch), and the network status at the bottom
+  (`luna://com.webos.service.connectionmanager/getStatus`). Opening it reads
+  `luna://com.webos.audio/getVolume` (webOS 5+ `volumeStatus` or the older flat reply),
+  `.../audio/getSoundOutput` and the network. `src/control_center.rs` runs every call on its own
+  worker: first as Luma, then, if the TV refuses Luma's identity, as root through Homebrew's
+  `exec` with `luna-send` (fixed `luna://com.webos.` URIs and Luma-built payloads only). Values the
+  TV does not answer are left out; a refused change shows a quiet notice and re-reads the status.
+  Back closes the panel. Desktop builds simulate the TV and never sleep. All of it is unverified on
+  a TV.
 - **Favorite badges** (Settings › General, default Off): a heart on pinned favourites. tvOS has no
   badges; the favourites block is first in the grid either way.
 - Tilt, glass and the second optical size are unverified on TV hardware.

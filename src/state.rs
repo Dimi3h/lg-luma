@@ -62,6 +62,10 @@ pub enum Target {
     Input(String),
     /// The grid's last card, which opens Settings.
     SettingsCard,
+    /// The clock on the main screen: OK, a hold or a click opens Control Center.
+    Clock,
+    /// A Control Center row: 0 Sleep, 1 Volume, 2 Mute, 3 Sound output (inputs follow).
+    Control(usize),
     Sidebar(usize),
     Setting(usize),
     Widget(usize),
@@ -136,15 +140,33 @@ pub struct Control {
 
 #[derive(Clone, Debug)]
 pub enum Overlay {
-    Options { id: String, restore: Target },
-    Delete { id: String, restore: Target },
-    Recents { restore: Target },
+    Options {
+        id: String,
+        restore: Target,
+    },
+    Delete {
+        id: String,
+        restore: Target,
+    },
+    Recents {
+        restore: Target,
+    },
     Keyboard,
     SystemKeyboard,
     WallpaperUpload,
     TileEditor,
-    BackgroundOptions { id: String, restore: Target },
-    BackgroundDelete { id: String, restore: Target },
+    BackgroundOptions {
+        id: String,
+        restore: Target,
+    },
+    BackgroundDelete {
+        id: String,
+        restore: Target,
+    },
+    /// tvOS Control Center: a glass panel at the right edge.
+    ControlCenter {
+        restore: Target,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -256,6 +278,11 @@ pub struct State {
     /// one fading out (Widgets › App artwork).
     pub wash: Option<(String, Instant)>,
     pub wash_previous: Option<(String, Instant)>,
+    /// Control Center's last known TV status, commands waiting for its worker, and whether
+    /// Sleep asks for a second OK.
+    pub control: crate::control_center::Status,
+    pub control_outbox: Vec<crate::control_center::Command>,
+    pub confirm_sleep: bool,
 }
 
 impl State {
@@ -300,7 +327,150 @@ impl State {
             motion: crate::motion::Motion::default(),
             wash: None,
             wash_previous: None,
+            control: crate::control_center::Status::default(),
+            control_outbox: vec![],
+            confirm_sleep: false,
         }
+    }
+
+    /// Opens Control Center over the main screen and asks the TV for its current status.
+    pub fn open_control_center(&mut self) {
+        if self.page != Page::Home || self.overlay.is_some() {
+            return;
+        }
+        self.overlay = Some(Overlay::ControlCenter {
+            restore: self.focus.clone(),
+        });
+        self.focus = Target::Control(0);
+        self.confirm_sleep = false;
+        self.pressed = None;
+        self.moving = None;
+        if !self.preferences.reduced_motion {
+            self.panel_started = Some(Instant::now());
+        }
+        self.control_outbox
+            .push(crate::control_center::Command::Status);
+        self.dirty = true;
+    }
+
+    /// Control Center's rows in order: Sleep, Volume, Mute, Sound output, then the inputs.
+    pub fn control_items(&self) -> Vec<Target> {
+        (0..4)
+            .map(Target::Control)
+            .chain(
+                self.inventory
+                    .inputs
+                    .iter()
+                    .filter(|input| self.preferences.input_visible(input))
+                    .map(|input| Target::Input(input.id.clone())),
+            )
+            .collect()
+    }
+
+    fn control_direction(&mut self, direction: Direction) {
+        use crate::control_center::{Command, OUTPUTS};
+        let items = self.control_items();
+        let index = items.iter().position(|item| *item == self.focus);
+        match (direction, &self.focus) {
+            (Direction::Left | Direction::Right, Target::Control(1)) => {
+                if let Some(volume) = self.control.volume {
+                    let volume = if matches!(direction, Direction::Left) {
+                        volume.saturating_sub(1)
+                    } else {
+                        (volume + 1).min(100)
+                    };
+                    if Some(volume) != self.control.volume {
+                        self.control.volume = Some(volume);
+                        self.control_outbox.push(Command::SetVolume(volume));
+                    }
+                }
+            }
+            (Direction::Left | Direction::Right, Target::Control(3)) => {
+                let current = self
+                    .control
+                    .output
+                    .as_deref()
+                    .and_then(|output| OUTPUTS.iter().position(|o| *o == output))
+                    .unwrap_or(0);
+                let next = if matches!(direction, Direction::Left) {
+                    (current + OUTPUTS.len() - 1) % OUTPUTS.len()
+                } else {
+                    (current + 1) % OUTPUTS.len()
+                };
+                self.control.output = Some(OUTPUTS[next].into());
+                self.control_outbox
+                    .push(Command::SetOutput(OUTPUTS[next].into()));
+            }
+            (Direction::Up, _) => {
+                if let Some(index) = index.filter(|index| *index > 0) {
+                    self.focus = items[index - 1].clone();
+                }
+            }
+            (Direction::Down, _) => {
+                if let Some(index) = index.filter(|index| index + 1 < items.len()) {
+                    self.focus = items[index + 1].clone();
+                }
+            }
+            _ => {}
+        }
+        if self.focus != Target::Control(0) {
+            self.confirm_sleep = false;
+        }
+    }
+
+    /// OK in Control Center. Sleep needs a second OK; an input switches to it.
+    fn control_activate(&mut self) -> Vec<Effect> {
+        use crate::control_center::{Command, OUTPUTS};
+        match self.focus.clone() {
+            Target::Control(0) if self.confirm_sleep => {
+                self.confirm_sleep = false;
+                self.control_outbox.push(Command::Sleep);
+            }
+            Target::Control(0) => self.confirm_sleep = true,
+            Target::Control(2) => {
+                let muted = !self.control.muted.unwrap_or(false);
+                self.control.muted = Some(muted);
+                self.control_outbox.push(Command::SetMuted(muted));
+            }
+            Target::Control(3) => {
+                let current = self
+                    .control
+                    .output
+                    .as_deref()
+                    .and_then(|output| OUTPUTS.iter().position(|o| *o == output))
+                    .unwrap_or(0);
+                let next = OUTPUTS[(current + 1) % OUTPUTS.len()];
+                self.control.output = Some(next.into());
+                self.control_outbox.push(Command::SetOutput(next.into()));
+            }
+            Target::Input(id) if !self.launching => {
+                self.overlay = None;
+                self.panel_started = None;
+                self.focus = self.first_content();
+                return vec![Effect::Launch(id)];
+            }
+            _ => {}
+        }
+        self.dirty = true;
+        vec![]
+    }
+
+    /// A Control Center reply: the TV's status after the command, or a quiet notice.
+    pub fn control_response(&mut self, reply: crate::control_center::Reply) {
+        match reply.result {
+            Ok(status) => self.control = status,
+            Err(_) => {
+                self.notify(self.preferences.language.t("controlUnavailable"));
+                // Re-read what the TV actually has after a refused change.
+                if reply.command != crate::control_center::Command::Status
+                    && reply.command != crate::control_center::Command::Sleep
+                {
+                    self.control_outbox
+                        .push(crate::control_center::Command::Status);
+                }
+            }
+        }
+        self.dirty = true;
     }
 
     /// The app whose artwork washes the top shelf: the focused app in the first row.
@@ -1144,6 +1314,10 @@ impl State {
         if self.recents_open() {
             return self.recent_direction(direction);
         }
+        if matches!(self.overlay, Some(Overlay::ControlCenter { .. })) {
+            self.control_direction(direction);
+            return vec![];
+        }
         if matches!(self.overlay, Some(Overlay::SystemKeyboard)) {
             // The TV keyboard owns its arrows until Done/Back dismisses it.
             return vec![];
@@ -1578,8 +1752,11 @@ impl State {
             .iter()
             .map(|input| Target::Input(input.id.clone()))
             .collect();
-        let shelf = (self.preferences.show_weather && self.preferences.weather_location.is_none())
-            .then_some(Target::WeatherConfigure);
+        let weather = (self.preferences.show_weather
+            && self.preferences.weather_location.is_none())
+        .then_some(Target::WeatherConfigure);
+        // Above the cards is the shelf: its weather button when it has one, then the clock.
+        let shelf = weather.clone().or(Some(Target::Clock));
         // Moving within one block of six-column rows; leaving it by its top or bottom edge.
         let step = |items: &[Target], index: usize| -> Result<Option<Target>, bool> {
             let column = index % APPS_COLUMNS;
@@ -1627,6 +1804,15 @@ impl State {
         }
         if self.focus == Target::WeatherConfigure {
             return Some(match direction {
+                Direction::Up => Some(Target::Clock),
+                Direction::Down if !inputs.is_empty() => inputs.first().cloned(),
+                Direction::Down => Some(self.first_content()),
+                _ => None,
+            });
+        }
+        if self.focus == Target::Clock {
+            return Some(match direction {
+                Direction::Down if weather.is_some() => weather,
                 Direction::Down if !inputs.is_empty() => inputs.first().cloned(),
                 Direction::Down => Some(self.first_content()),
                 _ => None,
@@ -1727,6 +1913,14 @@ impl State {
     /// Holding OK on a pinned favourite reorders it (as on tvOS, where icons jiggle);
     /// on any other app it opens the options popup.
     pub fn hold(&mut self) {
+        // Holding OK on the shelf (its clock or weather) opens Control Center.
+        if self.page == Page::Home
+            && self.overlay.is_none()
+            && matches!(self.focus, Target::Clock | Target::WeatherConfigure)
+        {
+            self.open_control_center();
+            return;
+        }
         if self.page == Page::Home
             && self.overlay.is_none()
             && let Target::App(id) = &self.focus
@@ -1993,6 +2187,9 @@ impl State {
                 _ => vec![],
             };
         }
+        if matches!(self.overlay, Some(Overlay::ControlCenter { .. })) {
+            return self.control_activate();
+        }
         if self.moving.take().is_some() {
             // Order was saved at every move. A fresh OK release finishes the
             // mode and keeps the selected favorite, rather than launching it.
@@ -2025,6 +2222,7 @@ impl State {
             Target::App(id) | Target::Input(id) if !self.launching => {
                 return vec![Effect::Launch(id)];
             }
+            Target::Clock => self.open_control_center(),
             Target::OpenApp if !self.launching => {
                 if let Some(Overlay::Options { id, .. }) = &self.overlay
                     && self.inventory.apps.iter().any(|app| &app.id == id)
@@ -2561,6 +2759,13 @@ impl State {
                     self.recents.visibility = 0.;
                     self.recents.closing_focus = None;
                 }
+            }
+            if let Overlay::ControlCenter { restore } = overlay {
+                self.focus = restore;
+                self.confirm_sleep = false;
+                self.pressed = None;
+                self.reconcile_focus();
+                return vec![];
             }
             if let Overlay::Options { restore, .. } | Overlay::Recents { restore } = overlay {
                 self.focus = restore;

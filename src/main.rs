@@ -6,6 +6,7 @@ mod app_artwork;
 mod app_subscription;
 mod branding;
 mod companion;
+mod control_center;
 mod damage;
 mod diagnostics;
 mod egl_damage;
@@ -701,6 +702,8 @@ fn run() -> Result<(), String> {
         options.preferences.is_none() && options.test_extra_apps == 0,
     );
     let webhook_service = webhook::Service::new();
+    // Control Center's Luna calls run on their own worker; desktop builds simulate the TV.
+    let control_service = control_center::Service::new(webos);
     let update_service = update::Service::new(public_update_checks);
     effects(
         vec![Effect::Refresh],
@@ -1069,6 +1072,12 @@ fn run() -> Result<(), String> {
         }
         while let Ok(response) = updates.receiver.try_recv() {
             state.install_response(response);
+        }
+        for command in state.control_outbox.drain(..) {
+            control_service.send(command);
+        }
+        while let Ok(reply) = control_service.receiver.try_recv() {
+            state.control_response(reply);
         }
         while let Ok(response) = platform.receiver.try_recv() {
             match response {

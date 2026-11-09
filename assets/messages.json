@@ -982,5 +982,53 @@
   "appArtwork": {
     "en": "App artwork",
     "nl": "App-achtergrond"
+  },
+  "controlCenter": {
+    "en": "Control Center",
+    "nl": "Bedieningspaneel"
+  },
+  "sleep": {
+    "en": "Sleep",
+    "nl": "Sluimer"
+  },
+  "sleepConfirm": {
+    "en": "Press OK again to turn off the TV",
+    "nl": "Druk nogmaals op OK om de tv uit te zetten"
+  },
+  "volume": {
+    "en": "Volume",
+    "nl": "Volume"
+  },
+  "mute": {
+    "en": "Mute",
+    "nl": "Dempen"
+  },
+  "soundOutput": {
+    "en": "Sound output",
+    "nl": "Geluidsuitvoer"
+  },
+  "outputSpeaker": {
+    "en": "TV speakers",
+    "nl": "Tv-luidsprekers"
+  },
+  "outputOptical": {
+    "en": "Optical",
+    "nl": "Optisch"
+  },
+  "outputHeadphones": {
+    "en": "Headphones",
+    "nl": "Koptelefoon"
+  },
+  "networkWired": {
+    "en": "Wired network",
+    "nl": "Bekabeld netwerk"
+  },
+  "networkOffline": {
+    "en": "Not connected",
+    "nl": "Niet verbonden"
+  },
+  "controlUnavailable": {
+    "en": "This TV setting couldn't be changed.",
+    "nl": "Deze tv-instelling kon niet worden gewijzigd."
   }
 }
