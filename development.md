@@ -461,6 +461,15 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   radial glint (`Draw::Glow`, one textured pass masked to the card) follows the tilt. Only the
   focused card draws it, only while it is tilted; the tilt settles exactly, so a still pointer
   and released keys stop redrawing. Hit regions never move.
+- **App artwork** (Settings › Widgets, default On): while an app in the first row has focus, its
+  artwork washes softly behind the top shelf, dimmed and fading out above the grid, and crossfades
+  (350 ms) between apps; Reduced motion swaps instantly. The artwork worker reads the manifest's
+  `bgImage`, then `splashBackground`, then the app's icons (up to 4 MiB for a background, the icon
+  limit otherwise; through `luma-helper read-app-icon` with `"wash": true` in jailed installs),
+  decodes it there and reduces it to a 48 × 27 opaque, blurred image. The SDL thread uploads that
+  tiny texture and stretches it, so linear filtering blurs it further; it costs one textured pass
+  over the shelf only while a first-row app has focus. Curated brands without installed artwork use
+  their card surface; desktop previews show those.
 - **Favorite badges** (Settings › General, default Off): a heart on pinned favourites. tvOS has no
   badges; the favourites block is first in the grid either way.
 - Tilt, glass and the second optical size are unverified on TV hardware.

@@ -978,5 +978,9 @@
   "hiddenApps": {
     "en": "Hidden apps",
     "nl": "Verborgen apps"
+  },
+  "appArtwork": {
+    "en": "App artwork",
+    "nl": "App-achtergrond"
   }
 }

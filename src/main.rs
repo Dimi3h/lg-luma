@@ -435,6 +435,7 @@ fn main() {
 }
 
 fn compose(state: &mut State, assets: &view::Assets, now: OffsetDateTime) -> view::Scene {
+    state.sync_wash();
     state.sync_motion();
     let mut scene = view::scene(state, assets, now);
     if !state.pointer && state.overlay.is_none() && state.reveal_focus(&scene.controls) {

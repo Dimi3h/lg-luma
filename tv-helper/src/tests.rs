@@ -573,6 +573,7 @@ fn icon_discovery_uses_live_installation_then_manifest_and_default_fallbacks() {
         directory: Some(dir.into()),
         large_icon: None,
         icon: None,
+        wash: false,
     };
     let reply = files::read_icons(&f, &source).unwrap();
     assert_eq!(reply["icons"], json!(["6e6f726d616c", "64656661756c74"]));
@@ -592,6 +593,7 @@ fn icon_limits_are_aggregate_and_duplicate_paths_are_not_read_twice() {
         directory: None,
         large_icon: None,
         icon: None,
+        wash: false,
     };
     let reply = files::read_icons(&f, &source).unwrap();
     assert_eq!(reply["icons"].as_array().unwrap().len(), 1);
@@ -614,6 +616,7 @@ fn icon_paths_cannot_escape_but_shell_punctuation_remains_literal() {
             directory: None,
             large_icon: None,
             icon: Some(icon.into()),
+            wash: false,
         };
         assert_eq!(files::read_icons(&f, &source).unwrap()["icons"], json!([]));
     }
@@ -622,6 +625,7 @@ fn icon_paths_cannot_escape_but_shell_punctuation_remains_literal() {
         directory: None,
         large_icon: None,
         icon: Some(name.into()),
+        wash: false,
     };
     assert_eq!(
         files::read_icons(&f, &source).unwrap()["icons"],
@@ -637,6 +641,7 @@ fn invalid_ids_and_unrelated_manifests_cannot_select_private_artwork() {
         directory: None,
         large_icon: None,
         icon: None,
+        wash: false,
     };
     assert!(files::read_icons(&f, &s).is_err());
     s.id = "sample".into();

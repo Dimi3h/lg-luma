@@ -229,6 +229,8 @@ pub struct Preferences {
     pub favorite_badges: bool,
     /// The focused card tilts towards the pointer or a d-pad press, with a moving highlight.
     pub focus_tilt: bool,
+    /// The focused first-row app's artwork as a soft wash behind the top shelf.
+    pub app_artwork: bool,
     pub hour_24: bool,
     pub reduced_motion: bool,
     pub show_seconds: bool,
@@ -271,6 +273,7 @@ impl Default for Preferences {
             show_inputs: false,
             favorite_badges: false,
             focus_tilt: true,
+            app_artwork: true,
             hour_24: false,
             reduced_motion: false,
             show_seconds: false,

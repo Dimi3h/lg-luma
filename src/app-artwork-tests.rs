@@ -386,6 +386,7 @@ fn unavailable_icons_are_not_retried_on_every_redraw() {
 fn hundreds_of_apps_stay_within_the_cache_bounds_across_refreshes() {
     let service = Service::with_loader(true, |_| {
         Some(Artwork {
+            wash: false,
             key: String::new(),
             pixels: RgbaImage::new(256, 256),
             backdrop: [[20; 3]; 2],
@@ -416,6 +417,7 @@ fn hundreds_of_apps_stay_within_the_cache_bounds_across_refreshes() {
 fn decoded_cache_evicts_old_icons_when_scrolling_through_many_apps() {
     let service = Service::with_loader(true, |_| {
         Some(Artwork {
+            wash: false,
             key: String::new(),
             pixels: RgbaImage::new(256, 256),
             backdrop: [[20; 3]; 2],
@@ -697,4 +699,51 @@ fn reset_discards_prefetch_backlog_and_queued_requests() {
     assert_eq!(service.cache.borrow().entries.len(), 1);
     assert!(service.cache.borrow().entries.contains_key(&current));
     assert!(observed.try_recv().is_err());
+}
+
+#[test]
+fn a_wash_prefers_the_background_image_and_is_tiny_and_opaque() {
+    // Reads are simulated, under an installed-app root as on the TV.
+    let directory = PathBuf::from("/media/developer/apps/usr/palm/applications/sample");
+    let png = |color: [u8; 4], width, height| {
+        let mut bytes = Vec::new();
+        image::RgbaImage::from_pixel(width, height, image::Rgba(color))
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        bytes
+    };
+    let files: std::collections::HashMap<PathBuf, Vec<u8>> = [
+        (
+            directory.join("appinfo.json"),
+            serde_json::to_vec(&json!({
+                "id": "sample", "icon": "icon.png", "bgImage": "background.png"
+            }))
+            .unwrap(),
+        ),
+        (directory.join("icon.png"), png([0, 0, 255, 0], 80, 80)),
+        (
+            directory.join("background.png"),
+            png([200, 40, 10, 255], 640, 480),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    let read = |path: &Path, limit: usize| files.get(path).filter(|b| b.len() <= limit).cloned();
+    let source = Source::new("sample", &json!({"folderPath": directory}));
+    let wash = load_local(&source.wash(), read).unwrap();
+    assert!(wash.wash);
+    assert_eq!(wash.pixels.dimensions(), (WASH_SIZE[0], WASH_SIZE[1]));
+    assert!(wash.pixels.pixels().all(|pixel| pixel[3] == 255));
+    assert!(
+        wash.pixels.get_pixel(10, 10)[0] > 150,
+        "The background image, not the icon"
+    );
+    // The icon request for the same app is unaffected.
+    assert!(!load_local(&source, read).unwrap().wash);
+    // A transparent icon alone still makes an opaque wash.
+    let icon_only = decode_wash(&png([0, 0, 255, 0], 80, 80)).unwrap();
+    assert!(icon_only.pixels.pixels().all(|pixel| pixel[3] == 255));
 }

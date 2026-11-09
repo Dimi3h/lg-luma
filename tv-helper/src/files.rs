@@ -39,6 +39,9 @@ pub struct IconSource {
     pub directory: Option<String>,
     pub large_icon: Option<String>,
     pub icon: Option<String>,
+    /// Luma's top-shelf wash: the manifest's background or splash image first, then the icons.
+    #[serde(default)]
+    pub wash: bool,
 }
 pub fn read_icons(system: &impl System, source: &IconSource) -> Result<Value> {
     if !valid_app_id(&source.id) {
@@ -66,7 +69,17 @@ pub fn read_icons(system: &impl System, source: &IconSource) -> Result<Value> {
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
             .filter(|m| m["id"] == source.id)
             .unwrap_or(Value::Null);
+        let backgrounds = if source.wash {
+            [
+                manifest["bgImage"].as_str(),
+                manifest["splashBackground"].as_str(),
+            ]
+        } else {
+            [None, None]
+        };
         for icon in [
+            backgrounds[0],
+            backgrounds[1],
             source.large_icon.as_deref(),
             manifest["largeIcon"].as_str(),
             source.icon.as_deref(),

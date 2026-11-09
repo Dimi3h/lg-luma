@@ -37,6 +37,9 @@ pub struct Source {
     // Part of the cache key: an app update changes it, so its icon is read
     // again, while unchanged apps keep their decoded artwork across refreshes.
     version: Option<String>,
+    /// The soft top-shelf wash: the manifest's background or splash image (else the icon),
+    /// reduced to a few dozen pixels so the GPU's filtering blurs it.
+    wash: bool,
 }
 
 impl Source {
@@ -56,6 +59,15 @@ impl Source {
             large_icon: text("largeIcon").map(str::to_owned),
             icon: text("icon").map(str::to_owned),
             version: text("version").map(str::to_owned),
+            wash: false,
+        }
+    }
+
+    /// The same app's top-shelf wash instead of its icon.
+    pub fn wash(&self) -> Self {
+        Self {
+            wash: true,
+            ..self.clone()
         }
     }
 
@@ -73,6 +85,8 @@ impl Source {
 
 pub struct Artwork {
     pub key: String,
+    /// A top-shelf wash, drawn stretched over its whole rectangle rather than inset.
+    pub wash: bool,
     pub pixels: RgbaImage,
     /// The card behind the icon: top and bottom of a vertical gradient (equal when flat).
     pub backdrop: [[u8; 3]; 2],
@@ -141,9 +155,75 @@ fn decode(bytes: &[u8]) -> Option<Artwork> {
     let backdrop = backdrop(&pixels);
     Some(Artwork {
         key: String::new(),
+        wash: false,
         pixels,
         backdrop,
     })
+}
+
+/// Largest background/splash file read for a wash; the decoded image is reduced at once.
+pub const MAX_WASH_FILE: usize = 4 * 1024 * 1024;
+/// A wash is this small (16:9): stretched across the shelf, linear filtering blurs it.
+pub const WASH_SIZE: [u32; 2] = [48, 27];
+
+/// A background, splash image or icon as a tiny, blurred 16:9 wash, cropped to cover.
+pub fn decode_wash(bytes: &[u8]) -> Option<Artwork> {
+    let mut reader = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(4096);
+    limits.max_image_height = Some(4096);
+    limits.max_alloc = Some(80 * 1024 * 1024);
+    reader.limits(limits);
+    let image = reader.decode().ok()?.into_rgba8();
+    let (width, height) = image.dimensions();
+    if width == 0 || height == 0 {
+        return None;
+    }
+    // Cover 16:9: crop the longer side around the centre.
+    let (crop_w, crop_h) = if width * 9 > height * 16 {
+        (height * 16 / 9, height)
+    } else {
+        (width, width * 9 / 16)
+    };
+    let cropped = image::imageops::crop_imm(
+        &image,
+        (width - crop_w.max(1)) / 2,
+        (height - crop_h.max(1)) / 2,
+        crop_w.max(1),
+        crop_h.max(1),
+    )
+    .to_image();
+    let small = image::imageops::resize(
+        &cropped,
+        WASH_SIZE[0],
+        WASH_SIZE[1],
+        image::imageops::FilterType::Triangle,
+    );
+    let mut pixels = image::imageops::blur(&small, 1.6);
+    // Transparent icons wash in their own colour, not black.
+    for pixel in pixels.pixels_mut() {
+        pixel[3] = 255;
+    }
+    let average = average(&pixels);
+    Some(Artwork {
+        key: String::new(),
+        wash: true,
+        pixels,
+        backdrop: [average, average],
+    })
+}
+
+fn average(image: &RgbaImage) -> [u8; 3] {
+    let count = image.pixels().len().max(1) as u64;
+    let mut sum = [0u64; 3];
+    for pixel in image.pixels() {
+        for channel in 0..3 {
+            sum[channel] += pixel[channel] as u64;
+        }
+    }
+    sum.map(|s| (s / count) as u8)
 }
 
 /// Scales with premultiplied alpha, so the colour of transparent pixels (often black) never
@@ -365,6 +445,14 @@ fn load(source: &Source) -> Option<Artwork> {
     if let Some(image) = load_local(source, read_bounded) {
         return Some(image);
     }
+    // The elevated reader returns icons only, which still make a wash.
+    let decode = |bytes: &[u8]| {
+        if source.wash {
+            decode_wash(bytes)
+        } else {
+            decode(bytes)
+        }
+    };
     // Running as root in place of LG's Home every file is readable already; the elevated
     // service below would only spend seconds per icon to fail the same way.
     if crate::platform::runs_as_lg_home() {
@@ -395,19 +483,38 @@ fn load_local(
                 .and_then(|m| m.get(key))
                 .and_then(Value::as_str)
         };
-        for icon in [
-            source.large_icon.as_deref(),
-            manifest_icon("largeIcon"),
-            source.icon.as_deref(),
-            manifest_icon("icon"),
-            Some("icon.png"),
-        ]
-        .into_iter()
-        .flatten()
+        // A wash prefers the app's own background or splash image (webOS appinfo
+        // `bgImage`, `splashBackground`), then falls back to its icons.
+        let backgrounds = if source.wash {
+            [manifest_icon("bgImage"), manifest_icon("splashBackground")]
+        } else {
+            [None, None]
+        };
+        for (icon, limit) in backgrounds
+            .into_iter()
+            .map(|icon| (icon, MAX_WASH_FILE))
+            .chain(
+                [
+                    source.large_icon.as_deref(),
+                    manifest_icon("largeIcon"),
+                    source.icon.as_deref(),
+                    manifest_icon("icon"),
+                    Some("icon.png"),
+                ]
+                .into_iter()
+                .map(|icon| (icon, MAX_FILE)),
+            )
+            .filter_map(|(icon, limit)| Some((icon?, limit)))
         {
             if let Some(artwork) = icon_path(&directory, icon)
-                .and_then(|path| read(&path, MAX_FILE))
-                .and_then(|bytes| decode(&bytes))
+                .and_then(|path| read(&path, limit))
+                .and_then(|bytes| {
+                    if source.wash {
+                        decode_wash(&bytes)
+                    } else {
+                        decode(&bytes)
+                    }
+                })
             {
                 return Some(artwork);
             }
@@ -530,7 +637,11 @@ impl Service {
                         }
                     };
                     let image = loader(&request.source).map(|mut image| {
-                        image.key = format!("installed-icon:{}", request.token);
+                        image.key = format!(
+                            "installed-{}:{}",
+                            if request.source.wash { "wash" } else { "icon" },
+                            request.token
+                        );
                         Arc::new(image)
                     });
                     if responses.send(Reply { request, image }).is_err() {

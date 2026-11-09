@@ -1323,6 +1323,37 @@ fn home(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
     let language = state.preferences.language;
     let s = state.scroll;
     let content_start = out.draw.len();
+    // The focused first-row app's artwork, softly behind the shelf, crossfading between apps.
+    if state.wash.is_some() || state.wash_previous.is_some() {
+        let wash_bottom = grid_y(state) + 60.;
+        out.draw.push(Draw::EdgeFade(Some([
+            -2.,
+            -1.,
+            wash_bottom - 220.,
+            wash_bottom,
+        ])));
+        if let Some((id, since)) = &state.wash_previous {
+            wash(
+                out,
+                state,
+                assets,
+                id,
+                1. - state.wash_progress(*since),
+                wash_bottom,
+            );
+        }
+        if let Some((id, since)) = &state.wash {
+            wash(
+                out,
+                state,
+                assets,
+                id,
+                state.wash_progress(*since),
+                wash_bottom,
+            );
+        }
+        out.draw.push(Draw::EdgeFade(None));
+    }
     let shelf_start = out.draw.len();
     if state.preferences.show_date {
         // On the clock's line, after the clock (drawn by `header`).
@@ -1456,6 +1487,35 @@ fn home(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
     }
     out.draw.push(Draw::EdgeFade(None));
     out.shift(content_start, 0., s - state.display_scroll());
+}
+
+/// One app's top-shelf wash: its background, splash image or icon reduced to a few dozen
+/// pixels (decoded on the artwork worker) and stretched, dimmed, behind the shelf. Curated
+/// brands without installed artwork use their card surface.
+fn wash(out: &mut Scene, state: &State, assets: &Assets, id: &str, alpha: f32, bottom: f32) {
+    let Some(app) = state.inventory.apps.iter().find(|app| app.id == id) else {
+        return;
+    };
+    let rect = Rect::new(0., 0., 1920., bottom);
+    // Dimmed so white shelf text stays readable over bright artwork.
+    let tint = [0.62, 0.62, 0.62, 0.6 * alpha];
+    if crate::branding::for_key(&app.brand).is_none() {
+        if let Some(image) = app
+            .icon
+            .as_ref()
+            .and_then(|source| assets.artwork.get(&source.wash()))
+        {
+            out.draw.push(Draw::AppImage(image, rect, 0., tint));
+        }
+    } else {
+        out.draw.push(Draw::TintedImage(
+            assets.path(format!("surfaces/{}.png", app.brand)),
+            rect,
+            0.,
+            false,
+            tint,
+        ));
+    }
 }
 
 /// Settings as a grid card, as tvOS shows it on its Home Screen: a glass face with a large
@@ -2776,10 +2836,13 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                 (1, "weather", "weather-sun"),
                 (2, "shortcuts", "sparkles"),
                 (3, "inputs", "input-hdmi"),
+                (5, "appArtwork", "tv"),
             ]
             .into_iter()
             .enumerate()
             {
+                // App artwork is a toggle; the others open their subpage.
+                let toggle = widget == 5;
                 row(
                     out,
                     state,
@@ -2789,10 +2852,16 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                         rect: settings_rect(row_y(index) - s, ROW_H),
                         title: language.t(key),
                         icon: Some(icon),
-                        value: None,
+                        value: toggle.then(|| {
+                            language.t(if state.preferences.app_artwork {
+                                "stateOn"
+                            } else {
+                                "stateOff"
+                            })
+                        }),
                         description: None,
                         selected: false,
-                        chevron: true,
+                        chevron: !toggle,
                     },
                 );
             }

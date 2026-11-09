@@ -25,6 +25,8 @@ pub const BACKGROUND_FADE: f32 = 0.4;
 /// The clock line; scrolled content is not hit-testable above it.
 pub const MAIN_TOP: f32 = 120.;
 pub const CYCLE_FADE: f32 = 1.6;
+/// Crossfade of the top-shelf wash between apps, in seconds.
+pub const WASH_FADE: f32 = 0.35;
 
 /// A card of the main screen's grid (inputs, apps and the system cards).
 fn is_grid_card(target: &Target) -> bool {
@@ -250,6 +252,10 @@ pub struct State {
     pub recents: crate::recents::Recents,
     /// Display-only easing of focus, scrolling and page switches.
     pub motion: crate::motion::Motion,
+    /// The top-shelf wash: the app whose artwork shows behind the shelf, since when, and the
+    /// one fading out (Widgets › App artwork).
+    pub wash: Option<(String, Instant)>,
+    pub wash_previous: Option<(String, Instant)>,
 }
 
 impl State {
@@ -292,6 +298,49 @@ impl State {
             input_name: String::new(),
             recents: crate::recents::Recents::default(),
             motion: crate::motion::Motion::default(),
+            wash: None,
+            wash_previous: None,
+        }
+    }
+
+    /// The app whose artwork washes the top shelf: the focused app in the first row.
+    fn wash_target(&self) -> Option<String> {
+        if !self.preferences.app_artwork || self.page != Page::Home || self.overlay.is_some() {
+            return None;
+        }
+        match &self.focus {
+            Target::App(id) if self.in_first_row(&self.focus) => Some(id.clone()),
+            _ => None,
+        }
+    }
+
+    /// Follows focus with the top-shelf wash, crossfading between apps (an instant swap under
+    /// Reduced motion). Called before each scene is built.
+    pub fn sync_wash(&mut self) {
+        let target = self.wash_target();
+        if self.wash.as_ref().map(|(id, _)| id) != target.as_ref() {
+            let now = Instant::now();
+            let previous = self.wash.take().map(|(id, _)| (id, now));
+            self.wash_previous = previous.filter(|_| !self.preferences.reduced_motion);
+            self.wash = target.map(|id| (id, now));
+            self.dirty = true;
+        }
+        if self
+            .wash_previous
+            .as_ref()
+            .is_some_and(|(_, since)| since.elapsed().as_secs_f32() >= WASH_FADE)
+        {
+            self.wash_previous = None;
+            self.dirty = true;
+        }
+    }
+
+    /// How far a wash shown or hidden at `since` has faded in (1 = complete).
+    pub fn wash_progress(&self, since: Instant) -> f32 {
+        if self.preferences.reduced_motion {
+            1.
+        } else {
+            (since.elapsed().as_secs_f32() / WASH_FADE).min(1.)
         }
     }
 
@@ -474,6 +523,11 @@ impl State {
             || self.previous_background.is_some()
             || self.panel_started.is_some()
             || self.motion.animating()
+            || self.wash_previous.is_some()
+            || self
+                .wash
+                .as_ref()
+                .is_some_and(|(_, since)| self.wash_progress(*since) < 1.)
             || (!self.preferences.reduced_motion
                 && self
                     .notice
@@ -1275,7 +1329,7 @@ impl State {
             if matches!(
                 self.focus,
                 Target::Setting(1 | 4 | 7 | 11)
-                    | Target::Widget(_)
+                    | Target::Widget(0..=4)
                     | Target::InputMode(_)
                     | Target::WeatherLocation
                     | Target::WeatherTemperature
@@ -2057,6 +2111,10 @@ impl State {
                     4 => (Subpage::Date, Target::DateToggle),
                     // Like the other widgets, Inputs opens on its Show widget toggle.
                     3 => (Subpage::Inputs, Target::InputsToggle),
+                    5 => {
+                        self.preferences.app_artwork = !self.preferences.app_artwork;
+                        return vec![Effect::Save];
+                    }
                     _ => return vec![],
                 };
                 self.section = WIDGETS_SECTION;

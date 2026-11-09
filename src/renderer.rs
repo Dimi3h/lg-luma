@@ -1118,6 +1118,12 @@ impl Renderer {
             return;
         };
         texture.frame = self.frame;
+        if image.wash {
+            // A top-shelf wash fills its rectangle; the tiny texture's filtering blurs it.
+            let id = texture.id;
+            self.gradient_quad(rect, [0., 0., 1., 1.], radius, 0., [tint; 2], id, None);
+            return;
+        }
         let scale =
             (rect.w * 0.68 / texture.width as f32).min(rect.h * 0.68 / texture.height as f32);
         let w = texture.width as f32 * scale;

@@ -2532,7 +2532,8 @@ fn widgets_group_existing_settings_and_restore_each_parent_without_changing_pref
             _ => None,
         })
         .collect();
-    assert_eq!(widget_order, [4, 0, 1, 2, 3]);
+    // App artwork (5) is a toggle after the subpages.
+    assert_eq!(widget_order, [4, 0, 1, 2, 3, 5]);
     for (index, subpage) in [
         Subpage::Greeting,
         Subpage::Weather,
@@ -2617,7 +2618,7 @@ fn widgets_are_localized_without_legacy_sidebar_entries() {
                 .iter()
                 .filter(|c| matches!(c.target, Target::Widget(_)))
                 .count(),
-            5
+            6
         );
         for key in [
             "widgets",
@@ -2626,6 +2627,7 @@ fn widgets_are_localized_without_legacy_sidebar_entries() {
             "shortcuts",
             "inputs",
             "date",
+            "appArtwork",
         ] {
             assert!(page.draw.iter().any(|draw| matches!(draw, crate::renderer::Draw::Text(label, ..) if label == language.t(key))), "{key}/{language:?}");
         }
@@ -3434,4 +3436,61 @@ fn badge_and_tilt_preferences_default_and_toggle_from_general() {
     assert!(state.tilt_enabled());
     state.preferences.reduced_motion = true;
     assert!(!state.tilt_enabled());
+}
+
+#[test]
+fn app_artwork_washes_the_shelf_for_first_row_apps_and_crossfades() {
+    use crate::renderer::Draw;
+    let old: Preferences = serde_json::from_value(json!({"favorites": ["netflix"]})).unwrap();
+    assert!(old.app_artwork, "App artwork defaults on");
+    let mut state = ready();
+    state.open(Page::Home);
+    let disney = Target::App("com.disney.disneyplus-prod".into());
+    assert!(state.grid()[..6].contains(&disney));
+    state.focus = disney.clone();
+    state.sync_wash();
+    assert_eq!(
+        state.wash.as_ref().map(|(id, _)| id.as_str()),
+        Some("com.disney.disneyplus-prod")
+    );
+    let washed = |state: &State| {
+        scene(state).draw.iter().any(|draw| {
+            matches!(draw, Draw::TintedImage(path, rect, ..)
+                if path.contains("surfaces/") && rect.w == 1920.)
+        })
+    };
+    assert!(
+        washed(&state),
+        "A curated brand washes with its card surface"
+    );
+    // Leaving the first row fades the wash out; with motion it crossfades.
+    state.focus = state.grid()[13].clone();
+    state.sync_wash();
+    assert!(state.wash.is_none());
+    assert!(state.wash_previous.is_some());
+    assert!(state.animating());
+    // Reduced motion swaps instantly.
+    state.preferences.reduced_motion = true;
+    state.focus = disney.clone();
+    state.sync_wash();
+    state.focus = Target::App("netflix".into());
+    state.sync_wash();
+    assert!(state.wash_previous.is_none());
+    assert_eq!(state.wash_progress(state.wash.as_ref().unwrap().1), 1.);
+    // Widgets › App artwork switches it off.
+    state.open(Page::Settings);
+    state.section = crate::state::WIDGETS_SECTION;
+    state.focus = Target::Widget(5);
+    assert!(
+        controls(&state)
+            .iter()
+            .any(|c| c.target == Target::Widget(5))
+    );
+    assert_eq!(state.activate(), vec![Effect::Save]);
+    assert!(!state.preferences.app_artwork);
+    state.open(Page::Home);
+    state.focus = disney;
+    state.sync_wash();
+    assert!(state.wash.is_none());
+    assert!(!washed(&state));
 }
