@@ -1630,6 +1630,19 @@ fn run() -> Result<(), String> {
                 &updates,
             );
         }
+        // Location suggestions follow typing on the linear keyboard, off the SDL thread.
+        if let Some(command) = state.suggest_locations(Instant::now()) {
+            running &= effects(
+                vec![Effect::Weather(command)],
+                &mut state,
+                &platform,
+                &preferences_path,
+                &weather_service,
+                &wallpaper_service,
+                &webhook_service,
+                &updates,
+            );
+        }
         // The screensaver's idle timer runs only while Luma is visible and in front.
         if visible
             && focused

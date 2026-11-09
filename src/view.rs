@@ -4455,7 +4455,159 @@ fn delete_confirmation(out: &mut Scene, state: &State, assets: &Assets, id: &str
     }
 }
 
+/// tvOS's linear keyboard for the weather location: one row of keys that scrolls with focus,
+/// the text above it and live location suggestions beneath it (Down reaches them, OK picks
+/// one and closes the keyboard).
+fn linear_keyboard(out: &mut Scene, state: &State, assets: &Assets) {
+    let language = state.preferences.language;
+    let panel = Rect::new(SAFE_X, 230., 1920. - 2. * SAFE_X, 790.);
+    out.modal = Some(panel);
+    out.shadow(panel, PANEL_RADIUS, 90., 24., 0.42);
+    out.glass(panel, PANEL_RADIUS, Glass::Regular);
+    out.text(
+        language.t("cityPostcode"),
+        Rect::new(panel.x + 48., panel.y + 32., 1200., 56.),
+        TITLE3,
+        WHITE,
+        false,
+    );
+    let close = Rect::new(panel.x + panel.w - 48. - 60., panel.y + 30., 60., 60.);
+    let level = state.focus_level(&Target::CloseDialog);
+    let drawn = out.button(close, 30., level, false, BUTTON_LIFT);
+    out.icon(
+        assets,
+        "close",
+        drawn.inset(18. * drawn.w / close.w),
+        mix_color(WHITE, ON_LIGHT, level),
+    );
+    out.control(Target::CloseDialog, close, false);
+    // The text, large, with a cursor.
+    out.text(
+        format!("{}|", state.editing_text()),
+        Rect::new(panel.x + 48., panel.y + 112., panel.w - 96., 56.),
+        TITLE3.weight(500),
+        WHITE,
+        false,
+    );
+    // One row of keys: letters and digits, then Space, Delete, Clear and Done. The row scrolls
+    // so the focused key stays near the middle; keys outside the panel are not drawn.
+    let label = |key: &str| match key {
+        "Space" => language.t("space").to_owned(),
+        "Delete" => language.t("delete").to_owned(),
+        "Clear" => language.t("clear").to_owned(),
+        "Done" => language.t("done").to_owned(),
+        key => key.to_owned(),
+    };
+    let widths: Vec<f32> = KEYS
+        .iter()
+        .map(|key| {
+            if key.len() == 1 {
+                64.
+            } else {
+                (assets.width(&label(key), BODY.weight(600)) + 40.).max(120.)
+            }
+        })
+        .collect();
+    let gap = 12.;
+    let starts: Vec<f32> = widths
+        .iter()
+        .scan(0., |x, width| {
+            let start = *x;
+            *x += width + gap;
+            Some(start)
+        })
+        .collect();
+    let total = starts.last().unwrap() + widths.last().unwrap();
+    let row = Rect::new(panel.x + 40., panel.y + 212., panel.w - 80., 80.);
+    let focused = match state.focus {
+        Target::Key(index) => index,
+        _ => 0,
+    };
+    let offset =
+        (starts[focused] + widths[focused] / 2. - row.w / 2.).clamp(0., (total - row.w).max(0.));
+    for (index, key) in KEYS.iter().enumerate() {
+        let x = row.x + starts[index] - offset;
+        if x < row.x - 1. || x + widths[index] > row.x + row.w + 1. {
+            continue;
+        }
+        let rect = Rect::new(x, row.y, widths[index], row.h);
+        let target = Target::Key(index);
+        let level = if state.pressed.as_ref() == Some(&target) {
+            0.
+        } else {
+            state.focus_level(&target)
+        };
+        let drawn = grow(rect, BUTTON_LIFT * 1.5 * level);
+        if level > 0. {
+            out.lift_shadow(drawn, 16., level);
+            out.draw.push(Draw::RoundedGradient(
+                drawn,
+                16.,
+                c(0xffffff, level),
+                c(0xebebed, level),
+            ));
+        }
+        let text = label(key);
+        let style = assets.fit_text(&text, BODY.weight(600), rect.w - 12.);
+        out.text(
+            text,
+            Rect::new(drawn.x, drawn.y + (drawn.h - 36.) / 2., drawn.w, 36.),
+            style,
+            mix_color(WHITE, ON_LIGHT, level),
+            true,
+        );
+        out.control(target, rect, false);
+    }
+    // Suggestions as they arrive, or why there are none.
+    let mut y = row.y + row.h + 40.;
+    let status = if state.weather.searching {
+        Some(language.t("searching"))
+    } else {
+        state.weather.message.as_deref().map(|key| language.t(key))
+    };
+    if let Some(status) = status.filter(|_| state.weather.results.is_empty()) {
+        out.text(
+            status,
+            Rect::new(panel.x + 48., y, panel.w - 96., 36.),
+            BODY.weight(400),
+            SECONDARY,
+            false,
+        );
+    }
+    for (index, place) in state.weather.results.iter().enumerate().take(5) {
+        let rect = Rect::new(panel.x + 40., y, panel.w - 80., 72.);
+        let target = Target::WeatherResult(index);
+        let level = state.focus_level(&target);
+        let drawn = out.button(rect, ROW_RADIUS, level, false, ROW_LIFT);
+        out.icon(
+            assets,
+            "location",
+            Rect::new(drawn.x + 24., drawn.y + (drawn.h - 28.) / 2., 28., 28.),
+            mix_color(WHITE, ON_LIGHT, level),
+        );
+        let text = format!("{} · {}", place.name, place.detail());
+        let (text, style) = assets.single_line(&text, BODY, drawn.w - 100.);
+        out.text(
+            text,
+            Rect::new(
+                drawn.x + 70.,
+                drawn.y + (drawn.h - 36.) / 2.,
+                drawn.w - 100.,
+                36.,
+            ),
+            style,
+            mix_color(WHITE, ON_LIGHT, level),
+            false,
+        );
+        out.control(target, rect, false);
+        y += rect.h + 10.;
+    }
+}
+
 fn keyboard(out: &mut Scene, state: &State, assets: &Assets) {
+    if state.keyboard_field == TextField::Location {
+        return linear_keyboard(out, state, assets);
+    }
     let language = state.preferences.language;
     let panel = Rect::new(330., 250., 1260., 600.);
     out.modal = Some(panel);

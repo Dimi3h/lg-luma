@@ -295,6 +295,9 @@ pub struct State {
     pub control: crate::control_center::Status,
     pub control_outbox: Vec<crate::control_center::Command>,
     pub confirm_sleep: bool,
+    /// Live location suggestions: the query last seen while typing and when to search it.
+    pub suggested_query: String,
+    pub suggest_at: Option<Instant>,
     /// The last remote key, pointer movement or text input, for the screensaver's idle timer.
     pub last_input: Instant,
     /// The running screensaver: when it started and the wallpaper it started with.
@@ -347,6 +350,8 @@ impl State {
             control: crate::control_center::Status::default(),
             control_outbox: vec![],
             confirm_sleep: false,
+            suggested_query: String::new(),
+            suggest_at: None,
             last_input: Instant::now(),
             screensaver: None,
         }
@@ -386,6 +391,30 @@ impl State {
             crate::model::Appearance::Light => true,
             crate::model::Appearance::Automatic => !self.is_night(now),
         }
+    }
+
+    /// While the location keyboard is open, searches what was typed once typing pauses
+    /// (350 ms), so suggestions appear beneath the keys. Returns the search to run, if due.
+    pub fn suggest_locations(&mut self, now: Instant) -> Option<weather::Command> {
+        let typing = matches!(self.overlay, Some(Overlay::Keyboard))
+            && self.keyboard_field == TextField::Location;
+        if !typing {
+            self.suggest_at = None;
+            self.suggested_query.clear();
+            return None;
+        }
+        if self.weather.query != self.suggested_query {
+            self.suggested_query = self.weather.query.clone();
+            self.suggest_at = Some(now + Duration::from_millis(350));
+        }
+        if self.suggest_at.is_some_and(|at| now >= at) {
+            self.suggest_at = None;
+            if self.weather.query.trim().chars().count() >= 2 {
+                self.dirty = true;
+                return self.weather.search(self.preferences.language);
+            }
+        }
+        None
     }
 
     /// How long Luma waits without input before the screensaver, when it is on.
@@ -2229,11 +2258,15 @@ impl State {
             // The TV keyboard starts empty, so a new name replaces the old one.
             self.input_name.clear();
         }
-        if cfg!(all(
-            feature = "webos",
-            target_os = "linux",
-            target_arch = "arm"
-        )) {
+        // The weather location uses Luma's own tvOS-style linear keyboard everywhere, so its
+        // suggestions can sit beneath the keys; other fields use the TV's system keyboard.
+        if field != TextField::Location
+            && cfg!(all(
+                feature = "webos",
+                target_os = "linux",
+                target_arch = "arm"
+            ))
+        {
             self.overlay = Some(Overlay::SystemKeyboard);
             self.focus = match field {
                 TextField::Location => Target::WeatherQuery,
@@ -2480,6 +2513,11 @@ impl State {
             }
             Target::WeatherResult(index) => {
                 if let Some(place) = self.weather.results.get(index).cloned() {
+                    // A suggestion picked from the keyboard also closes it.
+                    if matches!(self.overlay, Some(Overlay::Keyboard)) {
+                        self.overlay = None;
+                        self.panel_started = None;
+                    }
                     self.preferences.weather_location = Some(place);
                     self.weather.invalidate_forecast();
                     self.weather.cancel_search();

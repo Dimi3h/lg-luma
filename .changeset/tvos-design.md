@@ -14,6 +14,7 @@ Restyle the launcher after current Apple tvOS (tvOS 26/27, Liquid Glass) and tur
 - **Focus tilt** (Settings › General, on by default, off under Reduced motion): the focused card tilts towards the Magic Remote pointer or briefly towards a d-pad press, its layers separating (parallax) with a moving glint.
 - **Control Center**: OK (or a hold) on the clock, a hold on the shelf's weather button, or a click on the clock opens a tvOS-style glass panel from the right with Sleep (asks for a second OK), volume and mute, sound output, the inputs and the network status. TV calls run off the SDL thread; failures show a quiet notice.
 - **Night wallpaper** (off by default): a background's options offer **Use at night**; between sunset and sunrise at the weather location (21:00–07:00 without one) it replaces the chosen wallpaper.
+- **Linear keyboard**: the weather location is entered on a tvOS-style single-row keyboard (also on the TV, instead of the system keyboard) with live location suggestions beneath it; OK on a suggestion saves it.
 - **Text size** (Settings › General): Default or Larger (about 1.15× body text; titles unchanged), with the three-row main screen still fitting.
 - **Jiggle**: while you move a favourite, all favourites wobble slightly, as tvOS icons do; none under Reduced motion.
 - **Appearance** (Settings › General): Dark (default, unchanged), Light (lighter wallpaper and glass, dark text) or Automatic, which switches at sunrise and sunset at the weather location (07:00–21:00 without one). Forecasts now include today's sunrise and sunset.

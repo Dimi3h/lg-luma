@@ -3865,3 +3865,61 @@ fn a_night_wallpaper_replaces_the_chosen_one_between_sunset_and_sunrise() {
     assert_eq!(state.preferences.night_background, None);
     assert_eq!(state.shown_background(at(22)), "dunes");
 }
+
+#[test]
+fn the_location_keyboard_is_one_row_and_suggests_places_as_you_type() {
+    use crate::state::{Overlay, TextField};
+    let mut state = ready();
+    state.focus = Target::WeatherConfigure;
+    state.activate();
+    assert!(matches!(state.overlay, Some(Overlay::Keyboard)));
+    assert_eq!(state.keyboard_field, TextField::Location);
+    // One row: every visible key shares a y, and the row scrolls with focus.
+    let keys: Vec<_> = controls(&state)
+        .into_iter()
+        .filter(|c| matches!(c.target, Target::Key(_)))
+        .collect();
+    assert!(keys.len() > 10 && keys.len() < crate::state::KEYS.len());
+    assert!(keys.iter().all(|key| key.rect.y == keys[0].rect.y));
+    for _ in 0..30 {
+        state.direction(Direction::Right, &controls(&state));
+    }
+    assert!(matches!(state.focus, Target::Key(index) if index >= 30));
+    // Typing pauses, then the place search runs on its own.
+    let start = std::time::Instant::now();
+    state.text("W");
+    assert!(state.suggest_locations(start).is_none());
+    assert!(
+        state
+            .suggest_locations(start + std::time::Duration::from_secs(1))
+            .is_none(),
+        "One character does not search"
+    );
+    state.text("enen");
+    assert!(state.suggest_locations(start).is_none());
+    let search = state.suggest_locations(start + std::time::Duration::from_secs(1));
+    assert!(
+        matches!(search, Some(crate::weather::Command::Search { ref query, .. }) if query == "Wenen")
+    );
+    // Results appear beneath the keys; Down reaches them, OK picks one and closes the keyboard.
+    let place = crate::weather::Location {
+        name: "Wenen".into(),
+        region: "Wenen".into(),
+        country: "Oostenrijk".into(),
+        latitude: 48.2085,
+        longitude: 16.3721,
+    };
+    state.weather.searching = false;
+    state.weather.results = vec![place.clone()];
+    let rendered = controls(&state);
+    let result = rendered
+        .iter()
+        .find(|c| c.target == Target::WeatherResult(0))
+        .unwrap();
+    assert!(result.rect.y > keys[0].rect.y);
+    state.direction(Direction::Down, &rendered);
+    assert_eq!(state.focus, Target::WeatherResult(0));
+    assert_eq!(state.activate(), vec![Effect::Save]);
+    assert!(state.overlay.is_none());
+    assert_eq!(state.preferences.weather_location, Some(place));
+}

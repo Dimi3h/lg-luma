@@ -195,7 +195,14 @@ many there are; OK on one shows it on the main screen again, and an empty state 
 when nothing is hidden. The keyboard remains for text fields such as the weather location.
 Category filters were removed.
 
-TV editing uses the system keyboard through SDL-webOS. Desktop editing uses the custom panel.
+TV editing uses the system keyboard through SDL-webOS, except for the weather location. Desktop
+editing uses the custom panel. The weather location always uses Luma's tvOS-style linear
+keyboard (TV and desktop): one row of keys (letters, digits, Space, Delete, Clear, Done) that
+scrolls so the focused key stays near the middle, the typed text above it, and live location
+suggestions beneath it. Once typing pauses for 350 ms with at least two characters, the existing
+weather worker searches (same generation IDs and stale-reply suppression as the explicit search);
+Down reaches the suggestions and OK picks one, saves it and closes the keyboard. Back keeps the
+typed text for the explicit search button, as before.
 
 HDMI status refreshes every two seconds while the TV's Home or input settings are visible and
 focused. Only inputs are read on the existing platform worker; installed apps, artwork and saved
