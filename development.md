@@ -488,6 +488,15 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   TV does not answer are left out; a refused change shows a quiet notice and re-reads the status.
   Back closes the panel. Desktop builds simulate the TV and never sleep. All of it is unverified on
   a TV.
+- **Screensaver** (Settings › General › Screensaver: Off, 5, 10 (default), 15 or 30 minutes;
+  **Screensaver clock**, default On): after that long without a remote key, pointer movement or
+  text input while Luma is visible and in front, the screen shows a slow Ken Burns (zoom from 4%
+  to 12% and a gentle pan, 14 s per picture with a 2 s crossfade) over the bundled and uploaded
+  wallpapers, starting with the current one, with the time and date bottom left. It replaces the
+  whole scene, so nothing behind it is drawn or reachable. Any key or pointer movement only ends
+  it. Hidden or unfocused, the timer does not run, and returning to Luma restarts it. Under
+  Reduced motion the pictures stand still and change without a fade, and frames are not redrawn
+  continuously. There is no video. Scripts can start it with the `screensaver` action.
 - **Favorite badges** (Settings › General, default Off): a heart on pinned favourites. tvOS has no
   badges; the favourites block is first in the grid either way.
 - Tilt, glass and the second optical size are unverified on TV hardware.

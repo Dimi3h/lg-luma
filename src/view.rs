@@ -666,6 +666,9 @@ pub fn recents_replaces_page(state: &State) -> bool {
 }
 
 pub fn scene(state: &State, assets: &Assets, now: OffsetDateTime) -> Scene {
+    if let Some((started, first)) = state.screensaver {
+        return screensaver(state, assets, now, started, first);
+    }
     let mut out = Scene::new();
     out.backdrop = assets.glass_backdrop(state);
     if let Some((previous, start)) = &state.previous_background {
@@ -915,6 +918,123 @@ fn header(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) 
         mix_color(c(0xffffff, 0.72), ON_LIGHT, level),
         false,
     );
+}
+
+/// Seconds each wallpaper shows in the screensaver, and the crossfade at its end.
+const SCREENSAVER_SLIDE: f32 = 14.;
+const SCREENSAVER_FADE: f32 = 2.;
+
+/// The screensaver replaces the whole interface: a slow Ken Burns (zoom and pan) over the
+/// bundled and uploaded wallpapers, crossfading between them, with the time and date when
+/// enabled. Under Reduced motion the pictures stand still and change without a fade. No video.
+fn screensaver(
+    state: &State,
+    assets: &Assets,
+    now: OffsetDateTime,
+    started: std::time::Instant,
+    first: usize,
+) -> Scene {
+    let mut out = Scene::new();
+    let count = state.background_count().max(1);
+    let elapsed = started.elapsed().as_secs_f32();
+    let slide = (elapsed / SCREENSAVER_SLIDE) as usize;
+    let progress = (elapsed % SCREENSAVER_SLIDE) / SCREENSAVER_SLIDE;
+    let reduced = state.preferences.reduced_motion;
+    let picture = |index: usize| {
+        let id = state
+            .background_id((first + index) % count)
+            .unwrap_or(&state.preferences.background)
+            .to_owned();
+        assets.background(state, &id)
+    };
+    // Zoom from 4% to 12% and pan, alternating direction per picture.
+    let frame = |index: usize, t: f32| {
+        if reduced {
+            return Rect::new(0., 0., 1920., 1080.);
+        }
+        let scale = 1.04 + 0.08 * t;
+        let direction = if index.is_multiple_of(2) { 1. } else { -1. };
+        let (w, h) = (1920. * scale, 1080. * scale);
+        Rect::new(
+            (1920. - w) / 2. + direction * (t - 0.5) * 60.,
+            (1080. - h) / 2. + (t - 0.5) * 24.,
+            w,
+            h,
+        )
+    };
+    out.shape(Rect::new(0., 0., 1920., 1080.), 0., c(0x000000, 1.));
+    out.image(picture(slide), frame(slide, progress), 0., false);
+    let fade_from = 1. - SCREENSAVER_FADE / SCREENSAVER_SLIDE;
+    if !reduced && progress > fade_from {
+        let alpha = (progress - fade_from) / (1. - fade_from);
+        out.draw.push(Draw::TintedImage(
+            picture(slide + 1),
+            frame(slide + 1, 0.),
+            0.,
+            false,
+            [1., 1., 1., alpha],
+        ));
+    }
+    if state.preferences.screensaver_clock {
+        let language = state.preferences.language;
+        let clock = language.clock(now, state.preferences.hour_24, false);
+        out.text(
+            clock,
+            Rect::new(SAFE_X, 1080. - 60. - 140., 1200., 82.),
+            TextStyle::new(76.).weight(650).tracking(-0.02),
+            c(0xffffff, 0.92),
+            false,
+        );
+        out.text(
+            language.date(now),
+            Rect::new(SAFE_X, 1080. - 60. - 52., 1200., 40.),
+            CALLOUT,
+            c(0xffffff, 0.78),
+            false,
+        );
+    }
+    out
+}
+
+/// "Off" or "10 min".
+fn screensaver_label(language: Language, minutes: u32) -> String {
+    if minutes == 0 {
+        language.t("stateOff").to_owned()
+    } else {
+        language.format("minutes", &[("count", &minutes.to_string())])
+    }
+}
+
+/// Screensaver's choices: the owned labels need their own pass of the choice rows.
+fn screensaver_choices(
+    out: &mut Scene,
+    state: &State,
+    assets: &Assets,
+    labels: Vec<String>,
+    start: usize,
+) {
+    let s = state.scroll;
+    for (index, title) in labels.iter().enumerate() {
+        row(
+            out,
+            state,
+            assets,
+            Row {
+                target: Target::Choice(index),
+                rect: settings_rect(SETTINGS_TOP + index as f32 * (ROW_H + ROW_GAP) - s, ROW_H),
+                title,
+                icon: None,
+                value: None,
+                description: None,
+                selected: crate::state::SCREENSAVER_MINUTES[index]
+                    == state.preferences.screensaver_minutes,
+                chevron: false,
+            },
+        );
+    }
+    if let Some(opened) = state.panel_started {
+        out.fade(start, (opened.elapsed().as_secs_f32() / 0.15).min(1.), 1.);
+    }
 }
 
 /// The clock's button: a capsule around its text.
@@ -2645,6 +2765,7 @@ fn settings_path(state: &State) -> Vec<&str> {
         Some(Subpage::Language) => vec![language.t("language")],
         Some(Subpage::TextRendering) => vec![language.t("textRendering")],
         Some(Subpage::HiddenApps) => vec![language.t("hiddenApps")],
+        Some(Subpage::Screensaver) => vec![language.t("screensaver")],
         None => vec![],
     };
     let mut path = vec![section];
@@ -2925,6 +3046,13 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                 .into_iter()
                 .map(|option| (option.name(), None, option == language))
                 .collect(),
+            Subpage::Screensaver => {
+                let labels: Vec<_> = crate::state::SCREENSAVER_MINUTES
+                    .iter()
+                    .map(|minutes| screensaver_label(language, *minutes))
+                    .collect();
+                return screensaver_choices(out, state, assets, labels, start);
+            }
             Subpage::TextRendering => crate::text_rendering::TextRendering::ALL
                 .into_iter()
                 .map(|mode| {
@@ -2975,6 +3103,7 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
     match state.section {
         0 => {
             let hidden = state.hidden_apps().len().to_string();
+            let screensaver = screensaver_label(language, state.preferences.screensaver_minutes);
             for (position, (index, key, icon, value, chevron)) in [
                 (
                     0,
@@ -3023,6 +3152,24 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                     false,
                 ),
                 (11, "hiddenApps", "eye-off", Some(hidden.as_str()), true),
+                (
+                    12,
+                    "screensaver",
+                    "weather-moon",
+                    Some(screensaver.as_str()),
+                    true,
+                ),
+                (
+                    13,
+                    "screensaverClock",
+                    "clock",
+                    Some(if state.preferences.screensaver_clock {
+                        language.t("stateOn")
+                    } else {
+                        language.t("stateOff")
+                    }),
+                    false,
+                ),
             ]
             .into_iter()
             .enumerate()

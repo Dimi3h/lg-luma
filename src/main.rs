@@ -374,7 +374,18 @@ fn script(
     state: &mut State,
     controls: &[state::Control],
 ) -> Result<Vec<Effect>, String> {
+    // Any scripted input ends a running screensaver, as a real key would.
+    if !matches!(action, "screensaver" | "wait")
+        && !action.starts_with("await-")
+        && state.stop_screensaver()
+    {
+        return Ok(vec![]);
+    }
     Ok(match action {
+        "screensaver" => {
+            state.start_screensaver();
+            vec![]
+        }
         "home" => {
             state.open(state::Page::Home);
             vec![]
@@ -1247,6 +1258,20 @@ fn run() -> Result<(), String> {
                 focused = true;
                 foreground.confirmed();
             }
+            // Input restarts the screensaver's idle timer; while it runs, a key or pointer
+            // movement only dismisses it (its key-up then finds no press to complete).
+            if matches!(
+                event,
+                Event::KeyDown { .. }
+                    | Event::MouseMotion { .. }
+                    | Event::MouseButtonDown { .. }
+                    | Event::MouseWheel { .. }
+                    | Event::TextInput { .. }
+            ) && state.stop_screensaver()
+            {
+                press = None;
+                continue;
+            }
             // As Home, these go to /tmp/luma-home.log and show whether a relaunch reached the
             // compositor.
             if options.webos_home
@@ -1329,6 +1354,8 @@ fn run() -> Result<(), String> {
                     }
                     WindowEvent::Shown | WindowEvent::Restored | WindowEvent::FocusGained => {
                         visible = true;
+                        // Returning to Luma restarts the idle timer.
+                        state.last_input = Instant::now();
                         // Shown and Restored can come from SDL itself; only focus confirms.
                         if matches!(win_event, WindowEvent::FocusGained) {
                             focused = true;
@@ -1602,6 +1629,16 @@ fn run() -> Result<(), String> {
                 &webhook_service,
                 &updates,
             );
+        }
+        // The screensaver's idle timer runs only while Luma is visible and in front.
+        if visible
+            && focused
+            && state.screensaver.is_none()
+            && state
+                .screensaver_after()
+                .is_some_and(|after| state.last_input.elapsed() >= after)
+        {
+            state.start_screensaver();
         }
         if let Some(held) = &mut press
             && !held.held

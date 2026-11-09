@@ -25,6 +25,8 @@ pub const BACKGROUND_FADE: f32 = 0.4;
 /// The clock line; scrolled content is not hit-testable above it.
 pub const MAIN_TOP: f32 = 120.;
 pub const CYCLE_FADE: f32 = 1.6;
+/// Screensaver choices in minutes (0 is Off).
+pub const SCREENSAVER_MINUTES: [u32; 5] = [0, 5, 10, 15, 30];
 /// Crossfade of the top-shelf wash between apps, in seconds.
 pub const WASH_FADE: f32 = 0.35;
 
@@ -187,6 +189,8 @@ pub enum Subpage {
     TextRendering,
     /// Settings › General › Hidden apps: hidden apps as rows, OK shows one again.
     HiddenApps,
+    /// Settings › General › Screensaver: Off or the idle minutes.
+    Screensaver,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -283,6 +287,10 @@ pub struct State {
     pub control: crate::control_center::Status,
     pub control_outbox: Vec<crate::control_center::Command>,
     pub confirm_sleep: bool,
+    /// The last remote key, pointer movement or text input, for the screensaver's idle timer.
+    pub last_input: Instant,
+    /// The running screensaver: when it started and the wallpaper it started with.
+    pub screensaver: Option<(Instant, usize)>,
 }
 
 impl State {
@@ -330,7 +338,36 @@ impl State {
             control: crate::control_center::Status::default(),
             control_outbox: vec![],
             confirm_sleep: false,
+            last_input: Instant::now(),
+            screensaver: None,
         }
+    }
+
+    /// How long Luma waits without input before the screensaver, when it is on.
+    pub fn screensaver_after(&self) -> Option<Duration> {
+        let minutes = self.preferences.screensaver_minutes;
+        (minutes > 0).then(|| Duration::from_secs(minutes as u64 * 60))
+    }
+
+    /// Starts the screensaver on the current wallpaper (the idle timer ran out).
+    pub fn start_screensaver(&mut self) {
+        if self.screensaver.is_none() {
+            let current = (0..self.background_count())
+                .position(|index| {
+                    self.background_id(index) == Some(self.preferences.background.as_str())
+                })
+                .unwrap_or(0);
+            self.screensaver = Some((Instant::now(), current));
+            self.dirty = true;
+        }
+    }
+
+    /// Any key or pointer movement ends the screensaver (and only does that).
+    pub fn stop_screensaver(&mut self) -> bool {
+        self.last_input = Instant::now();
+        let running = self.screensaver.take().is_some();
+        self.dirty |= running;
+        running
     }
 
     /// Opens Control Center over the main screen and asks the TV for its current status.
@@ -694,6 +731,7 @@ impl State {
             || self.panel_started.is_some()
             || self.motion.animating()
             || self.wash_previous.is_some()
+            || (self.screensaver.is_some() && !self.preferences.reduced_motion)
             || self
                 .wash
                 .as_ref()
@@ -1299,6 +1337,7 @@ impl State {
             Some(Subpage::Language) => Target::Setting(4),
             Some(Subpage::TextRendering) => Target::Setting(7),
             Some(Subpage::HiddenApps) => Target::Setting(11),
+            Some(Subpage::Screensaver) => Target::Setting(12),
             None => Target::Sidebar(self.section),
         };
         self.scroll = 0.;
@@ -1415,6 +1454,7 @@ impl State {
                     Some(Subpage::Language) => Language::ALL.len(),
                     // Without hidden apps the empty state holds focus.
                     Some(Subpage::HiddenApps) => self.hidden_apps().len().max(1),
+                    Some(Subpage::Screensaver) => SCREENSAVER_MINUTES.len(),
                     Some(Subpage::DateFormat) => crate::model::DateFormat::ALL.len(),
                     _ => 3,
                 };
@@ -1502,7 +1542,7 @@ impl State {
             }
             if matches!(
                 self.focus,
-                Target::Setting(1 | 4 | 7 | 11)
+                Target::Setting(1 | 4 | 7 | 11 | 12)
                     | Target::Widget(0..=4)
                     | Target::InputMode(_)
                     | Target::WeatherLocation
@@ -2421,6 +2461,21 @@ impl State {
                     2 => self.preferences.reduced_motion = !self.preferences.reduced_motion,
                     8 => self.preferences.focus_tilt = !self.preferences.focus_tilt,
                     10 => self.preferences.favorite_badges = !self.preferences.favorite_badges,
+                    12 => {
+                        self.subpage = Some(Subpage::Screensaver);
+                        self.scroll = 0.;
+                        self.focus = Target::Choice(
+                            SCREENSAVER_MINUTES
+                                .iter()
+                                .position(|m| *m == self.preferences.screensaver_minutes)
+                                .unwrap_or(2),
+                        );
+                        if !self.preferences.reduced_motion {
+                            self.panel_started = Some(Instant::now());
+                        }
+                        return vec![];
+                    }
+                    13 => self.preferences.screensaver_clock = !self.preferences.screensaver_clock,
                     11 => {
                         self.subpage = Some(Subpage::HiddenApps);
                         self.scroll = 0.;
@@ -2542,6 +2597,10 @@ impl State {
                         self.preferences.language =
                             Language::ALL[index.min(Language::ALL.len() - 1)];
                         self.weather.cancel_search();
+                    }
+                    Some(Subpage::Screensaver) => {
+                        self.preferences.screensaver_minutes =
+                            SCREENSAVER_MINUTES[index.min(SCREENSAVER_MINUTES.len() - 1)];
                     }
                     Some(Subpage::HiddenApps) => {
                         // Showing an app again keeps the list open on the next hidden app.

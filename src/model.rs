@@ -231,6 +231,10 @@ pub struct Preferences {
     pub focus_tilt: bool,
     /// The focused first-row app's artwork as a soft wash behind the top shelf.
     pub app_artwork: bool,
+    /// Minutes without input before the screensaver starts while Luma is in front; 0 is Off.
+    pub screensaver_minutes: u32,
+    /// The time and date over the screensaver.
+    pub screensaver_clock: bool,
     pub hour_24: bool,
     pub reduced_motion: bool,
     pub show_seconds: bool,
@@ -274,6 +278,8 @@ impl Default for Preferences {
             favorite_badges: false,
             focus_tilt: true,
             app_artwork: true,
+            screensaver_minutes: 10,
+            screensaver_clock: true,
             hour_24: false,
             reduced_motion: false,
             show_seconds: false,

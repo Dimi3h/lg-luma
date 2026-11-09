@@ -3580,3 +3580,64 @@ fn control_center_opens_from_the_clock_and_drives_the_tv_only_through_its_worker
     assert!(state.overlay.is_none());
     assert_eq!(state.focus, Target::Clock);
 }
+
+#[test]
+fn screensaver_defaults_to_ten_minutes_replaces_the_scene_and_any_input_ends_it() {
+    use crate::renderer::Draw;
+    use crate::state::Subpage;
+    let old: Preferences = serde_json::from_value(json!({"favorites": ["netflix"]})).unwrap();
+    assert_eq!(old.screensaver_minutes, 10);
+    assert!(old.screensaver_clock);
+    let mut state = ready();
+    assert_eq!(
+        state.screensaver_after(),
+        Some(std::time::Duration::from_secs(600))
+    );
+    state.start_screensaver();
+    let rendered = scene(&state);
+    assert!(
+        rendered.controls.is_empty(),
+        "Nothing behind it is reachable"
+    );
+    // Ken Burns: the picture is larger than the screen and moves; the clock shows.
+    assert!(rendered.draw.iter().any(|draw| matches!(draw,
+        Draw::Image(path, rect, ..) if path.contains("wallpapers/") && rect.w > 1920.)));
+    let clock = state.preferences.language.clock(
+        time::OffsetDateTime::UNIX_EPOCH,
+        state.preferences.hour_24,
+        false,
+    );
+    assert!(
+        rendered
+            .draw
+            .iter()
+            .any(|draw| matches!(draw, Draw::Text(label, ..) if *label == clock))
+    );
+    assert!(state.animating());
+    // Reduced motion: still pictures, no continuous redraw.
+    state.preferences.reduced_motion = true;
+    state.preferences.screensaver_clock = false;
+    let still = scene(&state);
+    assert!(still.draw.iter().any(|draw| matches!(draw,
+        Draw::Image(_, rect, ..) if rect.w == 1920. && rect.h == 1080.)));
+    assert!(!still.draw.iter().any(|draw| matches!(draw, Draw::Text(..))));
+    assert!(!state.animating());
+    assert!(state.stop_screensaver());
+    assert!(!state.stop_screensaver());
+    assert!(!scene(&state).controls.is_empty());
+    // Settings › General › Screensaver: Off disables the timer.
+    state.open(Page::Settings);
+    state.focus = Target::Setting(12);
+    state.direction(Direction::Right, &controls(&state));
+    assert_eq!(state.subpage, Some(Subpage::Screensaver));
+    assert_eq!(state.focus, Target::Choice(2));
+    state.direction(Direction::Up, &controls(&state));
+    state.direction(Direction::Up, &controls(&state));
+    assert_eq!(state.activate(), vec![Effect::Save]);
+    assert_eq!(state.preferences.screensaver_minutes, 0);
+    assert_eq!(state.screensaver_after(), None);
+    assert_eq!(state.focus, Target::Setting(12));
+    state.focus = Target::Setting(13);
+    assert_eq!(state.activate(), vec![Effect::Save]);
+    assert!(state.preferences.screensaver_clock);
+}

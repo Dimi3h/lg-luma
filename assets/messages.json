@@ -1030,5 +1030,17 @@
   "controlUnavailable": {
     "en": "This TV setting couldn't be changed.",
     "nl": "Deze tv-instelling kon niet worden gewijzigd."
+  },
+  "screensaver": {
+    "en": "Screensaver",
+    "nl": "Schermbeveiliging"
+  },
+  "screensaverClock": {
+    "en": "Screensaver clock",
+    "nl": "Klok op schermbeveiliging"
+  },
+  "minutes": {
+    "en": "{count} min",
+    "nl": "{count} min"
   }
 }
