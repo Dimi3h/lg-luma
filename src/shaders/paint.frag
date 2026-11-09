@@ -27,9 +27,17 @@ void main() {
     }
     float blur = max(-v_params.y, 0.0);
     vec2 half_size = v_shape.zw - vec2(blur);
-    float radius = min(v_params.x, min(half_size.x, half_size.y));
+    float shortest = min(half_size.x, half_size.y);
+    // Continuous (superellipse) corners as on tvOS: a p = 3 norm in the corner, normalised by
+    // the radius so mediump floats cannot overflow, over a slightly longer corner so it reads
+    // as the same size. Capsules and circles keep exact circular ends (p = 2).
+    bool capsule = v_params.x >= shortest - 0.5;
+    float radius = min(v_params.x * (capsule ? 1.0 : 1.2), shortest);
+    float power = capsule ? 2.0 : 3.0;
     vec2 q = abs(v_shape.xy) - half_size + vec2(radius);
-    float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - radius;
+    vec2 m = max(q, vec2(0.0)) / max(radius, 0.0001);
+    float corner = radius * pow(pow(m.x, power) + pow(m.y, power), 1.0 / power);
+    float d = corner + min(max(q.x, q.y), 0.0) - radius;
     // Box-filtered coverage of one drawable pixel (u_aa) centred on the edge: an edge on a
     // pixel boundary stays one crisp step, and a one-pixel border is fully opaque.
     float alpha = clamp(0.5 - d / u_aa, 0.0, 1.0);

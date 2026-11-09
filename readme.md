@@ -2,7 +2,7 @@
 
 A native launcher for rooted LG webOS TVs, styled after Apple tvOS: one screen with the date,
 greeting and weather above a grid of every app (Search first, Settings last), 5:3 cards that lift
-on focus with their title beneath, and Liquid Glass-style panels.
+and tilt on focus with their title beneath, Liquid Glass-style panels and soft interface clicks.
 
 https://github.com/user-attachments/assets/2156d640-b8fa-4ea4-a02c-0db4c93bcc5a
 

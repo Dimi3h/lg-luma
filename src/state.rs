@@ -225,6 +225,8 @@ pub struct State {
     pub inventory_failures: u32,
     pub dirty: bool,
     pub pointer: bool,
+    /// The Magic Remote pointer's last logical position (for the focused card's tilt).
+    pub pointer_at: Option<(f32, f32)>,
     pub pressed: Option<Target>,
     pub previous_background: Option<(String, Instant)>,
     pub background_fade: f32,
@@ -269,6 +271,7 @@ impl State {
             inventory_failures: 0,
             dirty: true,
             pointer: false,
+            pointer_at: None,
             pressed: None,
             previous_background: None,
             background_fade: BACKGROUND_FADE,
@@ -297,7 +300,27 @@ impl State {
             scroll: self.scroll,
             reduced: self.preferences.reduced_motion,
             pointer: self.pointer,
+            tilt: self.tilt_enabled(),
+            pointer_at: self.pointer_at,
         }
+    }
+
+    /// Focus tilt is on and motion is not reduced.
+    pub fn tilt_enabled(&self) -> bool {
+        self.preferences.focus_tilt && !self.preferences.reduced_motion
+    }
+
+    /// Notes where the focused card rests, from a composed scene, for pointer tilt.
+    pub fn note_focus_rect(&mut self, controls: &[Control]) {
+        let card = matches!(
+            self.focus,
+            Target::App(_) | Target::Input(_) | Target::Search | Target::SettingsCard
+        );
+        let rect = card
+            .then(|| controls.iter().find(|control| control.target == self.focus))
+            .flatten()
+            .map(|control| control.rect);
+        self.motion.set_focus_rect(rect);
     }
 
     /// Registers the current focus before a scene is composed (see `Motion::sync`).
@@ -1028,6 +1051,9 @@ impl State {
     pub fn direction(&mut self, direction: Direction, controls: &[Control]) -> Vec<Effect> {
         self.pointer = false;
         self.dirty = true;
+        // A press tilts the focused card on the main screen briefly towards it.
+        let tilt = self.tilt_enabled() && self.page == Page::Home && self.overlay.is_none();
+        self.motion.nudge(direction, tilt);
         if self.recents_open() {
             return self.recent_direction(direction);
         }
@@ -2122,6 +2148,9 @@ impl State {
                         return vec![];
                     }
                     2 => self.preferences.reduced_motion = !self.preferences.reduced_motion,
+                    8 => self.preferences.focus_tilt = !self.preferences.focus_tilt,
+                    9 => self.preferences.sounds = !self.preferences.sounds,
+                    10 => self.preferences.favorite_badges = !self.preferences.favorite_badges,
                     4 => {
                         self.subpage = Some(Subpage::Language);
                         self.focus = Target::Choice(self.preferences.language.index());

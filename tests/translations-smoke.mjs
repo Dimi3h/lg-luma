@@ -213,7 +213,7 @@ try {
   assert.equal(portuguese.preferences.language, 'pt');
   for (const key of ['search', 'settings', 'evening', 'setWeatherLocation'])
     contains(portuguese, key, 'pt');
-  assert.ok(portuguese.ui_text.includes('QUARTA-FEIRA, 21 DE OUTUBRO'));
+  assert.ok(portuguese.ui_text.includes('Quarta-feira, 21 de outubro'));
   assert.ok(
     portuguese.ui_text.includes('Netflix'),
     'Installed app names stay intact in Portuguese',
@@ -272,7 +272,7 @@ try {
   assert.equal(vietnamese.preferences.language, 'vi');
   for (const key of ['search', 'settings', 'evening', 'setWeatherLocation'])
     contains(vietnamese, key, 'vi');
-  assert.ok(vietnamese.ui_text.includes('THỨ TƯ, 21 THÁNG 10'));
+  assert.ok(vietnamese.ui_text.includes('Thứ tư, 21 tháng 10'));
   assert.ok(vietnamese.ui_text.includes('Netflix'), 'Installed app names stay intact');
   assert.equal(JSON.parse(await fs.readFile(preferences, 'utf8')).language, 'vi');
 

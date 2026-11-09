@@ -24,6 +24,7 @@ mod renderer;
 #[path = "scroll-preview.rs"]
 mod scroll_preview;
 mod sdl_events;
+mod sound;
 mod state;
 mod storage;
 mod text_rendering;
@@ -433,13 +434,13 @@ fn main() {
 
 fn compose(state: &mut State, assets: &view::Assets, now: OffsetDateTime) -> view::Scene {
     state.sync_motion();
-    let scene = view::scene(state, assets, now);
+    let mut scene = view::scene(state, assets, now);
     if !state.pointer && state.overlay.is_none() && state.reveal_focus(&scene.controls) {
         state.sync_motion();
-        view::scene(state, assets, now)
-    } else {
-        scene
+        scene = view::scene(state, assets, now);
     }
+    state.note_focus_rect(&scene.controls);
+    scene
 }
 
 fn wallpaper_upload_active(state: &State, webos: bool, focused: bool, visible: bool) -> bool {
@@ -712,6 +713,7 @@ fn run() -> Result<(), String> {
     startup_stage("preferences and workers");
 
     let sdl = sdl2::init()?;
+    let mut sounds = sound::Sounds::new(&sdl);
     let drivers: Vec<_> = sdl2::video::drivers().collect();
     if webos && !drivers.contains(&"wayland") {
         return Err(format!(
@@ -1294,6 +1296,7 @@ fn run() -> Result<(), String> {
                         focused = false;
                         press = None;
                         back_button.cancel();
+                        sounds.release();
                         if matches!(state.overlay, Some(Overlay::SystemKeyboard)) {
                             pending = state.finish_text_input();
                         }
@@ -1313,6 +1316,7 @@ fn run() -> Result<(), String> {
                         focused = false;
                         press = None;
                         back_button.cancel();
+                        sounds.release();
                     }
                     WindowEvent::Shown | WindowEvent::Restored | WindowEvent::FocusGained => {
                         visible = true;
@@ -1349,6 +1353,7 @@ fn run() -> Result<(), String> {
                     if !is_back(key, webos) && !native_hold {
                         back_button.cancel();
                     }
+                    let focus_before = state.focus.clone();
                     match key {
                         _ if webos
                             && options.webos_home
@@ -1403,6 +1408,7 @@ fn run() -> Result<(), String> {
                         Keycode::Backspace if !repeat => {
                             press = None;
                             pending = state.back();
+                            sounds.play(sound::Click::Back, &state.preferences);
                         }
                         Keycode::Clear
                             if matches!(state.overlay, Some(Overlay::SystemKeyboard)) =>
@@ -1417,6 +1423,13 @@ fn run() -> Result<(), String> {
                         Keycode::F5 if !repeat => pending.push(Effect::Reload),
                         _ => {}
                     }
+                    if matches!(
+                        key,
+                        Keycode::Up | Keycode::Down | Keycode::Left | Keycode::Right
+                    ) && state.focus != focus_before
+                    {
+                        sounds.play(sound::Click::Focus, &state.preferences);
+                    }
                 }
                 Event::KeyUp {
                     keycode: Some(key), ..
@@ -1430,6 +1443,7 @@ fn run() -> Result<(), String> {
                         pending = if long {
                             state.open_recents()
                         } else {
+                            sounds.play(sound::Click::Back, &state.preferences);
                             state.back()
                         };
                     }
@@ -1443,6 +1457,7 @@ fn run() -> Result<(), String> {
                         && !held.held
                         && held.target == state.focus
                     {
+                        sounds.play(sound::Click::Select, &state.preferences);
                         pending = state.activate();
                     }
                 }
@@ -1454,6 +1469,9 @@ fn run() -> Result<(), String> {
                     if let Some(target) = hovered.clone() {
                         state.pointer_focus(target);
                     }
+                    // The focused card tilts towards the pointer (drawing only); the motion
+                    // tick redraws while that tilt is still moving.
+                    state.pointer_at = pointer_position(&window, x, y);
                     if press
                         .as_ref()
                         .is_some_and(|p| p.pointer && hovered.as_ref() != Some(&p.target))
@@ -1500,6 +1518,7 @@ fn run() -> Result<(), String> {
                             && hit(&scene.controls, &window, x, y, &state).as_ref()
                                 == Some(&held.target) =>
                     {
+                        sounds.play(sound::Click::Select, &state.preferences);
                         pending = state.activate()
                     }
                     None if scene.modal.is_some_and(|rect| {

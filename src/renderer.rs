@@ -74,6 +74,9 @@ pub enum Draw {
     Backdrop(String, Rect, f32, Color),
     /// A rounded border of the given width whose colour runs from top to bottom: glass rims.
     Rim(Rect, f32, f32, Color, Color),
+    /// A soft radial highlight centred at the point, masked to the rounded rectangle: the
+    /// specular glint on a tilted focused card. One textured pass over the card.
+    Glow(Rect, f32, [f32; 2], f32, Color),
     Clip(Option<Rect>),
     EdgeFade(Option<[f32; 4]>),
 }
@@ -298,7 +301,7 @@ fn profile_skip(command: &Draw) -> bool {
         Draw::Image(..) | Draw::TintedImage(..) | Draw::Backdrop(..) => "image",
         Draw::AppImage(..) => "app",
         Draw::Shape(..) => "shape",
-        Draw::RoundedGradient(..) | Draw::Rim(..) => "gradient",
+        Draw::RoundedGradient(..) | Draw::Rim(..) | Draw::Glow(..) => "gradient",
         Draw::Shadow(..) => "shadow",
         Draw::Text(..) => "text",
         Draw::Clip(_) | Draw::EdgeFade(_) => return false,
@@ -335,6 +338,8 @@ pub struct Renderer {
     buffer: GLuint,
     vao: GLuint,
     white: Texture,
+    /// White, fading radially to transparent: the source of `Draw::Glow`.
+    glow: Texture,
     font_directory: PathBuf,
     fonts: HashMap<u16, Font>,
     failed_fonts: HashSet<u16>,
@@ -442,6 +447,17 @@ impl Renderer {
             gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
         }
         let white = texture(1, 1, &[255; 4]);
+        const GLOW: u32 = 64;
+        let glow_pixels: Vec<u8> = (0..GLOW * GLOW)
+            .flat_map(|index| {
+                let x = (index % GLOW) as f32 + 0.5 - GLOW as f32 / 2.;
+                let y = (index / GLOW) as f32 + 0.5 - GLOW as f32 / 2.;
+                let r = ((x * x + y * y).sqrt() / (GLOW as f32 / 2.)).min(1.);
+                let alpha = ((1. - r) * (1. - r) * 255.).round() as u8;
+                [255, 255, 255, alpha]
+            })
+            .collect();
+        let glow = texture(GLOW, GLOW, &glow_pixels);
         Ok(Self {
             program,
             vector_program,
@@ -450,6 +466,7 @@ impl Renderer {
             buffer,
             vao,
             white,
+            glow,
             font_directory: directory.into(),
             fonts,
             failed_fonts: HashSet::new(),
@@ -1304,6 +1321,17 @@ impl Renderer {
                     self.white.id,
                     None,
                 ),
+                Draw::Glow(rect, radius, center, size, tint) => {
+                    // Map the glow texture's centre to `center`, `size` wide; outside it the
+                    // clamped edge texel is transparent.
+                    let uv = [
+                        0.5 + (rect.x - center[0]) / size,
+                        0.5 + (rect.y - center[1]) / size,
+                        0.5 + (rect.x + rect.w - center[0]) / size,
+                        0.5 + (rect.y + rect.h - center[1]) / size,
+                    ];
+                    self.quad(*rect, uv, *radius, 0., *tint, self.glow.id)
+                }
                 Draw::Clip(clip) => self.clip = *clip,
                 Draw::EdgeFade(fade) => self.fade = *fade,
             }

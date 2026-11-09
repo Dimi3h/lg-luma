@@ -100,14 +100,15 @@ for (const file of await fs.readdir(path.join(source, 'wallpapers'))) {
       .toFile(path.join(out, 'wallpapers', `${id}${scale === 2 ? '@2x' : ''}.jpg`));
   }
   // Liquid Glass approximation: GLES2 has no backdrop blur, so glass panels sample a small,
-  // blurred copy of each background at the same screen position. Its contrast is reduced and
-  // a light glass tint (about 10% white) is baked in, saving a pass per panel on the TV.
-  // The same treatment is applied to uploads in src/wallpapers.rs.
+  // blurred copy of each background at the same screen position. Saturation is lifted rather
+  // than the image dimmed, and a light glass tint (about 10% white) is baked in, saving a pass
+  // per panel on the TV. The same treatment is applied to uploads in src/wallpapers.rs.
   for (const variant of ['', '-plain']) {
     await sharp(path.join(out, 'wallpapers', `${id}${variant}.jpg`))
       .resize(480, 270)
       .blur(10)
-      .linear(0.72, 26)
+      .modulate({ saturation: 1.3 })
+      .linear(0.88, 24)
       .jpeg({ quality: 85 })
       .toFile(path.join(out, 'wallpapers', `${id}${variant}-blur.jpg`));
   }

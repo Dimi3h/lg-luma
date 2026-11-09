@@ -35,32 +35,27 @@ const BUTTON_LIFT: f32 = 0.06;
 const ROW_RADIUS: f32 = 16.;
 const PANEL_RADIUS: f32 = 30.;
 
-// tvOS text styles (size / leading, Medium unless noted; Inter replaces SF Pro). Nothing in
-// Luma is smaller than Caption 2.
+// tvOS text styles (size / leading, Medium unless noted; Inter replaces SF Pro, and text of
+// 32 px and up uses Inter Display). Tracking is light: titles about -2%, body text none.
+// Nothing in Luma is smaller than Caption 2.
 const TITLE1: TextStyle = TextStyle::new(76.)
     .weight(650)
-    .tracking(-0.035)
+    .tracking(-0.02)
     .leading(96. / 76.);
 const TITLE3: TextStyle = TextStyle::new(48.)
     .weight(600)
-    .tracking(-0.025)
+    .tracking(-0.018)
     .leading(56. / 48.);
 const HEADLINE: TextStyle = TextStyle::new(38.)
     .weight(600)
-    .tracking(-0.02)
+    .tracking(-0.015)
     .leading(46. / 38.);
 const CALLOUT: TextStyle = TextStyle::new(31.)
     .weight(500)
-    .tracking(-0.015)
-    .leading(38. / 31.);
-const BODY: TextStyle = TextStyle::new(29.)
-    .weight(500)
-    .tracking(-0.01)
-    .leading(36. / 29.);
-const CAPTION1: TextStyle = TextStyle::new(25.)
-    .weight(500)
     .tracking(-0.005)
-    .leading(32. / 25.);
+    .leading(38. / 31.);
+const BODY: TextStyle = TextStyle::new(29.).weight(500).leading(36. / 29.);
+const CAPTION1: TextStyle = TextStyle::new(25.).weight(500).leading(32. / 25.);
 const CAPTION2: TextStyle = TextStyle::new(23.).weight(500).leading(30. / 23.);
 
 /// Text colours: primary white, and the secondary/tertiary greys tvOS uses on dark glass.
@@ -252,6 +247,8 @@ pub struct Scene {
     pub modal: Option<Rect>,
     /// Blurred background for glass panels; `None` falls back to a translucent fill.
     backdrop: Option<String>,
+    /// A focused list row, drawn after its neighbours so its soft shadow lies over them.
+    raised: Vec<Draw>,
 }
 
 /// Grows `rect` around its centre by `share` of its size.
@@ -285,6 +282,7 @@ impl Scene {
             controls: Vec::new(),
             modal: None,
             backdrop: None,
+            raised: Vec::new(),
         }
     }
     fn shape(&mut self, rect: Rect, radius: f32, fill: Color) {
@@ -355,27 +353,25 @@ impl Scene {
             _ => self.draw.push(Draw::RoundedGradient(
                 rect,
                 radius,
-                c(0x2a3038, 0.86),
-                c(0x1a1e24, 0.9),
+                c(0x3a414b, 0.8),
+                c(0x262b33, 0.86),
             )),
         }
-        // A highlight along the top edge, as tall as the corners so its rounding matches.
+        // A soft highlight along the top edge, as tall as the corners so its rounding matches.
         let band = (2. * radius).min(rect.h).max(12.);
         self.draw.push(Draw::RoundedGradient(
             Rect::new(rect.x, rect.y, rect.w, band),
             radius.min(band / 2.),
-            c(0xffffff, 0.12),
+            c(0xffffff, 0.08),
             c(0xffffff, 0.),
         ));
-        self.rim(rect, radius, 0.30, 0.07);
-    }
-    fn rim(&mut self, rect: Rect, radius: f32, top: f32, bottom: f32) {
+        // A thin specular edge: bright white along the top, a faint dark line at the bottom.
         self.draw.push(Draw::Rim(
             rect,
             radius,
-            1.5,
-            c(0xffffff, top),
-            c(0xffffff, bottom),
+            1.,
+            c(0xffffff, 0.36),
+            c(0x000000, 0.18),
         ));
     }
     /// A tvOS control in one of its focus states: glass at rest, an opaque white surface
@@ -424,6 +420,11 @@ impl Scene {
                 | Draw::AppImage(_, rect, ..)
                 | Draw::Backdrop(_, rect, ..)
                 | Draw::Rim(rect, ..) => rect,
+                Draw::Glow(rect, _, center, ..) => {
+                    center[0] += dx;
+                    center[1] += dy;
+                    rect
+                }
                 Draw::Clip(_) | Draw::EdgeFade(_) => continue,
             };
             rect.x += dx;
@@ -444,7 +445,8 @@ impl Scene {
                 | Draw::Text(_, _, _, color, _)
                 | Draw::TintedImage(_, _, _, _, color)
                 | Draw::AppImage(_, _, _, color)
-                | Draw::Backdrop(_, _, _, color) => apply(color),
+                | Draw::Backdrop(_, _, _, color)
+                | Draw::Glow(_, _, _, _, color) => apply(color),
                 Draw::RoundedGradient(_, _, a, b) | Draw::Rim(_, _, _, a, b) => {
                     apply(a);
                     apply(b);
@@ -931,14 +933,24 @@ fn tile(
     } else {
         state.focus_level(&target)
     };
-    let drawn = grow(rect, CARD_LIFT * level);
+    let tilt = card_tilt(state, &target, level);
+    let drawn = offset(grow(rect, CARD_LIFT * level), tilt, TILT_FACE);
     let radius = CARD_RADIUS * drawn.h / rect.h;
     if !unavailable {
-        out.lift_shadow(drawn, radius, level);
+        out.lift_shadow(offset(drawn, tilt, -TILT_SHADOW), radius, level);
     }
-    let favorite_color = app_face(out, assets, app, drawn, state.preferences.language, radius);
+    let favorite_color = app_face_layered(
+        out,
+        assets,
+        app,
+        drawn,
+        state.preferences.language,
+        radius,
+        [tilt[0] * TILT_LAYER, tilt[1] * TILT_LAYER],
+    );
     card_glass(out, drawn, radius, level);
-    if pinned {
+    glint(out, drawn, radius, tilt);
+    if pinned && state.preferences.favorite_badges {
         favorite_badge(out, assets, drawn, favorite_color);
     }
     if state.moving.as_ref() == Some(&app.id) {
@@ -970,10 +982,9 @@ fn tile(
     }
     if names && level > 0. {
         let title = caption_title(state, app);
-        let (title, style) =
-            assets.single_line(&title, BODY.weight(600), rect.w + CARD_GAP_CAPTION);
+        let (title, style) = assets.single_line(&title, BODY, rect.w + CARD_GAP_CAPTION);
         let area = caption_area(assets, &title, style, rect, 36.);
-        out.text(title, area, style, c(0xffffff, level), true);
+        out.text(title, area, style, c(0xffffff, level.min(1.)), true);
     }
     if state.moving.is_some() && state.moving.as_ref() != Some(&app.id) {
         out.fade(start, 0.48, 1.);
@@ -988,9 +999,20 @@ const CARD_GAP_CAPTION: f32 = 36.;
 
 /// tvOS 26 app icons have a glassy edge: a light rim, brightest along the top, that
 /// strengthens as the card is focused and illuminated.
-/// The rim alone carries it, so the face needs no extra full-card pass.
+/// The rim alone carries it, so the face needs no extra full-card pass. Resting cards have no
+/// rim at all (tvOS); it appears with the lift.
 fn card_glass(out: &mut Scene, rect: Rect, radius: f32, level: f32) {
-    out.rim(rect, radius, mix(0.2, 0.5, level), mix(0.05, 0.1, level));
+    if level <= 0. {
+        return;
+    }
+    let level = level.min(1.);
+    out.draw.push(Draw::Rim(
+        rect,
+        radius,
+        1.5,
+        c(0xffffff, 0.5 * level),
+        c(0xffffff, 0.1 * level),
+    ));
 }
 
 /// A caption's box: centred beneath its card, but kept inside the safe area so the first and
@@ -1034,6 +1056,20 @@ fn app_face(
     language: Language,
     radius: f32,
 ) -> Color {
+    app_face_layered(out, assets, app, rect, language, radius, [0., 0.])
+}
+
+/// `app_face` with its logo layer moved by `parallax` relative to the background, as tvOS
+/// app icons' layers separate when the focused icon tilts.
+fn app_face_layered(
+    out: &mut Scene,
+    assets: &Assets,
+    app: &App,
+    rect: Rect,
+    language: Language,
+    radius: f32,
+    parallax: [f32; 2],
+) -> Color {
     let logo = crate::branding::for_key(&app.brand);
     let artwork = logo
         .is_none()
@@ -1064,6 +1100,7 @@ fn app_face(
             false,
         );
     }
+    let layer = out.draw.len();
     if let Some(brand) = logo {
         let (ratio, height) = brand.artwork_size();
         let height = height * rect.h / FACE_HEIGHT;
@@ -1081,7 +1118,50 @@ fn app_face(
     } else if !installed {
         brand_mark(out, assets, app, rect, language);
     }
+    out.shift(layer, parallax[0], parallax[1]);
     favorite_color
+}
+
+// How far a fully tilted card's layers move: the face, its logo on top, and the shadow
+// (opposite). Hit regions never move.
+const TILT_FACE: f32 = 3.;
+const TILT_LAYER: f32 = 6.;
+const TILT_SHADOW: f32 = 10.;
+
+/// The focused card's tilt, scaled by its lift; zero for every other card.
+fn card_tilt(state: &State, target: &Target, level: f32) -> [f32; 2] {
+    if state.focus != *target || level <= 0. {
+        return [0., 0.];
+    }
+    let [x, y] = state.motion.tilt();
+    let level = level.min(1.);
+    [x * level, y * level]
+}
+
+fn offset(rect: Rect, tilt: [f32; 2], distance: f32) -> Rect {
+    Rect::new(
+        rect.x + tilt[0] * distance,
+        rect.y + tilt[1] * distance,
+        rect.w,
+        rect.h,
+    )
+}
+
+/// The specular glint on a tilted card: a soft highlight towards the tilt, masked to the card.
+/// Drawn only while the card is actually tilted, so a resting screen draws nothing extra.
+fn glint(out: &mut Scene, rect: Rect, radius: f32, tilt: [f32; 2]) {
+    let strength = tilt[0].abs().max(tilt[1].abs()).min(1.);
+    if strength < 0.01 {
+        return;
+    }
+    let (cx, cy) = rect.center();
+    out.draw.push(Draw::Glow(
+        rect,
+        radius,
+        [cx + tilt[0] * rect.w * 0.45, cy + tilt[1] * rect.h * 0.45],
+        rect.w * 1.2,
+        c(0xffffff, 0.3 * strength),
+    ));
 }
 
 fn brand_mark(out: &mut Scene, assets: &Assets, app: &App, rect: Rect, language: Language) {
@@ -1254,8 +1334,8 @@ fn home(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
         out.text(
             state.preferences.date_format.format(language, now),
             Rect::new(SAFE_X, top, 1200., 32.),
-            CAPTION1.weight(600).tracking(0.08),
-            c(0xffffff, 0.7),
+            CAPTION1,
+            c(0xffffff, 0.75),
             false,
         );
     }
@@ -1406,15 +1486,17 @@ fn system_card(
     } else {
         state.focus_level(&target)
     };
-    let drawn = grow(rect, CARD_LIFT * level);
+    let tilt = card_tilt(state, &target, level);
+    let drawn = offset(grow(rect, CARD_LIFT * level), tilt, TILT_FACE);
     let scale = drawn.h / rect.h;
     let radius = CARD_RADIUS * scale;
-    out.lift_shadow(drawn, radius, level);
+    out.lift_shadow(offset(drawn, tilt, -TILT_SHADOW), radius, level);
     out.glass(drawn, radius, Glass::Regular);
     if level > 0. {
         // Focus illuminates the glass, like light catching an app icon.
-        out.shape(drawn, radius, c(0xffffff, 0.14 * level));
+        out.shape(drawn, radius, c(0xffffff, 0.14 * level.min(1.)));
     }
+    glint(out, drawn, radius, tilt);
     let size = 54. * scale;
     out.icon(
         assets,
@@ -1457,10 +1539,11 @@ fn input_card(out: &mut Scene, state: &State, assets: &Assets, input: &Input, re
         state.focus_level(&target)
     };
     let start = out.draw.len();
-    let drawn = grow(rect, CARD_LIFT * level);
+    let tilt = card_tilt(state, &target, level);
+    let drawn = offset(grow(rect, CARD_LIFT * level), tilt, TILT_FACE);
     let scale = drawn.h / rect.h;
     let radius = CARD_RADIUS * scale;
-    out.lift_shadow(drawn, radius, level);
+    out.lift_shadow(offset(drawn, tilt, -TILT_SHADOW), radius, level);
     out.draw.push(Draw::RoundedGradient(
         drawn,
         radius,
@@ -1468,6 +1551,7 @@ fn input_card(out: &mut Scene, state: &State, assets: &Assets, input: &Input, re
         c(0x1b2028, 1.),
     ));
     card_glass(out, drawn, radius, level);
+    glint(out, drawn, radius, tilt);
     let name = state.preferences.input_name(input);
     let icon = input_icon(input, name);
     let size = if icon == "apple-tv" { 64. } else { 54. } * scale;
@@ -1774,6 +1858,14 @@ struct Row<'a> {
     chevron: bool,
 }
 
+/// Moves draws made after a focused row (a value or a check drawn on top of it) up with it.
+fn raise_with_row(out: &mut Scene, from: usize, level: f32) {
+    if level > 0. {
+        let extra = out.draw.split_off(from);
+        out.raised.extend(extra);
+    }
+}
+
 // Settings: a glass sidebar on the left, a title line and full-width rows on the right.
 pub const SIDEBAR: Rect = Rect::new(SAFE_X, 144., 460., 432.);
 pub const SIDEBAR_ITEMS_Y: f32 = SIDEBAR.y + 100.;
@@ -1808,6 +1900,7 @@ fn rotation_value_width(assets: &Assets, language: Language) -> f32 {
 /// A tvOS list row: glass at rest; focused it turns white with dark text, grows slightly and
 /// rounds into a lifted card. Values sit right-aligned in secondary grey.
 fn row(out: &mut Scene, state: &State, assets: &Assets, row: Row<'_>) {
+    let start = out.draw.len();
     let pressed = state.pressed.as_ref() == Some(&row.target);
     let level = if pressed {
         0.
@@ -1909,6 +2002,10 @@ fn row(out: &mut Scene, state: &State, assets: &Assets, row: Row<'_>) {
         row.target,
         Target::UploadWallpaper | Target::WallpaperCycle | Target::WallpaperGradient
     );
+    if level > 0. {
+        let lifted = out.draw.split_off(start);
+        out.raised.extend(lifted);
+    }
     out.control(row.target, row.rect, scrollable);
 }
 
@@ -1959,6 +2056,7 @@ fn weather_settings(out: &mut Scene, state: &State, assets: &Assets) {
         },
     );
     if let Some(city) = city {
+        let extra = out.draw.len();
         let level = state.focus_level(&Target::WeatherLocation);
         let drawn = grow(rect, ROW_LIFT * level);
         out.text(
@@ -1973,6 +2071,7 @@ fn weather_settings(out: &mut Scene, state: &State, assets: &Assets) {
             mix_color(SECONDARY, ON_LIGHT_SECONDARY, level),
             false,
         );
+        raise_with_row(out, extra, level);
     }
     let y = rect.y + height + ROW_GAP;
     row(
@@ -2172,6 +2271,7 @@ fn location_settings(out: &mut Scene, state: &State, assets: &Assets) {
             .as_ref()
             .is_some_and(|saved| saved.key() == place.key())
         {
+            let extra = out.draw.len();
             let level = state.focus_level(&target);
             let drawn = grow(rect, ROW_LIFT * level);
             out.icon(
@@ -2185,6 +2285,7 @@ fn location_settings(out: &mut Scene, state: &State, assets: &Assets) {
                 ),
                 mix_color(WHITE, ON_LIGHT, level),
             );
+            raise_with_row(out, extra, level);
         }
         y += height + ROW_GAP;
     }
@@ -2200,11 +2301,15 @@ fn settings(out: &mut Scene, state: &State, assets: &Assets) {
     ])));
     let start = out.draw.len();
     settings_content(out, state, assets);
+    let raised = std::mem::take(&mut out.raised);
+    out.draw.extend(raised);
     out.shift(start, 0., state.scroll - state.display_scroll());
     out.draw.push(Draw::EdgeFade(None));
     settings_title(out, state, assets);
     if state.section == 1 && state.subpage.is_none() {
         background_actions(out, state, assets);
+        let raised = std::mem::take(&mut out.raised);
+        out.draw.extend(raised);
     }
     settings_sidebar(out, state, assets);
 }
@@ -2541,6 +2646,39 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                     "reducedMotion",
                     "motion",
                     Some(if state.preferences.reduced_motion {
+                        language.t("stateOn")
+                    } else {
+                        language.t("stateOff")
+                    }),
+                    false,
+                ),
+                (
+                    8,
+                    "focusTilt",
+                    "sparkles",
+                    Some(if state.preferences.focus_tilt {
+                        language.t("stateOn")
+                    } else {
+                        language.t("stateOff")
+                    }),
+                    false,
+                ),
+                (
+                    9,
+                    "sounds",
+                    "volume",
+                    Some(if state.preferences.sounds {
+                        language.t("stateOn")
+                    } else {
+                        language.t("stateOff")
+                    }),
+                    false,
+                ),
+                (
+                    10,
+                    "favoriteBadges",
+                    "heart",
+                    Some(if state.preferences.favorite_badges {
                         language.t("stateOn")
                     } else {
                         language.t("stateOff")
@@ -3433,7 +3571,7 @@ fn options(out: &mut Scene, state: &State, assets: &Assets, id: &str, anchor: Op
         out.lift_shadow(lifted, radius, 1.);
         let favorite_color = app_face(out, assets, app, lifted, language, radius);
         card_glass(out, lifted, radius, 1.);
-        if favorite {
+        if favorite && state.preferences.favorite_badges {
             favorite_badge(out, assets, lifted, favorite_color);
         }
     }
@@ -3672,7 +3810,13 @@ fn keyboard(out: &mut Scene, state: &State, assets: &Assets) {
     out.control(Target::CloseDialog, close, false);
     let entry = Rect::new(panel.x + 40., panel.y + 112., panel.w - 80., 68.);
     out.shape(entry, 34., c(0x000000, 0.28));
-    out.rim(entry, 34., 0.06, 0.18);
+    out.draw.push(Draw::Rim(
+        entry,
+        34.,
+        1.5,
+        c(0xffffff, 0.06),
+        c(0xffffff, 0.18),
+    ));
     out.icon(
         assets,
         "search",

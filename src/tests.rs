@@ -1178,6 +1178,7 @@ fn opening_side_popup_preserves_card_artwork_geometry_with_or_without_captions()
         for names in [false, true] {
             let mut state = ready();
             state.preferences.show_app_names = names;
+            state.preferences.favorite_badges = true;
             state.open(Page::Home);
             state.focus = Target::App("netflix".into());
             let before = scene(&state);
@@ -3229,4 +3230,49 @@ fn update_card_shows_progress_restores_retry_and_ignores_presses_while_busy() {
     assert_eq!(state.update, InstallStatus::Idle);
     state.install_response(Response::Finished(Ok(())));
     assert_eq!(state.update_status, Status::Unchecked);
+}
+
+#[test]
+fn badge_tilt_and_sound_preferences_default_and_toggle_from_general() {
+    // Older preference files gain the defaults: no badges (tvOS has none), tilt and sounds on.
+    let old: Preferences = serde_json::from_value(json!({"favorites": ["netflix"]})).unwrap();
+    assert!(!old.favorite_badges);
+    assert!(old.focus_tilt);
+    assert!(old.sounds);
+    let mut state = ready();
+    let hearts = |state: &State| {
+        scene(state)
+            .draw
+            .iter()
+            .filter(|draw| matches!(draw, crate::renderer::Draw::TintedImage(path, ..) if path.ends_with("heart-filled.lvec")))
+            .count()
+    };
+    assert_eq!(hearts(&state), 0);
+    state.open(Page::Settings);
+    for (index, toggled) in [8, 9, 10].into_iter().zip([
+        |p: &Preferences| !p.focus_tilt,
+        |p: &Preferences| !p.sounds,
+        |p: &Preferences| p.favorite_badges,
+    ]) {
+        assert!(
+            controls(&state)
+                .iter()
+                .any(|c| c.target == Target::Setting(index))
+        );
+        state.focus = Target::Setting(index);
+        assert_eq!(state.activate(), vec![Effect::Save]);
+        assert!(toggled(&state.preferences), "Setting({index})");
+    }
+    assert!(!crate::sound::enabled(&state.preferences));
+    state.open(Page::Home);
+    assert!(
+        hearts(&state) > 0,
+        "Badges mark the pinned favourites when switched on"
+    );
+    // Tilt is inert when switched off or when motion is reduced.
+    assert!(!state.tilt_enabled());
+    state.preferences.focus_tilt = true;
+    assert!(state.tilt_enabled());
+    state.preferences.reduced_motion = true;
+    assert!(!state.tilt_enabled());
 }

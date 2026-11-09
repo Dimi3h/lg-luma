@@ -498,6 +498,7 @@ fn grid_and_options_use_matching_adaptive_hearts_without_a_backing_circle() {
             None,
         );
         state.open(crate::state::Page::Home);
+        state.preferences.favorite_badges = true;
         state.focus = Target::App("regional.app".into());
         let render = |state: &crate::state::State| {
             crate::view::scene(state, &assets, time::OffsetDateTime::UNIX_EPOCH)
@@ -583,9 +584,9 @@ fn visible_cards_switch_from_fallback_to_a_single_composited_installed_surface()
     // A separate backdrop would be faded twice under the icon and expose its box.
     let same_face =
         |r: &crate::state::Rect| r.x == face.x && r.y == face.y && r.w == face.w && r.h == face.h;
-    // The glassy edge is a rim on the same face, not a second fill.
-    assert!(loaded.draw.iter().any(|draw| matches!(draw,
-        crate::renderer::Draw::Rim(rect, r, ..) if same_face(rect) && r == radius
+    // A resting card has no rim (it appears with the focus lift) and no second fill.
+    assert!(!loaded.draw.iter().any(|draw| matches!(draw,
+        crate::renderer::Draw::Rim(rect, ..) if same_face(rect)
     )));
     assert!(!loaded.draw.iter().any(|draw| match draw {
         crate::renderer::Draw::Shape(rect, _, border, _) => same_face(rect) && *border == 0.,

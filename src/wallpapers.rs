@@ -378,7 +378,7 @@ fn shade(image: &mut image::RgbImage) {
 }
 
 /// A small, blurred copy for glass panels with the glass tint baked in, matching
-/// `tools/assets.mjs`: lower contrast and about 10% white.
+/// `tools/assets.mjs`: 30% more saturation, slightly lower contrast and about 10% white.
 fn glass(image: &image::RgbImage) -> image::RgbImage {
     let small = image::imageops::resize(
         image,
@@ -388,9 +388,12 @@ fn glass(image: &image::RgbImage) -> image::RgbImage {
     );
     let mut blurred = image::imageops::blur(&small, 10.);
     for pixel in blurred.pixels_mut() {
-        for channel in &mut pixel.0 {
-            *channel = (*channel as f32 * 0.72 + 26.).round().min(255.) as u8;
-        }
+        let [r, g, b] = pixel.0.map(f32::from);
+        let gray = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        pixel.0 = [r, g, b].map(|channel| {
+            let saturated = gray + (channel - gray) * 1.3;
+            (saturated * 0.88 + 24.).round().clamp(0., 255.) as u8
+        });
     }
     blurred
 }

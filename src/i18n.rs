@@ -127,7 +127,16 @@ impl Language {
             self.format(&format!("{key}Named"), &[("name", name)])
         }
     }
+    /// The localized date in sentence case ("Thursday, October 22"), as tvOS shows dates.
     pub fn date(self, now: OffsetDateTime) -> String {
+        let date = self.date_words(now);
+        let mut chars = date.chars();
+        chars.next().map_or(String::new(), |first| {
+            first.to_uppercase().chain(chars).collect()
+        })
+    }
+
+    fn date_words(self, now: OffsetDateTime) -> String {
         let weekday = now.weekday().number_days_from_monday() as usize;
         let month = now.month() as usize - 1;
         match self {
@@ -157,8 +166,7 @@ impl Language {
                     "December"
                 ][month],
                 now.day()
-            )
-            .to_uppercase(),
+            ),
             Self::De => format!(
                 "{}, {}. {}",
                 [
@@ -185,8 +193,7 @@ impl Language {
                     "November",
                     "Dezember"
                 ][month]
-            )
-            .to_uppercase(),
+            ),
             Self::Zh | Self::ZhTw => format!(
                 "{}月{}日星期{}",
                 now.month() as u8,
@@ -219,8 +226,7 @@ impl Language {
                     "noviembre",
                     "diciembre"
                 ][month]
-            )
-            .to_uppercase(),
+            ),
             Self::Pt => format!(
                 "{}, {} de {}",
                 [
@@ -247,8 +253,7 @@ impl Language {
                     "novembro",
                     "dezembro"
                 ][month]
-            )
-            .to_uppercase(),
+            ),
             Self::It => format!(
                 "{} {} {}",
                 [
@@ -275,8 +280,7 @@ impl Language {
                     "novembre",
                     "dicembre"
                 ][month]
-            )
-            .to_uppercase(),
+            ),
             Self::Ru => format!(
                 "{}, {} {}",
                 [
@@ -303,8 +307,7 @@ impl Language {
                     "ноября",
                     "декабря"
                 ][month]
-            )
-            .to_uppercase(),
+            ),
             Self::Pl => format!(
                 "{}, {} {}",
                 [
@@ -331,8 +334,7 @@ impl Language {
                     "listopada",
                     "grudnia"
                 ][month]
-            )
-            .to_uppercase(),
+            ),
             Self::Fr => format!(
                 "{} {} {}",
                 [
@@ -356,8 +358,7 @@ impl Language {
                     "novembre",
                     "décembre"
                 ][month]
-            )
-            .to_uppercase(),
+            ),
             Self::Vi => format!(
                 "{}, {} {}",
                 [
@@ -384,8 +385,7 @@ impl Language {
                     "tháng 11",
                     "tháng 12"
                 ][month]
-            )
-            .to_uppercase(),
+            ),
             Self::Nl => format!(
                 "{} {} {}",
                 [
@@ -412,8 +412,7 @@ impl Language {
                     "november",
                     "december"
                 ][month]
-            )
-            .to_uppercase(),
+            ),
             Self::Sv => format!(
                 "{} {} {}",
                 [
@@ -434,8 +433,7 @@ impl Language {
                     "november",
                     "december"
                 ][month]
-            )
-            .to_uppercase(),
+            ),
             Self::Cs => format!(
                 "{} {}. {}",
                 [
@@ -462,8 +460,7 @@ impl Language {
                     "listopadu",
                     "prosince"
                 ][month]
-            )
-            .to_uppercase(),
+            ),
         }
     }
     pub fn clock(self, now: OffsetDateTime, hour24: bool, seconds: bool) -> String {
@@ -708,23 +705,23 @@ mod tests {
             &time::format_description::well_known::Rfc3339,
         )
         .unwrap();
-        assert_eq!(Language::De.date(now), "MITTWOCH, 21. OKTOBER");
-        assert_eq!(Language::Es.date(now), "MIÉRCOLES, 21 DE OCTUBRE");
-        assert_eq!(Language::Pt.date(now), "QUARTA-FEIRA, 21 DE OUTUBRO");
+        assert_eq!(Language::De.date(now), "Mittwoch, 21. Oktober");
+        assert_eq!(Language::Es.date(now), "Miércoles, 21 de octubre");
+        assert_eq!(Language::Pt.date(now), "Quarta-feira, 21 de outubro");
         assert_eq!(Language::Zh.date(now), "10月21日星期三");
-        assert_eq!(Language::Ru.date(now), "СРЕДА, 21 ОКТЯБРЯ");
+        assert_eq!(Language::Ru.date(now), "Среда, 21 октября");
         assert_eq!(Language::Ru.clock(now, true, false), "20:41");
-        assert_eq!(Language::Pl.date(now), "ŚRODA, 21 PAŹDZIERNIKA");
+        assert_eq!(Language::Pl.date(now), "Środa, 21 października");
         assert_eq!(Language::Pl.clock(now, true, false), "20:41");
-        assert_eq!(Language::Fr.date(now), "MERCREDI 21 OCTOBRE");
+        assert_eq!(Language::Fr.date(now), "Mercredi 21 octobre");
         assert_eq!(Language::Fr.clock(now, true, false), "20:41");
-        assert_eq!(Language::Vi.date(now), "THỨ TƯ, 21 THÁNG 10");
+        assert_eq!(Language::Vi.date(now), "Thứ tư, 21 tháng 10");
         assert_eq!(Language::Vi.clock(now, true, false), "20:41");
-        assert_eq!(Language::Nl.date(now), "WOENSDAG 21 OKTOBER");
+        assert_eq!(Language::Nl.date(now), "Woensdag 21 oktober");
         assert_eq!(Language::Nl.clock(now, true, false), "20:41");
-        assert_eq!(Language::Sv.date(now), "ONSDAG 21 OKTOBER");
+        assert_eq!(Language::Sv.date(now), "Onsdag 21 oktober");
         assert_eq!(Language::Sv.clock(now, true, false), "20:41");
-        assert_eq!(Language::Cs.date(now), "STŘEDA 21. ŘÍJNA");
+        assert_eq!(Language::Cs.date(now), "Středa 21. října");
         assert_eq!(Language::Cs.clock(now, true, false), "20:41");
         assert_eq!(Language::Zh.clock(now, false, false), "下午8:41");
         assert_eq!(Language::Zh.clock(now, false, true), "下午8:41:00");
@@ -735,9 +732,9 @@ mod tests {
     #[test]
     fn portuguese_dates_include_accented_names_and_handle_leap_days() {
         for (date, expected) in [
-            ("2024-02-29T00:05:00-03:00", "QUINTA-FEIRA, 29 DE FEVEREIRO"),
-            ("2026-03-03T12:00:00-03:00", "TERÇA-FEIRA, 3 DE MARÇO"),
-            ("2026-10-24T20:41:00-03:00", "SÁBADO, 24 DE OUTUBRO"),
+            ("2024-02-29T00:05:00-03:00", "Quinta-feira, 29 de fevereiro"),
+            ("2026-03-03T12:00:00-03:00", "Terça-feira, 3 de março"),
+            ("2026-10-24T20:41:00-03:00", "Sábado, 24 de outubro"),
         ] {
             let now = OffsetDateTime::parse(date, &time::format_description::well_known::Rfc3339)
                 .unwrap();
@@ -747,9 +744,9 @@ mod tests {
     #[test]
     fn french_dates_use_the_ordinal_first_day_and_accented_months() {
         for (date, expected) in [
-            ("2026-08-01T09:00:00+02:00", "SAMEDI 1ER AOÛT"),
-            ("2026-02-14T12:00:00+01:00", "SAMEDI 14 FÉVRIER"),
-            ("2026-12-25T20:41:00+01:00", "VENDREDI 25 DÉCEMBRE"),
+            ("2026-08-01T09:00:00+02:00", "Samedi 1er août"),
+            ("2026-02-14T12:00:00+01:00", "Samedi 14 février"),
+            ("2026-12-25T20:41:00+01:00", "Vendredi 25 décembre"),
         ] {
             let now = OffsetDateTime::parse(date, &time::format_description::well_known::Rfc3339)
                 .unwrap();
@@ -760,9 +757,9 @@ mod tests {
     #[test]
     fn vietnamese_dates_cover_leap_days_and_weekend_names() {
         for (date, expected) in [
-            ("2024-02-29T00:05:00+07:00", "THỨ NĂM, 29 THÁNG 2"),
-            ("2026-10-24T12:00:00+07:00", "THỨ BẢY, 24 THÁNG 10"),
-            ("2026-11-01T20:41:00+07:00", "CHỦ NHẬT, 1 THÁNG 11"),
+            ("2024-02-29T00:05:00+07:00", "Thứ năm, 29 tháng 2"),
+            ("2026-10-24T12:00:00+07:00", "Thứ bảy, 24 tháng 10"),
+            ("2026-11-01T20:41:00+07:00", "Chủ nhật, 1 tháng 11"),
         ] {
             let now = OffsetDateTime::parse(date, &time::format_description::well_known::Rfc3339)
                 .unwrap();
@@ -773,9 +770,9 @@ mod tests {
     #[test]
     fn dutch_dates_cover_leap_days_and_month_boundaries() {
         for (date, expected) in [
-            ("2024-02-29T00:05:00+01:00", "DONDERDAG 29 FEBRUARI"),
-            ("2026-05-01T12:00:00+02:00", "VRIJDAG 1 MEI"),
-            ("2026-12-27T20:41:00+01:00", "ZONDAG 27 DECEMBER"),
+            ("2024-02-29T00:05:00+01:00", "Donderdag 29 februari"),
+            ("2026-05-01T12:00:00+02:00", "Vrijdag 1 mei"),
+            ("2026-12-27T20:41:00+01:00", "Zondag 27 december"),
         ] {
             let now = OffsetDateTime::parse(date, &time::format_description::well_known::Rfc3339)
                 .unwrap();
@@ -786,10 +783,10 @@ mod tests {
     #[test]
     fn czech_dates_use_genitive_months_and_accented_names() {
         for (date, expected) in [
-            ("2024-02-29T00:05:00+01:00", "ČTVRTEK 29. ÚNORA"),
-            ("2026-05-01T12:00:00+02:00", "PÁTEK 1. KVĚTNA"),
-            ("2026-09-29T09:00:00+02:00", "ÚTERÝ 29. ZÁŘÍ"),
-            ("2026-12-27T20:41:00+01:00", "NEDĚLE 27. PROSINCE"),
+            ("2024-02-29T00:05:00+01:00", "Čtvrtek 29. února"),
+            ("2026-05-01T12:00:00+02:00", "Pátek 1. května"),
+            ("2026-09-29T09:00:00+02:00", "Úterý 29. září"),
+            ("2026-12-27T20:41:00+01:00", "Neděle 27. prosince"),
         ] {
             let now = OffsetDateTime::parse(date, &time::format_description::well_known::Rfc3339)
                 .unwrap();

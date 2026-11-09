@@ -415,33 +415,57 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
 - **Layout**: an 80 × 60 safe area; six columns of 260 × 156 (5:3) cards with 40 between them and
   100 between rows (pitch 300 × 256), holding Search, every app and Settings beneath the top
   shelf; optional input cards form a row above the apps.
-- **Type**: the tvOS text styles with Inter instead of SF Pro: Title 1 (76/96, greeting),
+- **Type**: the tvOS text styles with Inter instead of SF Pro. The bundled Inter 4.1 subset keeps
+  its `opsz` axis, so text of 32 px and up (Title 1, Title 3, Headline) uses Inter Display and
+  smaller text uses Inter (one font file, instantiated by `tools/font-weights.py`). Tracking is
+  light (titles about -2%, body text none). The date reads in sentence case. Title 1 (76/96, greeting),
   Title 3 (48/56, overlay and sidebar titles), Headline (38/46, section headings), Callout (31/38),
   Body (29/36, rows and captions), Caption 1 (25/32, values and status) and Caption 2 (23/30, the
   smallest text anywhere).
 - **Focus** lifts instead of drawing a ring: the focused card grows 10% around its centre (rows
-  2.5%, buttons 6%) with a large soft shadow, and its rim brightens. Focused rows and buttons turn
+  2.5%, buttons 6%) with a large soft shadow, and a light rim appears (resting cards have none).
+  A focused list row is drawn above its neighbours so its shadow falls over them. Focused rows and buttons turn
   opaque white with dark labels; selected items (the sidebar section, the background) stay
   highlighted at their resting size; pressed items return to their resting size; hidden apps in
   search results are dimmed and lose their shadow. Hit regions stay at the
   unscaled rectangles; only drawing scales.
-- **Motion**: focus lift, scroll position (the main grid and shelf, Settings lists) and page switches
-  ease with a critically damped exponential (about 200 ms for focus, 250 ms for scrolling, a 200 ms
-  fade-in for pages). Controls always use the logical, unanimated positions; the drawn content
+- **Motion**: a gained focus lifts on a light spring (damping 0.76 at 34 rad/s: about 2.3%
+  overshoot, at rest after about 200 ms); losing focus, scrolling (the main grid and shelf,
+  Settings lists) and page switches ease with a critically damped exponential (about 200 ms,
+  250 ms and a 200 ms fade-in). Controls always use the logical, unanimated positions; the drawn content
   follows. Wheel and pointer scrolling, list changes and **Reduced motion** snap immediately.
   `State::animating()` keeps presenting only while a value is moving.
 - **Liquid Glass**: GLES2 has no backdrop blur, so `pnpm assets` writes a 480 × 270 blurred copy
-  of every background, with lower contrast and a light glass tint baked in (`wallpapers/<id>-blur.jpg` and `<id>-plain-blur.jpg`), and the
+  of every background, with 30% more saturation, slightly lower contrast and a light glass tint
+  baked in (rather than dimming) (`wallpapers/<id>-blur.jpg` and `<id>-plain-blur.jpg`), and the
   upload worker writes `wallpaper-blur.jpg` and `original-blur.jpg` for uploads. Glass panels
   (`Scene::glass`) draw that copy at the same screen coordinates inside their rounded rectangle
-  (`Draw::Backdrop`, one textured pass), add a short highlight along the top edge and a 1.5 px
-  gradient rim (`Draw::Rim`) that is brightest at the top. The Search and Settings cards, the
+  (`Draw::Backdrop`, one textured pass), add a soft highlight band along the top edge and a 1 px
+  edge (`Draw::Rim`) that is white (about 36%) at the top and faintly dark at the bottom. The Search and Settings cards, the
   settings sidebar and rows, context menus, alerts, keyboard, notices and companion dialogs use it; menus, alerts and Recents put the blurred
   copy behind the whole stage. Uploads made before this change have no blurred copy and fall back
   to a dark translucent fill. App cards get a glassy rim that strengthens on focus. There is no
   real-time blur or refraction.
-- **Corners** remain circular. A continuous (squircle) corner needs a superellipse distance in
-  `paint.frag` for every rounded pixel, which has not been measured on Mali-class TVs.
+- **Corners** are continuous (superellipse) as on tvOS: the rounded-rectangle distance in
+  `paint.frag` uses a p = 3 norm in the corner, normalised by the radius so mediump floats cannot
+  overflow, over a corner 1.2× the nominal radius so it reads as the same size; capsules and
+  circles keep circular ends. App faces, glass, buttons and shadows share the shape. The cost is
+  three `pow` calls per pixel of every rounded shape (unmeasured on Mali-class TVs).
+- **Focus tilt** (Settings › General, default On, off under Reduced motion): while the Magic
+  Remote pointer is over the focused card it tilts towards it, and a d-pad press tilts it briefly
+  (140 ms) towards the press. GLES2 has no transform primitive, so the tilt is parallax: the card
+  face moves up to 3 px, its logo up to 6 px more and its shadow 10 px the other way, and a soft
+  radial glint (`Draw::Glow`, one textured pass masked to the card) follows the tilt. Only the
+  focused card draws it, only while it is tilted; the tilt settles exactly, so a still pointer
+  and released keys stop redrawing. Hit regions never move.
+- **Sounds** (Settings › General, default On): soft clicks on focus moves, selection and Back,
+  synthesized at startup (short filtered sine and noise bursts in `src/sound.rs`, no audio files)
+  and played through an SDL audio queue, which SDL mixes on its own audio thread. The device opens
+  on the first click and closes while Luma is hidden or unfocused; without a device the clicks are
+  skipped silently. Scripted runs make no sounds.
+- **Favorite badges** (Settings › General, default Off): a heart on pinned favourites. tvOS has no
+  badges; the favourites block is first in the grid either way.
+- Tilt, glass, sounds and the second optical size are unverified on TV hardware.
 
 ## Vector rendering
 
