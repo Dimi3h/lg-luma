@@ -651,10 +651,22 @@ or full-font mesh exports.
 MSAA mode requests 4× MSAA, with 2×/single-sample fallbacks if EGL rejects a configuration.
 Analytic mode requests a single-sample window. Multisampled text draws
 intact glyph fills without inward offsets/fringe triangles, which can cross on very thin
-small-text strokes. Single-sample targets use a narrower half-pixel boundary fringe. Glyph
-origins/baselines are pixel-aligned per drawable axis. There is no LCD subpixel rendering, font
+small-text strokes. Single-sample targets (Analytic, or MSAA when the GPU grants no samples)
+draw a one-physical-pixel coverage ramp centred on the outline (`ANALYTIC_FRINGE`), as a box
+filter would; the earlier half-pixel ramp stepped visibly on curves at a TV's density of 1. Light
+text there has its coverage raised to the power 0.7, which offsets the thinning of light-on-dark
+edges when blending in sRGB; dark text stays linear. Glyph outlines are flattened to
+`FLATTENING_EM` (0.15 px at 256 px/em), about 0.05 physical px for focused Title text at density
+1, so curve segments are far below a pixel. Glyph origins/baselines are pixel-aligned per
+drawable axis. There is no LCD subpixel rendering, font
 hinting or complex-script shaping. Inspect `multisample_samples` and `font_antialiasing`:
 offscreen captures can be single-sample while the actual window uses MSAA.
+
+webOS discards stderr, so Luma also writes its startup facts to `luma-diagnostics.json` next to
+the preferences file, replacing it at every start and drawable change: the text mode and
+emboldening, the MSAA sample counts requested and obtained (and any refused), the analytic ramp
+width in use, the drawable size and density, the GL vendor, renderer and version strings, the SDL
+video driver and the partial-redraw mode. Read it over SSH to see what the TV actually granted.
 
 Glyph geometry has an 8 MiB/4096-entry CPU cache target and text runs a 32 MiB/512-entry GPU
 target. Eviction preserves the current frame, which can temporarily exceed those targets.

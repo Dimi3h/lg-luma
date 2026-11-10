@@ -4149,3 +4149,27 @@ fn notices_are_a_small_pill_centred_above_the_bottom_safe_area() {
     assert!(!rendered.draw.iter().any(|draw| matches!(draw,
         Draw::Text(text, ..) if text.starts_with("Netflix added"))));
 }
+
+#[test]
+fn analytic_text_uses_a_one_pixel_ramp_and_boosts_light_text_coverage() {
+    use crate::renderer::{ANALYTIC_FRINGE, coverage_exponent};
+    // Coverage runs over one physical pixel, centred on the outline, as a box filter would.
+    assert_eq!(ANALYTIC_FRINGE, 1.);
+    // Light text on dark backgrounds gets a coverage exponent below 1; dark text stays linear.
+    assert!(coverage_exponent([0.96, 0.96, 0.96, 1.]) < 1.);
+    assert_eq!(coverage_exponent([0.08, 0.08, 0.09, 1.]), 1.);
+}
+
+#[test]
+fn startup_diagnostics_are_written_as_json_next_to_the_preferences() {
+    let directory = std::env::temp_dir().join(format!("luma-diagnostics-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("luma-diagnostics.json");
+    let facts = json!({"text_rendering": "msaa", "obtained_samples": 4, "density": 1.0});
+    crate::diagnostics::write_startup(&path, &facts).unwrap();
+    crate::diagnostics::write_startup(&path, &facts).unwrap();
+    let read: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(read, facts, "Overwritten, not appended");
+    std::fs::remove_dir_all(&directory).unwrap();
+}

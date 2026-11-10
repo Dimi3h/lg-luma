@@ -7,6 +7,11 @@ use geometry::lyon_tessellation::{
 use luma_vector_geometry::{self as geometry, Vertex};
 use owned_ttf_parser::{AsFaceRef, GlyphId, OutlineBuilder, OwnedFace};
 
+/// Curve flattening tolerance in em units: 0.15 physical px at 256 px/em, so the largest text Luma
+/// draws (Title 1, lifted 10% on focus, on a 2x drawable) stays within about a tenth of a
+/// physical pixel. The tolerance scales with the font size, never with the display density.
+pub const FLATTENING_EM: f32 = 0.15 / 256.;
+
 pub struct Font {
     face: OwnedFace,
 }
@@ -81,9 +86,7 @@ impl Font {
         if outline.open {
             outline.builder.end(true);
         }
-        // Flatten at subpixel precision for glyphs up to 256 physical px/em,
-        // covering the current 1080p and 4K typography with the same geometry.
-        geometry::tessellate(&outline.builder.build(), 0.15 / 256., FillRule::NonZero)
+        geometry::tessellate(&outline.builder.build(), FLATTENING_EM, FillRule::NonZero)
     }
 }
 
@@ -122,5 +125,20 @@ impl OutlineBuilder for GlyphOutline {
             self.builder.end(true);
             self.open = false;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn curve_flattening_stays_a_fraction_of_a_physical_pixel_at_every_size_we_draw() {
+        // Title 1 (76 px) lifted 10% on focus, Larger text does not scale titles, at 1x and 2x.
+        for density in [1., 2.] {
+            let largest = 76. * 1.1 * density;
+            let error = super::FLATTENING_EM * largest;
+            assert!(error <= 0.1, "{error} px at density {density}");
+        }
+        // Body text with Larger text (29 px x 1.15) on the TV's 1x drawable.
+        const { assert!(super::FLATTENING_EM * 29. * 1.15 <= 0.02) };
     }
 }

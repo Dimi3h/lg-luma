@@ -18,6 +18,23 @@ use std::{
 
 pub type Color = [f32; 4];
 pub const WHITE: Color = [0.96, 0.96, 0.96, 1.];
+/// Width of the analytic (single-sample) text edge ramp, in physical pixels: coverage runs from
+/// 1 half a pixel inside the outline to 0 half a pixel outside it, as a box filter would. A
+/// narrower ramp steps visibly on curves and diagonals at a TV's density of 1.
+pub const ANALYTIC_FRINGE: f32 = 1.;
+/// Coverage exponent for light text in the analytic path. Blending in sRGB thins light-on-dark
+/// edges; raising coverage to this power (below 1) restores their perceived weight.
+pub const LIGHT_TEXT_COVERAGE_EXPONENT: f32 = 0.7;
+
+/// The analytic path's coverage exponent for text of this tint (1 leaves coverage linear).
+pub fn coverage_exponent(tint: Color) -> f32 {
+    let luminance = 0.2126 * tint[0] + 0.7152 * tint[1] + 0.0722 * tint[2];
+    if luminance > 0.5 {
+        LIGHT_TEXT_COVERAGE_EXPONENT
+    } else {
+        1.
+    }
+}
 const GLYPH_GEOMETRY_BUDGET: usize = 8 * 1024 * 1024;
 const TEXT_GEOMETRY_BUDGET: usize = 32 * 1024 * 1024;
 const TEXTURE_BUDGET: usize = 48 * 1024 * 1024;
@@ -1516,12 +1533,17 @@ impl Renderer {
         unsafe {
             gl::UseProgram(program);
             if program == self.text_program {
+                let analytic = self.stats.multisample_samples <= 1;
                 gl::Uniform1f(
                     gl::GetUniformLocation(program, c"u_fringe".as_ptr()),
-                    if self.stats.multisample_samples > 1 {
-                        0.
+                    if analytic { ANALYTIC_FRINGE } else { 0. },
+                );
+                gl::Uniform1f(
+                    gl::GetUniformLocation(program, c"u_coverage_exponent".as_ptr()),
+                    if analytic {
+                        coverage_exponent(tint)
                     } else {
-                        0.5
+                        1.
                     },
                 );
                 gl::Uniform1f(

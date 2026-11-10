@@ -826,6 +826,23 @@ fn run() -> Result<(), String> {
             .as_ref()
             .map_or("off", egl_damage::PartialUpdate::describe)
     );
+    // webOS discards stderr, so the startup facts that matter for text quality also go to a
+    // small file next to the preferences (overwritten at every start and drawable change).
+    let diagnostics_path = preferences_path.with_file_name("luma-diagnostics.json");
+    let startup_facts = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "video_driver": video.current_video_driver(),
+        "text_rendering": text_config.mode,
+        "embolden_px": text_config.embolden,
+        "requested_samples": text_config.sample_counts,
+        "obtained_samples": samples,
+        "msaa_failures": failures,
+        "analytic_fringe_px": if samples > 1 { 0. } else { renderer::ANALYTIC_FRINGE },
+        "gl": renderer.info,
+        "partial_redraw": partial
+            .as_ref()
+            .map_or("off", egl_damage::PartialUpdate::describe),
+    });
     let mut damage_tracker = damage::Tracker::default();
     // Pages to prepare while the screen is idle (text, logos, icons), after each inventory.
     let mut prewarm: Vec<state::Page> = Vec::new();
@@ -1841,6 +1858,12 @@ fn run() -> Result<(), String> {
                 }
                 let drawable = Size::new(width, height);
                 if last_drawable != Some(drawable) {
+                    let mut facts = startup_facts.clone();
+                    facts["drawable"] = serde_json::json!([width, height]);
+                    facts["density"] = serde_json::json!(drawable.scale());
+                    if let Err(error) = diagnostics::write_startup(&diagnostics_path, &facts) {
+                        eprintln!("Luma diagnostics file: {error}");
+                    }
                     if options.diagnostics.is_some() || options.resolution.is_some() {
                         eprintln!(
                             "Luma drawable: {}x{}, density {:.3}x, 4K buffer: {}",
