@@ -663,7 +663,15 @@ captures (the TV comparison is still open). Light
 text there has its coverage raised to the power 0.7, which offsets the thinning of light-on-dark
 edges when blending in sRGB; dark text stays linear. Glyph outlines are flattened to
 `FLATTENING_EM` (0.15 px at 256 px/em), about 0.05 physical px for focused Title text at density
-1, so curve segments are far below a pixel. Glyph origins/baselines are pixel-aligned per
+1, so curve segments are far below a pixel. Boundary offsets are mitred at most 2× (`MITRE_LIMIT`), so a vertex
+at a sharp notch or crotch moves at most one pixel instead of reaching across it. Inter keeps
+overlapping contours (an "n" is a stem plus an overlapping arch), and Lyon's fill mesh then has
+T-junctions where they meet; vertices on those are pinned (their fill is not pulled inward), so
+the ramp cannot open a seam inside the letter. `luma_vector_geometry::fringe_report` and
+`coverage_error` rasterise a mesh in software as the shader draws it; tests use them on Title
+"n", "m", "e" and others (when `pnpm assets` has generated the fonts) and on synthetic overlaps
+and notches. What remains at an "n" shoulder is Inter Display's own narrow notch between stem
+and arch, drawn at its true, sub-pixel width. Glyph origins/baselines are pixel-aligned per
 drawable axis. There is no LCD subpixel rendering, font
 hinting or complex-script shaping. Inspect `multisample_samples` and `font_antialiasing`:
 offscreen captures can be single-sample while the actual window uses MSAA.
