@@ -30,7 +30,7 @@ fn home_relaunch_returns_from_scrolled_home_and_settings() {
         state.scroll = 400.;
         state.subpage = Some(crate::state::Subpage::Clock);
         state.pointer = true;
-        state.pressed = Some(Target::SettingsCard);
+        state.pressed = Some(Target::SettingsIcon);
         state.dirty = false;
 
         assert!(state.return_home().is_empty());
@@ -52,11 +52,11 @@ fn home_relaunch_dismisses_overlays_without_cancelling_mutations() {
     for overlay in [
         Overlay::Options {
             id: "test.app".into(),
-            restore: Target::SettingsCard,
+            restore: Target::SettingsIcon,
         },
         Overlay::Delete {
             id: "test.app".into(),
-            restore: Target::SettingsCard,
+            restore: Target::SettingsIcon,
         },
         Overlay::WallpaperUpload,
         Overlay::BackgroundOptions {
@@ -233,23 +233,53 @@ fn remote_routes_through_the_shelf_grid_and_settings() {
     // Above the first row is the shelf's weather button (no location yet).
     state.direction(Direction::Up, &controls(&state));
     assert_eq!(state.focus, Target::WeatherConfigure);
-    // Above it the clock, the top of the screen.
+    // Nothing above it; Right reaches the top bar's icons: Apps, Control Center, Settings.
     state.direction(Direction::Up, &controls(&state));
-    assert_eq!(state.focus, Target::Clock);
-    state.direction(Direction::Up, &controls(&state));
-    assert_eq!(state.focus, Target::Clock);
+    assert_eq!(state.focus, Target::WeatherConfigure);
+    state.direction(Direction::Right, &controls(&state));
+    assert_eq!(state.focus, Target::StoreIcon);
+    state.direction(Direction::Right, &controls(&state));
+    assert_eq!(state.focus, Target::ControlIcon);
+    state.direction(Direction::Right, &controls(&state));
+    assert_eq!(state.focus, Target::SettingsIcon);
+    state.direction(Direction::Right, &controls(&state));
+    assert_eq!(state.focus, Target::SettingsIcon);
+    // Down from Settings enters the right-hand column; Up from there returns.
     state.direction(Direction::Down, &controls(&state));
+    let grid = state.grid();
+    assert_eq!(state.focus, grid[5]);
+    state.direction(Direction::Up, &controls(&state));
+    assert_eq!(state.focus, Target::SettingsIcon);
+    state.focus = grid[4].clone();
+    state.direction(Direction::Up, &controls(&state));
+    assert_eq!(state.focus, Target::ControlIcon);
+    state.direction(Direction::Left, &controls(&state));
+    state.direction(Direction::Left, &controls(&state));
+    assert_eq!(
+        state.focus,
+        Target::WeatherConfigure,
+        "Left from the bar returns to the shelf"
+    );
     state.direction(Direction::Down, &controls(&state));
     assert_eq!(state.focus, Target::App("netflix".into()));
+    // LG's app store is an icon, never a card.
+    assert!(!grid.contains(&Target::App(crate::state::STORE_ID.into())));
+    assert!(!grid.contains(&Target::SettingsIcon));
+    state.focus = Target::StoreIcon;
+    assert_eq!(
+        state.activate(),
+        vec![Effect::Launch(crate::state::STORE_ID.into())]
+    );
     // Netflix is the first card now that there is no Search card.
+    state.focus = Target::App("netflix".into());
     state.direction(Direction::Left, &controls(&state));
     assert_eq!(
         state.focus,
         Target::App("netflix".into()),
         "Rows do not wrap"
     );
-    // Settings is the grid's last card and opens the Settings page.
-    state.focus = Target::SettingsCard;
+    // The Settings icon opens Settings; Back from its sidebar returns to the icon.
+    state.focus = Target::SettingsIcon;
     assert!(state.activate().is_empty());
     assert_eq!(state.page, Page::Settings);
     assert_eq!(state.focus, Target::Sidebar(0));
@@ -259,7 +289,7 @@ fn remote_routes_through_the_shelf_grid_and_settings() {
     assert_eq!(state.focus, Target::Sidebar(0));
     state.back();
     assert_eq!(state.page, Page::Home);
-    assert_eq!(state.focus, Target::SettingsCard);
+    assert_eq!(state.focus, Target::SettingsIcon);
     assert_eq!(
         state.back(),
         vec![Effect::Recent {
@@ -275,7 +305,10 @@ fn up_and_down_follow_grid_indices_including_offscreen_rows() {
     let mut state = ready();
     let grid = state.grid();
     assert_eq!(grid.first(), Some(&Target::App("netflix".into())));
-    assert_eq!(grid.last(), Some(&Target::SettingsCard));
+    assert!(
+        matches!(grid.last(), Some(Target::App(_))),
+        "No Settings card"
+    );
     for index in [1, 7, 13] {
         state.focus = grid[index].clone();
         state.direction(Direction::Down, &controls(&state));
@@ -336,10 +369,10 @@ fn eighteen_cards_fit_in_three_rows_beneath_a_compact_shelf_without_scrolling() 
     let mut state = State::new(Preferences::default());
     state.preferences.reduced_motion = true;
     let mut inventory = demo_inventory();
-    inventory.apps.truncate(17);
+    inventory.apps.truncate(18);
     state.set_inventory(inventory, None);
     let grid = state.grid();
-    // Seventeen apps and Settings.
+    // Eighteen apps; Settings is an icon in the top bar.
     assert_eq!(grid.len(), 18);
     for target in &grid {
         state.focus = target.clone();
@@ -519,7 +552,7 @@ fn there_is_no_app_search_and_the_keyboard_stays_for_text_fields() {
     assert!(home.iter().all(|c| !matches!(c.target, Target::Key(_))));
     assert_eq!(
         home.iter()
-            .filter(|c| c.target == Target::SettingsCard)
+            .filter(|c| c.target == Target::SettingsIcon)
             .count(),
         1
     );
@@ -554,7 +587,7 @@ fn partial_refresh_preserves_valid_inputs_and_never_invents_tv_apps() {
     assert!(state.inventory.apps.is_empty());
     assert_eq!(state.inventory.inputs.len(), 3);
     // Without TV apps the grid still opens on its Settings card.
-    assert_eq!(state.first_content(), Target::SettingsCard);
+    assert_eq!(state.first_content(), Target::SettingsIcon);
 }
 
 #[test]
@@ -2887,18 +2920,21 @@ fn clock_date_and_home_input_descriptions_use_tvos_text_styles() {
 fn one_screen_has_no_tab_bar_and_inputs_appear_only_when_enabled() {
     let mut state = ready();
     let rendered = scene(&state);
-    // No Home/Apps/Settings tabs, TV-settings button or Search card: apps first, Settings last.
-    for label in ["Home", "Apps"] {
-        assert!(!rendered.draw.iter().any(|draw| matches!(draw,
-            crate::renderer::Draw::Text(text, ..) if text == label)));
-    }
+    // No Home/Apps/Settings tabs, TV-settings button, Search or Settings card: only apps.
+    assert!(!rendered.draw.iter().any(|draw| matches!(draw,
+        crate::renderer::Draw::Text(text, ..) if text == "Home")));
     let grid: Vec<_> = rendered
         .controls
         .iter()
-        .filter(|control| matches!(control.target, Target::App(_) | Target::SettingsCard))
+        .filter(|control| matches!(control.target, Target::App(_)))
         .collect();
     assert_eq!(grid.first().unwrap().target, Target::App("netflix".into()));
-    assert_eq!(grid.last().unwrap().target, Target::SettingsCard);
+    assert!(
+        rendered
+            .controls
+            .iter()
+            .any(|c| c.target == Target::SettingsIcon)
+    );
     assert!(
         grid.iter().all(
             |control| control.rect.w == view::CARD_WIDTH && control.rect.h == view::CARD_HEIGHT
@@ -3500,19 +3536,24 @@ fn app_artwork_washes_the_shelf_for_first_row_apps_and_crossfades() {
 }
 
 #[test]
-fn control_center_opens_from_the_clock_and_drives_the_tv_only_through_its_worker() {
+fn control_center_opens_from_its_icon_and_drives_the_tv_only_through_its_worker() {
     use crate::control_center::{Command, Reply, Status};
     let mut state = ready();
     state.open(Page::Home);
-    // Up from the first row reaches the shelf's weather button, then the clock.
-    state.direction(Direction::Up, &controls(&state));
-    state.direction(Direction::Up, &controls(&state));
-    assert_eq!(state.focus, Target::Clock);
-    assert!(controls(&state).iter().any(|c| c.target == Target::Clock));
-    state.direction(Direction::Down, &controls(&state));
-    assert_eq!(state.focus, Target::WeatherConfigure);
-    // Holding OK on the shelf opens it too.
+    // Its icon in the top bar opens it; the clock and the shelf no longer do.
+    state.focus = Target::WeatherConfigure;
     state.hold();
+    assert!(
+        state.overlay.is_none() || !matches!(state.overlay, Some(Overlay::ControlCenter { .. }))
+    );
+    state.overlay = None;
+    state.focus = Target::ControlIcon;
+    assert!(
+        controls(&state)
+            .iter()
+            .any(|c| c.target == Target::ControlIcon)
+    );
+    state.activate();
     assert!(matches!(state.overlay, Some(Overlay::ControlCenter { .. })));
     assert_eq!(state.focus, Target::Control(0));
     assert_eq!(state.control_outbox, [Command::Status]);
@@ -3572,13 +3613,13 @@ fn control_center_opens_from_the_clock_and_drives_the_tv_only_through_its_worker
     };
     assert_eq!(state.activate(), vec![Effect::Launch(id)]);
     assert!(state.overlay.is_none());
-    // Back closes it and restores the shelf focus; a click on the clock opens it.
-    state.focus = Target::Clock;
+    // Back closes it and restores focus to its icon.
+    state.focus = Target::ControlIcon;
     state.activate();
     assert!(matches!(state.overlay, Some(Overlay::ControlCenter { .. })));
     assert!(state.back().is_empty());
     assert!(state.overlay.is_none());
-    assert_eq!(state.focus, Target::Clock);
+    assert_eq!(state.focus, Target::ControlIcon);
 }
 
 #[test]
@@ -3772,7 +3813,7 @@ fn larger_text_scales_body_styles_keeps_titles_and_still_fits_three_rows() {
     assert!(!old.larger_text);
     let mut state = State::new(Preferences::default());
     let mut inventory = demo_inventory();
-    inventory.apps.truncate(17);
+    inventory.apps.truncate(18);
     state.set_inventory(inventory, None);
     state.preferences.reduced_motion = true;
     let sizes = |state: &State, label: &str| {
@@ -3969,4 +4010,39 @@ fn dutch_defaults_to_a_24_hour_clock_and_a_lowercase_date_after_it() {
         "11:56 PM"
     );
     assert_eq!(Language::Nl.clock(at, true, false), "23:56");
+}
+
+#[test]
+fn the_top_bar_keeps_settings_without_the_app_store_and_icons_are_clickable() {
+    let mut state = State::new(Preferences::default());
+    let mut inventory = demo_inventory();
+    inventory
+        .apps
+        .retain(|app| app.id != crate::state::STORE_ID);
+    state.set_inventory(inventory, None);
+    assert_eq!(state.top_bar(), [Target::ControlIcon, Target::SettingsIcon]);
+    let bar: Vec<_> = controls(&state)
+        .into_iter()
+        .filter(|c| matches!(c.target, Target::ControlIcon | Target::SettingsIcon))
+        .collect();
+    assert_eq!(bar.len(), 2);
+    // Small icons on the clock's line, right-aligned inside the safe area.
+    for icon in &bar {
+        assert_eq!(icon.rect.w, view::TOP_ICON);
+        assert!(icon.rect.x + icon.rect.w <= 1920. - view::SAFE_X);
+        assert!((icon.rect.y + icon.rect.h / 2. - (view::CLOCK_Y + 18.)).abs() < 0.5);
+    }
+    // A pointer click on Settings opens it.
+    let settings = bar
+        .iter()
+        .find(|c| c.target == Target::SettingsIcon)
+        .unwrap();
+    let (x, y) = settings.rect.center();
+    assert_eq!(
+        state.hit_test(&controls(&state), x, y),
+        Some(Target::SettingsIcon)
+    );
+    state.pointer_focus(Target::SettingsIcon);
+    state.activate();
+    assert_eq!(state.page, Page::Settings);
 }

@@ -209,7 +209,7 @@ fn back_dismissal_consumes_repeats_native_exit_and_release_without_quitting() {
         None
     );
     assert_eq!(state.page, Page::Home);
-    assert_eq!(state.focus, Target::SettingsCard);
+    assert_eq!(state.focus, Target::SettingsIcon);
 }
 
 #[test]
@@ -304,14 +304,14 @@ fn a_short_back_on_home_opens_recents_and_the_next_press_restores_the_app() {
 
 #[test]
 fn the_main_screen_header_is_only_the_clock() {
-    // tvOS has no tab bar on its Home Screen: above the shelf only the clock (which opens
-    // Control Center) is a control.
+    // tvOS has no tab bar on its Home Screen: above the shelf only the three top-bar icons
+    // (Apps, Control Center, Settings) are controls.
     let state = ready();
-    assert!(
-        controls(&state)
-            .iter()
-            .all(|control| control.rect.y >= 120. || control.target == Target::Clock)
-    );
+    assert!(controls(&state).iter().all(|control| control.rect.y >= 120.
+        || matches!(
+            control.target,
+            Target::StoreIcon | Target::ControlIcon | Target::SettingsIcon
+        )));
 }
 
 #[test]
@@ -496,7 +496,7 @@ fn failed_actions_keep_history_and_stale_replies_cannot_reopen_or_replace_a_sess
     let generation = state.recents.generation;
     state.recent_response(generation, Command::Launch("netflix".into()), Ok(None));
     assert!(!state.recents_open());
-    assert_eq!(state.focus, Target::SettingsCard);
+    assert_eq!(state.focus, Target::SettingsIcon);
 }
 
 #[test]

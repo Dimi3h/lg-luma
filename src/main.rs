@@ -1119,7 +1119,7 @@ fn run() -> Result<(), String> {
                             .filter_map(|app| app.icon.clone()),
                     );
                     if initial_focus
-                        && state.focus == Target::SettingsCard
+                        && state.focus == Target::SettingsIcon
                         && state.page == state::Page::Home
                     {
                         state.focus = state.first_content();

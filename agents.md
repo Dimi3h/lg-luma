@@ -58,10 +58,11 @@ native process, not `luna-send-pub -a` impersonation. Inventory failure must nev
 data on TV. Explicit `--test-extra-apps` is a labeled manual preview applied only after successful
 inventory reads, with separate preferences and no placeholder launch requests.
 
-Pointer hover/down must not move a clicked control. Home favorites use one horizontal strip;
-remote focus/reordering reveals the whole selected card. Apps Up/Down follows six-column grid
-indices, including offscreen rows, so headers cannot steal mid-grid navigation. Back restores
-setting subpage parents and supports SDL-webOS Back. OK finishes move mode without launching.
+Pointer hover/down must not move a clicked control. Favorites lead the main screen's single
+six-column grid; remote focus/reordering reveals the whole selected card. Up/Down follows grid
+indices, including offscreen rows, so the shelf and top-bar icons cannot steal mid-grid
+navigation. Back restores setting subpage parents and supports SDL-webOS Back. OK finishes
+move mode without launching.
 
 Vector icon/logo assets are standalone SVGs compiled to `.lvec` at build time. Font outlines
 are tessellated only as needed; text runs use bounded GPU caches, Inter only (no CJK fallback)

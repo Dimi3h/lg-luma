@@ -815,7 +815,11 @@ pub fn scene(state: &State, assets: &Assets, now: OffsetDateTime) -> Scene {
     if page_alpha < 1. {
         out.fade(content_start, page_alpha, 1.);
     }
-    header(&mut out, state, assets, now);
+    header(&mut out, state, now);
+    // The top bar stays put while the grid scrolls, like the clock.
+    if state.page == Page::Home && state.overlay.is_none() && state.moving.is_none() {
+        top_bar(&mut out, state, assets);
+    }
     if let Some(
         overlay @ (Overlay::Options { .. }
         | Overlay::Delete { .. }
@@ -999,41 +1003,17 @@ fn light_appearance(out: &mut Scene, from: usize) {
 const CLOCK_STYLE: TextStyle = BODY.weight(550);
 pub const CLOCK_Y: f32 = SCREEN_MARGIN - CLOCK_CAP_INSET;
 
-fn header(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
+fn header(out: &mut Scene, state: &State, now: OffsetDateTime) {
     let clock = state.preferences.language.clock(
         now,
         state.preferences.uses_24_hour(),
         state.preferences.show_seconds,
     );
-    // On the main screen the clock is a button that opens Control Center: it lifts onto a
-    // white capsule when focused, like other tvOS buttons, and is invisible as a button at rest.
-    let home = state.page == Page::Home && state.overlay.is_none() && !recents_replaces_page(state);
-    let mut level = 0.;
-    if home {
-        let width = assets.width(&clock, CLOCK_STYLE).ceil();
-        let rect = clock_button(width);
-        level = if state.pressed.as_ref() == Some(&Target::Clock) {
-            0.
-        } else {
-            state.focus_level(&Target::Clock)
-        };
-        if level > 0. {
-            let drawn = grow(rect, BUTTON_LIFT * level);
-            out.lift_shadow(drawn, drawn.h / 2., level);
-            out.draw.push(Draw::RoundedGradient(
-                drawn,
-                drawn.h / 2.,
-                c(0xffffff, level),
-                c(0xebebed, level),
-            ));
-        }
-        out.control(Target::Clock, rect, false);
-    }
     out.text(
         clock,
         Rect::new(SAFE_X, CLOCK_Y, 320., 36.),
         CLOCK_STYLE,
-        mix_color(c(0xffffff, 0.72), ON_LIGHT, level),
+        c(0xffffff, 0.72),
         false,
     );
 }
@@ -1153,11 +1133,6 @@ fn screensaver_choices(
     if let Some(opened) = state.panel_started {
         out.fade(start, (opened.elapsed().as_secs_f32() / 0.15).min(1.), 1.);
     }
-}
-
-/// The clock's button: a capsule around its text.
-fn clock_button(width: f32) -> Rect {
-    Rect::new(SAFE_X - 18., CLOCK_Y - 8., width + 36., 52.)
 }
 
 const CONTROL_PANEL: Rect = Rect::new(1920. - SAFE_X - 640., 60., 640., 960.);
@@ -1938,8 +1913,7 @@ fn home(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
     let loading = state.loading && state.inventory.apps.is_empty();
     let error = state.inventory_failed_empty();
     if loading {
-        // The Settings card comes first while there are no apps yet.
-        for index in 1..APPS_COLUMNS {
+        for index in 0..APPS_COLUMNS {
             out.shape(card_rect(index, grid_y), CARD_RADIUS, c(0xffffff, 0.06));
         }
     }
@@ -1954,18 +1928,6 @@ fn home(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
             favorites.contains(&app.id),
         );
     }
-    let last = apps.len();
-    system_card(
-        out,
-        state,
-        assets,
-        Target::SettingsCard,
-        card_rect(last, grid_y),
-        "settings",
-        language.t("settings"),
-    );
-    // Without apps (a failed inventory, or a search without matches), explain beneath the
-    // grid's cards.
     // Without apps after a failed inventory, explain beneath the grid's cards.
     if error && !loading {
         let hint = state.error.clone().unwrap_or_default();
@@ -2015,62 +1977,68 @@ fn wash(out: &mut Scene, state: &State, assets: &Assets, id: &str, alpha: f32, b
     }
 }
 
-/// Settings as a grid card, as tvOS shows it on its Home Screen: a glass face with a large
-/// glyph and the name, lifting like an app card when focused.
-fn system_card(
-    out: &mut Scene,
-    state: &State,
-    assets: &Assets,
-    target: Target,
-    rect: Rect,
-    icon: &str,
-    label: &str,
-) {
-    let pressed = state.pressed.as_ref() == Some(&target);
-    let level = if pressed {
-        0.
-    } else {
-        state.focus_level(&target)
-    };
-    let tilt = card_tilt(state, &target, level);
-    let drawn = offset(grow(rect, CARD_LIFT * level), tilt, TILT_FACE);
-    let scale = drawn.h / rect.h;
-    let radius = CARD_RADIUS * scale;
-    out.lift_shadow(offset(drawn, tilt, -TILT_SHADOW), radius, level);
-    out.glass(drawn, radius, Glass::Regular);
-    if level > 0. {
-        // Focus illuminates the glass, like light catching an app icon.
-        out.shape(drawn, radius, c(0xffffff, 0.14 * level.min(1.)));
+/// The main screen's top bar, right-aligned on the clock's line: LG's app store (when
+/// installed), Control Center and Settings as small glass circles with a glyph. Focus lifts
+/// one onto a white circle and names it beneath.
+pub const TOP_ICON: f32 = 44.;
+const TOP_ICON_GAP: f32 = 14.;
+
+/// Where the top bar's `index`th of `count` items sits.
+pub fn top_icon_rect(index: usize, count: usize) -> Rect {
+    let x = 1920. - SAFE_X - TOP_ICON - (count - 1 - index) as f32 * (TOP_ICON + TOP_ICON_GAP);
+    Rect::new(x, CLOCK_Y + 18. - TOP_ICON / 2., TOP_ICON, TOP_ICON)
+}
+
+fn top_bar(out: &mut Scene, state: &State, assets: &Assets) {
+    let language = state.preferences.language;
+    let bar = state.top_bar();
+    for (index, target) in bar.iter().enumerate() {
+        let (icon, label) = match target {
+            Target::StoreIcon => ("store", "storeApps"),
+            Target::ControlIcon => ("controls", "controlCenter"),
+            _ => ("gear", "settings"),
+        };
+        let rect = top_icon_rect(index, bar.len());
+        let level = if state.pressed.as_ref() == Some(target) {
+            0.
+        } else {
+            state.focus_level(target)
+        };
+        let drawn = grow(rect, BUTTON_LIFT * 1.5 * level);
+        if level > 0. {
+            out.lift_shadow(drawn, drawn.h / 2., level);
+        }
+        if level < 1. {
+            out.shape(rect, rect.h / 2., c(0xffffff, 0.12 * (1. - level)));
+        }
+        if level > 0. {
+            out.draw.push(Draw::RoundedGradient(
+                drawn,
+                drawn.h / 2.,
+                c(0xffffff, level),
+                c(0xebebed, level),
+            ));
+            let label = language.t(label);
+            let (label, style) = assets.single_line(label, CAPTION2, 360.);
+            let width = assets.width(&label, style).ceil() + 2.;
+            // Beneath the icon, kept inside the safe area at the right edge.
+            let x = (rect.x + (rect.w - width) / 2.).min(1920. - SAFE_X - width);
+            out.text(
+                label,
+                Rect::new(x, rect.y + rect.h + 10., width, 30.),
+                style,
+                c(0xffffff, 0.8 * level),
+                false,
+            );
+        }
+        out.icon(
+            assets,
+            icon,
+            drawn.inset(11. * drawn.w / rect.w),
+            mix_color(c(0xffffff, 0.86), ON_LIGHT, level),
+        );
+        out.control(target.clone(), rect, false);
     }
-    glint(out, drawn, radius, tilt);
-    let size = 54. * scale;
-    out.icon(
-        assets,
-        icon,
-        Rect::new(
-            drawn.x + (drawn.w - size) / 2.,
-            drawn.y + 48. * scale - size / 2.,
-            size,
-            size,
-        ),
-        WHITE,
-    );
-    let (label, mut style) = assets.single_line(label, CAPTION1.weight(600), rect.w - 32.);
-    style.size *= scale;
-    out.text(
-        label,
-        Rect::new(
-            drawn.x + 16. * scale,
-            drawn.y + 96. * scale,
-            drawn.w - 32. * scale,
-            32. * scale,
-        ),
-        style,
-        WHITE,
-        true,
-    );
-    card_glass(out, drawn, radius, level);
-    out.control(target, rect, true);
 }
 
 /// tvOS has no inputs, so each is drawn as a 5:3 card in the app-card language: a large

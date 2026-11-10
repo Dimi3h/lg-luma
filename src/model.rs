@@ -663,6 +663,8 @@ pub fn demo_inventory() -> Inventory {
             ("com.cmb.rainbowtv", "Rainbow TV"),
             ("com.lgtvod.kr.app", "LG TV VOD"),
             ("com.webos.app.igallery", "OLED Gallery"),
+            // LG's app store: the main screen shows it as a top-bar icon, not a card.
+            ("com.webos.app.discovery", "Apps"),
             ("com.webos.app.roomconnect", "Room to Room Share"),
         ]
         .into_iter()

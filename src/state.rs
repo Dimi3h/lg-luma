@@ -32,11 +32,11 @@ pub const WASH_FADE: f32 = 0.35;
 
 /// A card of the main screen's grid (inputs, apps and the system cards).
 fn is_grid_card(target: &Target) -> bool {
-    matches!(
-        target,
-        Target::App(_) | Target::Input(_) | Target::SettingsCard
-    )
+    matches!(target, Target::App(_) | Target::Input(_))
 }
+
+/// LG's app store: an icon in the main screen's top bar, not a card in the grid.
+pub const STORE_ID: &str = "com.webos.app.discovery";
 
 pub fn unix_now() -> u64 {
     std::time::SystemTime::now()
@@ -62,10 +62,10 @@ pub enum Target {
     RecentRetry,
     App(String),
     Input(String),
-    /// The grid's last card, which opens Settings.
-    SettingsCard,
-    /// The clock on the main screen: OK, a hold or a click opens Control Center.
-    Clock,
+    /// The main screen's top-bar icons: LG's app store, Control Center and Settings.
+    StoreIcon,
+    ControlIcon,
+    SettingsIcon,
     /// A Control Center row: 0 Sleep, 1 Volume, 2 Mute, 3 Sound output (inputs follow).
     Control(usize),
     Sidebar(usize),
@@ -308,7 +308,7 @@ impl State {
     pub fn new(preferences: Preferences) -> Self {
         Self {
             page: Page::Home,
-            focus: Target::SettingsCard,
+            focus: Target::SettingsIcon,
             inventory: Inventory::default(),
             preferences,
             section: 0,
@@ -646,10 +646,7 @@ impl State {
 
     /// Notes where the focused card rests, from a composed scene, for pointer tilt.
     pub fn note_focus_rect(&mut self, controls: &[Control]) {
-        let card = matches!(
-            self.focus,
-            Target::App(_) | Target::Input(_) | Target::SettingsCard
-        );
+        let card = matches!(self.focus, Target::App(_) | Target::Input(_));
         let rect = card
             .then(|| controls.iter().find(|control| control.target == self.focus))
             .flatten()
@@ -855,7 +852,7 @@ impl State {
             .inventory
             .apps
             .iter()
-            .filter(|app| !self.preferences.hidden.contains(&app.id))
+            .filter(|app| !self.preferences.hidden.contains(&app.id) && app.id != STORE_ID)
             .collect();
         apps.sort_by(|a, b| {
             let rank = |app: &App| {
@@ -876,7 +873,7 @@ impl State {
             .inventory
             .apps
             .iter()
-            .filter(|app| self.preferences.hidden.contains(&app.id))
+            .filter(|app| self.preferences.hidden.contains(&app.id) && app.id != STORE_ID)
             .collect();
         apps.sort_by_key(|app| app.title.to_lowercase());
         apps
@@ -890,7 +887,6 @@ impl State {
                 .into_iter()
                 .map(|app| Target::App(app.id.clone())),
         );
-        grid.push(Target::SettingsCard);
         grid
     }
 
@@ -1088,7 +1084,7 @@ impl State {
             Page::Home => self
                 .apps()
                 .first()
-                .map_or(Target::SettingsCard, |app| Target::App(app.id.clone())),
+                .map_or(Target::SettingsIcon, |app| Target::App(app.id.clone())),
             Page::Settings => Target::Sidebar(0),
         }
     }
@@ -1107,7 +1103,7 @@ impl State {
                 .iter()
                 .position(|input| &input.id == id)
                 .is_some_and(|index| index < APPS_COLUMNS),
-            Target::App(_) | Target::SettingsCard => self
+            Target::App(_) => self
                 .grid()
                 .iter()
                 .position(|item| item == target)
@@ -1861,7 +1857,7 @@ impl State {
     }
 
     /// Remote routing on the main screen, by index rather than geometry so offscreen rows
-    /// and the top shelf cannot steal it: the grid (Search, apps, Settings) has six columns;
+    /// and the top shelf cannot steal it: the grid of apps has six columns;
     /// input cards, when shown, are rows of six above it; the shelf's weather button is
     /// above both. `None` leaves other targets to the generic routing; `Some(None)` consumes
     /// the press without moving.
@@ -1875,8 +1871,22 @@ impl State {
         let weather = (self.preferences.show_weather
             && self.preferences.weather_location.is_none())
         .then_some(Target::WeatherConfigure);
-        // Above the cards is the shelf: its weather button when it has one, then the clock.
-        let shelf = weather.clone().or(Some(Target::Clock));
+        // The top bar's icons, right-aligned on the clock's line.
+        let bar = self.top_bar();
+        // The bar item above a card column: the right-hand columns line up with the icons.
+        let above = |column: usize| {
+            let from_right = APPS_COLUMNS - column;
+            bar.get(bar.len().saturating_sub(from_right)).cloned()
+        };
+        // Up from the top cards: the shelf's weather button above the left-hand columns, the
+        // icons above the right-hand ones (or everywhere without a weather button).
+        let up_from = |column: usize| {
+            if column < APPS_COLUMNS / 2 && weather.is_some() {
+                weather.clone()
+            } else {
+                above(column)
+            }
+        };
         // Moving within one block of six-column rows; leaving it by its top or bottom edge.
         let step = |items: &[Target], index: usize| -> Result<Option<Target>, bool> {
             let column = index % APPS_COLUMNS;
@@ -1898,6 +1908,9 @@ impl State {
         };
         // Entering a block from above or below keeps the column where possible.
         let enter = |items: &[Target], column: usize, from_above: bool| {
+            if items.is_empty() {
+                return None;
+            }
             let row = if from_above {
                 0
             } else {
@@ -1907,38 +1920,63 @@ impl State {
                 .get((row * APPS_COLUMNS + column).min(items.len() - 1))
                 .cloned()
         };
+        // Down from the shelf or the bar enters the first block of cards.
+        let below = |column: usize| {
+            if inputs.is_empty() {
+                enter(&grid, column, true)
+                    .or_else(|| self.inventory_failed_empty().then_some(Target::Retry))
+            } else {
+                enter(&inputs, column, true)
+            }
+        };
         if let Some(index) = grid.iter().position(|item| *item == self.focus) {
             return Some(match step(&grid, index) {
                 Ok(next) => next,
                 Err(true) if !inputs.is_empty() => enter(&inputs, index % APPS_COLUMNS, false),
-                Err(true) => shelf,
+                Err(true) => up_from(index % APPS_COLUMNS),
                 Err(false) => self.inventory_failed_empty().then_some(Target::Retry),
             });
         }
         if let Some(index) = inputs.iter().position(|item| *item == self.focus) {
             return Some(match step(&inputs, index) {
                 Ok(next) => next,
-                Err(true) => shelf,
+                Err(true) => up_from(index % APPS_COLUMNS),
                 Err(false) => enter(&grid, index % APPS_COLUMNS, true),
             });
         }
         if self.focus == Target::WeatherConfigure {
             return Some(match direction {
-                Direction::Up => Some(Target::Clock),
-                Direction::Down if !inputs.is_empty() => inputs.first().cloned(),
-                Direction::Down => Some(self.first_content()),
+                Direction::Right => bar.first().cloned(),
+                Direction::Down => below(0),
                 _ => None,
             });
         }
-        if self.focus == Target::Clock {
+        if let Some(index) = bar.iter().position(|item| *item == self.focus) {
+            let column = (APPS_COLUMNS + index).saturating_sub(bar.len());
             return Some(match direction {
-                Direction::Down if weather.is_some() => weather,
-                Direction::Down if !inputs.is_empty() => inputs.first().cloned(),
-                Direction::Down => Some(self.first_content()),
-                _ => None,
+                Direction::Left if index > 0 => Some(bar[index - 1].clone()),
+                Direction::Left => weather.clone(),
+                Direction::Right => bar.get(index + 1).cloned(),
+                Direction::Down => below(column),
+                Direction::Up => None,
             });
         }
         None
+    }
+
+    /// The main screen's top bar, left to right: the LG app store (when installed), Control
+    /// Center and Settings.
+    pub fn top_bar(&self) -> Vec<Target> {
+        let store = self
+            .inventory
+            .apps
+            .iter()
+            .any(|app| app.id == STORE_ID)
+            .then_some(Target::StoreIcon);
+        store
+            .into_iter()
+            .chain([Target::ControlIcon, Target::SettingsIcon])
+            .collect()
     }
 
     pub fn options(&mut self) {
@@ -2033,14 +2071,6 @@ impl State {
     /// Holding OK on a pinned favourite reorders it (as on tvOS, where icons jiggle);
     /// on any other app it opens the options popup.
     pub fn hold(&mut self) {
-        // Holding OK on the shelf (its clock or weather) opens Control Center.
-        if self.page == Page::Home
-            && self.overlay.is_none()
-            && matches!(self.focus, Target::Clock | Target::WeatherConfigure)
-        {
-            self.open_control_center();
-            return;
-        }
         if self.page == Page::Home
             && self.overlay.is_none()
             && let Target::App(id) = &self.focus
@@ -2331,7 +2361,11 @@ impl State {
             return self.send_tile(tile);
         }
         match self.focus.clone() {
-            Target::SettingsCard => self.open(Page::Settings),
+            Target::SettingsIcon => self.open(Page::Settings),
+            Target::ControlIcon => self.open_control_center(),
+            Target::StoreIcon if !self.launching => {
+                return vec![Effect::Launch(STORE_ID.into())];
+            }
             Target::Retry => return vec![Effect::Reload],
             Target::DismissNotice => self.notice = None,
             Target::CloseDialog => return self.back(),
@@ -2350,7 +2384,6 @@ impl State {
             Target::App(id) | Target::Input(id) if !self.launching => {
                 return vec![Effect::Launch(id)];
             }
-            Target::Clock => self.open_control_center(),
             Target::OpenApp if !self.launching => {
                 if let Some(Overlay::Options { id, .. }) = &self.overlay
                     && self.inventory.apps.iter().any(|app| &app.id == id)
@@ -2972,7 +3005,7 @@ impl State {
             if matches!(self.focus, Target::Sidebar(_)) {
                 // Leaving Settings returns to its card in the grid.
                 self.open(Page::Home);
-                self.focus = Target::SettingsCard;
+                self.focus = Target::SettingsIcon;
             } else {
                 self.focus = Target::Sidebar(self.section);
             }

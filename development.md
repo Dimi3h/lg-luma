@@ -97,7 +97,7 @@ It does not execute the test suites. A desktop display is required; on headless 
 Backspace deletes while editing. Native Back uses SDL's webOS-specific keycode. Back dismisses
 the keyboard first; Weather Location then returns to its parent Location row, HDMI choices to
 that HDMI row, and the Background gallery to Background in the sidebar. Back from the sidebar
-returns to the main screen with the Settings card focused. **System** in the sidebar groups
+returns to the main screen with the Settings icon focused. **System** in the sidebar groups
 **Refresh apps & inputs** and the vector power-icon **Quit app** action separately from General
 preferences.
 OK (or a pointer click) on a grid card launches the app, as on tvOS; inputs and Recent apps launch
@@ -183,15 +183,22 @@ the grid starts at y 396 and up to 18 cards need no scrolling. The shelf takes t
 above the grid, starting 28 px below the clock line. Hiding the greeting or weather moves the
 weather up but leaves the grid at the bottom margin. The third row's focused caption reaches into
 that margin (it ends near y 1070), as tvOS captions do. There is no tab bar and no
-TV-settings button (the remote's own Settings button remains). The grid starts with the
-pinned favourites in their saved order, then every other visible app by title, and ends with a
-**Settings** card that opens Settings full screen. Pinning an app moves it into the
+TV-settings button (the remote's own Settings button remains). The grid holds the
+pinned favourites in their saved order, then every other visible app by title. Three small
+icons sit at the top right on the clock's line, left to right: **Apps** (LG's app store,
+`com.webos.app.discovery`, launched from the icon and left out of the grid and Hidden apps),
+**Control Center** and **Settings** (full screen). Without the store app only the last two show.
+They are 44 px glass circles with a glyph; focus lifts one onto a white circle and names it
+beneath. Pinning an app moves it into the
 favourites block; unpinning moves it back. Reorder mode moves a favourite within that block; OK or
 Back finishes it without launching.
 
 Up/Down follow the six-column grid indices, including offscreen rows, so the shelf cannot steal
 mid-grid navigation; Left/Right stay within a row. Up from the first row reaches the input cards
-when shown, then the shelf's weather button when no location is set. With more than three rows,
+when shown; above them, the left-hand columns reach the shelf's weather button (when no location
+is set) and the right-hand columns the top-bar icon above them. Right from the weather button
+reaches the icons, Left from the first icon returns to it, and Down from an icon enters the
+column beneath it. Pointer clicks work on every icon. With more than three rows,
 focusing a row below the third scrolls the grid by whole rows so the top visible row sits just
 below the clock, collapsing (moving and dimming) the shelf; returning to the first row brings it
 back (eased by `src/motion.rs`). Wheel scrolling moves the page directly. Pointer hover/down never moves the
@@ -459,7 +466,7 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   upload worker writes `wallpaper-blur.jpg` and `original-blur.jpg` for uploads. Glass panels
   (`Scene::glass`) draw that copy at the same screen coordinates inside their rounded rectangle
   (`Draw::Backdrop`, one textured pass), add a soft highlight band along the top edge and a 1 px
-  edge (`Draw::Rim`) that is white (about 36%) at the top and faintly dark at the bottom. The Settings card, the
+  edge (`Draw::Rim`) that is white (about 36%) at the top and faintly dark at the bottom. The top-bar icons, the
   settings sidebar and rows, context menus, alerts, keyboard, notices and companion dialogs use it; menus, alerts and Recents put the blurred
   copy behind the whole stage. Uploads made before this change have no blurred copy and fall back
   to a dark translucent fill. App cards get a glassy rim that strengthens on focus. There is no
@@ -485,10 +492,8 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   tiny texture and stretches it, so linear filtering blurs it further; it costs one textured pass
   over the shelf only while a first-row app has focus. Curated brands without installed artwork use
   their card surface; desktop previews show those.
-- **Control Center**: the main screen's clock is a button. Up from the top card row reaches the
-  shelf's weather button (when no location is set) and then the clock; OK or a hold on the clock,
-  a hold on the weather button, or a pointer click on the clock opens a glass panel that slides in
-  from the right (250 ms; none under Reduced motion). Rows: **Sleep** (asks for a second OK, then
+- **Control Center**: its icon in the top bar (OK or a click; Back returns focus to it) opens a
+  glass panel that slides in from the right (250 ms; none under Reduced motion). Rows: **Sleep** (asks for a second OK, then
   `luna://com.webos.service.tvpower/power/turnOff` with `{"reason":"remoteKey"}`), **Volume**
   (Left/Right step by one through `luna://com.webos.audio/setVolume`, with a level bar),
   **Mute** (`luna://com.webos.audio/setMuted`), **Sound output** (OK or Left/Right cycle TV
