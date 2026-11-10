@@ -1836,11 +1836,15 @@ fn run() -> Result<(), String> {
                     report.3 = report.3.max(largest);
                 }
                 let swap_started = Instant::now();
-                // Headless frames are drawn and counted but never shown.
+                // Headless frames are drawn and counted but never shown. Without a swap nothing
+                // waits for vsync, so pace them to 60 Hz: time-based animations then progress
+                // per frame as they do on screen, and a frame budget covers the same time.
                 if !headless {
                     window.gl_swap_window();
                 } else {
                     unsafe { gl::Finish() };
+                    let frame = Duration::from_micros(16_667);
+                    std::thread::sleep(frame.saturating_sub(last_present.elapsed()));
                 }
                 let swap_ms = swap_started.elapsed().as_secs_f64() * 1000.;
                 if presented == 0 {
