@@ -304,14 +304,11 @@ fn a_short_back_on_home_opens_recents_and_the_next_press_restores_the_app() {
 
 #[test]
 fn the_main_screen_header_is_only_the_clock() {
-    // tvOS has no tab bar on its Home Screen: above the shelf only the three top-bar icons
-    // (Apps, Control Center, Settings) are controls.
+    // tvOS has no tab bar on its Home Screen: above the shelf only the top-bar icons (Apps
+    // and Settings) are controls.
     let state = ready();
     assert!(controls(&state).iter().all(|control| control.rect.y >= 120.
-        || matches!(
-            control.target,
-            Target::StoreIcon | Target::ControlIcon | Target::SettingsIcon
-        )));
+        || matches!(control.target, Target::StoreIcon | Target::SettingsIcon)));
 }
 
 #[test]

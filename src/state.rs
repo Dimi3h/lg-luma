@@ -61,12 +61,9 @@ pub enum Target {
     RecentRetry,
     App(String),
     Input(String),
-    /// The main screen's top-bar icons: LG's app store, Control Center and Settings.
+    /// The main screen's top-bar icons: LG's app store and Settings.
     StoreIcon,
-    ControlIcon,
     SettingsIcon,
-    /// A Control Center row: 0 Sleep, 1 Volume, 2 Mute, 3 Sound output (inputs follow).
-    Control(usize),
     Sidebar(usize),
     Setting(usize),
     Widget(usize),
@@ -143,33 +140,15 @@ pub struct Control {
 
 #[derive(Clone, Debug)]
 pub enum Overlay {
-    Options {
-        id: String,
-        restore: Target,
-    },
-    Delete {
-        id: String,
-        restore: Target,
-    },
-    Recents {
-        restore: Target,
-    },
+    Options { id: String, restore: Target },
+    Delete { id: String, restore: Target },
+    Recents { restore: Target },
     Keyboard,
     SystemKeyboard,
     WallpaperUpload,
     TileEditor,
-    BackgroundOptions {
-        id: String,
-        restore: Target,
-    },
-    BackgroundDelete {
-        id: String,
-        restore: Target,
-    },
-    /// tvOS Control Center: a glass panel at the right edge.
-    ControlCenter {
-        restore: Target,
-    },
+    BackgroundOptions { id: String, restore: Target },
+    BackgroundDelete { id: String, restore: Target },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -282,11 +261,6 @@ pub struct State {
     pub recents: crate::recents::Recents,
     /// Display-only easing of focus, scrolling and page switches.
     pub motion: crate::motion::Motion,
-    /// Control Center's last known TV status, commands waiting for its worker, and whether
-    /// Sleep asks for a second OK.
-    pub control: crate::control_center::Status,
-    pub control_outbox: Vec<crate::control_center::Command>,
-    pub confirm_sleep: bool,
     /// Live location suggestions: the query last seen while typing and when to search it.
     pub suggested_query: String,
     pub suggest_at: Option<Instant>,
@@ -336,9 +310,6 @@ impl State {
             input_name: String::new(),
             recents: crate::recents::Recents::default(),
             motion: crate::motion::Motion::default(),
-            control: crate::control_center::Status::default(),
-            control_outbox: vec![],
-            confirm_sleep: false,
             suggested_query: String::new(),
             suggest_at: None,
             last_input: Instant::now(),
@@ -431,146 +402,6 @@ impl State {
         let running = self.screensaver.take().is_some();
         self.dirty |= running;
         running
-    }
-
-    /// Opens Control Center over the main screen and asks the TV for its current status.
-    pub fn open_control_center(&mut self) {
-        if self.page != Page::Home || self.overlay.is_some() {
-            return;
-        }
-        self.overlay = Some(Overlay::ControlCenter {
-            restore: self.focus.clone(),
-        });
-        self.focus = Target::Control(0);
-        self.confirm_sleep = false;
-        self.pressed = None;
-        self.moving = None;
-        if !self.preferences.reduced_motion {
-            self.panel_started = Some(Instant::now());
-        }
-        self.control_outbox
-            .push(crate::control_center::Command::Status);
-        self.dirty = true;
-    }
-
-    /// Control Center's rows in order: Sleep, Volume, Mute, Sound output, then the inputs.
-    pub fn control_items(&self) -> Vec<Target> {
-        (0..4)
-            .map(Target::Control)
-            .chain(
-                self.inventory
-                    .inputs
-                    .iter()
-                    .filter(|input| self.preferences.input_visible(input))
-                    .map(|input| Target::Input(input.id.clone())),
-            )
-            .collect()
-    }
-
-    fn control_direction(&mut self, direction: Direction) {
-        use crate::control_center::{Command, OUTPUTS};
-        let items = self.control_items();
-        let index = items.iter().position(|item| *item == self.focus);
-        match (direction, &self.focus) {
-            (Direction::Left | Direction::Right, Target::Control(1)) => {
-                if let Some(volume) = self.control.volume {
-                    let volume = if matches!(direction, Direction::Left) {
-                        volume.saturating_sub(1)
-                    } else {
-                        (volume + 1).min(100)
-                    };
-                    if Some(volume) != self.control.volume {
-                        self.control.volume = Some(volume);
-                        self.control_outbox.push(Command::SetVolume(volume));
-                    }
-                }
-            }
-            (Direction::Left | Direction::Right, Target::Control(3)) => {
-                let current = self
-                    .control
-                    .output
-                    .as_deref()
-                    .and_then(|output| OUTPUTS.iter().position(|o| *o == output))
-                    .unwrap_or(0);
-                let next = if matches!(direction, Direction::Left) {
-                    (current + OUTPUTS.len() - 1) % OUTPUTS.len()
-                } else {
-                    (current + 1) % OUTPUTS.len()
-                };
-                self.control.output = Some(OUTPUTS[next].into());
-                self.control_outbox
-                    .push(Command::SetOutput(OUTPUTS[next].into()));
-            }
-            (Direction::Up, _) => {
-                if let Some(index) = index.filter(|index| *index > 0) {
-                    self.focus = items[index - 1].clone();
-                }
-            }
-            (Direction::Down, _) => {
-                if let Some(index) = index.filter(|index| index + 1 < items.len()) {
-                    self.focus = items[index + 1].clone();
-                }
-            }
-            _ => {}
-        }
-        if self.focus != Target::Control(0) {
-            self.confirm_sleep = false;
-        }
-    }
-
-    /// OK in Control Center. Sleep needs a second OK; an input switches to it.
-    fn control_activate(&mut self) -> Vec<Effect> {
-        use crate::control_center::{Command, OUTPUTS};
-        match self.focus.clone() {
-            Target::Control(0) if self.confirm_sleep => {
-                self.confirm_sleep = false;
-                self.control_outbox.push(Command::Sleep);
-            }
-            Target::Control(0) => self.confirm_sleep = true,
-            Target::Control(2) => {
-                let muted = !self.control.muted.unwrap_or(false);
-                self.control.muted = Some(muted);
-                self.control_outbox.push(Command::SetMuted(muted));
-            }
-            Target::Control(3) => {
-                let current = self
-                    .control
-                    .output
-                    .as_deref()
-                    .and_then(|output| OUTPUTS.iter().position(|o| *o == output))
-                    .unwrap_or(0);
-                let next = OUTPUTS[(current + 1) % OUTPUTS.len()];
-                self.control.output = Some(next.into());
-                self.control_outbox.push(Command::SetOutput(next.into()));
-            }
-            Target::Input(id) if !self.launching => {
-                self.overlay = None;
-                self.panel_started = None;
-                self.focus = self.first_content();
-                return vec![Effect::Launch(id)];
-            }
-            _ => {}
-        }
-        self.dirty = true;
-        vec![]
-    }
-
-    /// A Control Center reply: the TV's status after the command, or a quiet notice.
-    pub fn control_response(&mut self, reply: crate::control_center::Reply) {
-        match reply.result {
-            Ok(status) => self.control = status,
-            Err(_) => {
-                self.notify(self.preferences.language.t("controlUnavailable"));
-                // Re-read what the TV actually has after a refused change.
-                if reply.command != crate::control_center::Command::Status
-                    && reply.command != crate::control_center::Command::Sleep
-                {
-                    self.control_outbox
-                        .push(crate::control_center::Command::Status);
-                }
-            }
-        }
-        self.dirty = true;
     }
 
     fn motion_inputs(&self) -> crate::motion::Inputs<'_> {
@@ -1341,10 +1172,6 @@ impl State {
         if self.recents_open() {
             return self.recent_direction(direction);
         }
-        if matches!(self.overlay, Some(Overlay::ControlCenter { .. })) {
-            self.control_direction(direction);
-            return vec![];
-        }
         if matches!(self.overlay, Some(Overlay::SystemKeyboard)) {
             // The TV keyboard owns its arrows until Done/Back dismisses it.
             return vec![];
@@ -1871,7 +1698,7 @@ impl State {
     }
 
     /// The main screen's top bar, left to right: the visible inputs when Show widget is on, then
-    /// the LG app store (when installed), Control Center and Settings.
+    /// the LG app store (when installed) and Settings.
     pub fn top_bar(&self) -> Vec<Target> {
         let store = self
             .inventory
@@ -1883,7 +1710,7 @@ impl State {
             .iter()
             .map(|input| Target::Input(input.id.clone()))
             .chain(store)
-            .chain([Target::ControlIcon, Target::SettingsIcon])
+            .chain([Target::SettingsIcon])
             .collect()
     }
 
@@ -2271,9 +2098,6 @@ impl State {
                 _ => vec![],
             };
         }
-        if matches!(self.overlay, Some(Overlay::ControlCenter { .. })) {
-            return self.control_activate();
-        }
         if self.moving.take().is_some() {
             // Order was saved at every move. A fresh OK release finishes the
             // mode and keeps the selected favorite, rather than launching it.
@@ -2288,7 +2112,6 @@ impl State {
         }
         match self.focus.clone() {
             Target::SettingsIcon => self.open(Page::Settings),
-            Target::ControlIcon => self.open_control_center(),
             Target::StoreIcon if !self.launching => {
                 return vec![Effect::Launch(STORE_ID.into())];
             }
@@ -2885,13 +2708,6 @@ impl State {
                     self.recents.visibility = 0.;
                     self.recents.closing_focus = None;
                 }
-            }
-            if let Overlay::ControlCenter { restore } = overlay {
-                self.focus = restore;
-                self.confirm_sleep = false;
-                self.pressed = None;
-                self.reconcile_focus();
-                return vec![];
             }
             if let Overlay::Options { restore, .. } | Overlay::Recents { restore } = overlay {
                 self.focus = restore;

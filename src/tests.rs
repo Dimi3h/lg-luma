@@ -233,13 +233,11 @@ fn remote_routes_through_the_shelf_grid_and_settings() {
     // Above the first row is the shelf's weather button (no location yet).
     state.direction(Direction::Up, &controls(&state));
     assert_eq!(state.focus, Target::WeatherConfigure);
-    // Nothing above it; Right reaches the top bar's icons: Apps, Control Center, Settings.
+    // Nothing above it; Right reaches the top bar's icons: Apps, then Settings.
     state.direction(Direction::Up, &controls(&state));
     assert_eq!(state.focus, Target::WeatherConfigure);
     state.direction(Direction::Right, &controls(&state));
     assert_eq!(state.focus, Target::StoreIcon);
-    state.direction(Direction::Right, &controls(&state));
-    assert_eq!(state.focus, Target::ControlIcon);
     state.direction(Direction::Right, &controls(&state));
     assert_eq!(state.focus, Target::SettingsIcon);
     state.direction(Direction::Right, &controls(&state));
@@ -252,8 +250,7 @@ fn remote_routes_through_the_shelf_grid_and_settings() {
     assert_eq!(state.focus, Target::SettingsIcon);
     state.focus = grid[4].clone();
     state.direction(Direction::Up, &controls(&state));
-    assert_eq!(state.focus, Target::ControlIcon);
-    state.direction(Direction::Left, &controls(&state));
+    assert_eq!(state.focus, Target::StoreIcon);
     state.direction(Direction::Left, &controls(&state));
     assert_eq!(
         state.focus,
@@ -3505,90 +3502,26 @@ fn home_dims_its_wallpaper_constantly_and_never_per_app() {
 }
 
 #[test]
-fn control_center_opens_from_its_icon_and_drives_the_tv_only_through_its_worker() {
-    use crate::control_center::{Command, Reply, Status};
+fn the_top_bar_has_no_control_center_and_inputs_still_switch_from_it() {
+    use crate::model::InputMode;
     let mut state = ready();
     state.open(Page::Home);
-    // Its icon in the top bar opens it; the clock and the shelf no longer do.
-    state.focus = Target::WeatherConfigure;
-    state.hold();
-    assert!(
-        state.overlay.is_none() || !matches!(state.overlay, Some(Overlay::ControlCenter { .. }))
-    );
-    state.overlay = None;
-    state.focus = Target::ControlIcon;
-    assert!(
-        controls(&state)
-            .iter()
-            .any(|c| c.target == Target::ControlIcon)
-    );
-    state.activate();
-    assert!(matches!(state.overlay, Some(Overlay::ControlCenter { .. })));
-    assert_eq!(state.focus, Target::Control(0));
-    assert_eq!(state.control_outbox, [Command::Status]);
-    state.control_outbox.clear();
-    state.control_response(Reply {
-        command: Command::Status,
-        result: Ok(Status {
-            volume: Some(10),
-            muted: Some(false),
-            output: Some("tv_speaker".into()),
-            network: None,
-        }),
-    });
-    // Sleep needs a second OK, and moving away cancels it.
-    state.activate();
-    assert!(state.confirm_sleep && state.control_outbox.is_empty());
-    state.direction(Direction::Down, &controls(&state));
-    assert!(!state.confirm_sleep);
-    state.direction(Direction::Up, &controls(&state));
-    state.activate();
-    state.activate();
-    assert_eq!(state.control_outbox, [Command::Sleep]);
-    state.control_outbox.clear();
-    // Volume follows Left/Right; mute and output follow OK.
-    state.direction(Direction::Down, &controls(&state));
-    assert_eq!(state.focus, Target::Control(1));
-    state.direction(Direction::Right, &controls(&state));
-    state.direction(Direction::Right, &controls(&state));
-    state.direction(Direction::Left, &controls(&state));
     assert_eq!(
-        state.control_outbox,
-        [
-            Command::SetVolume(11),
-            Command::SetVolume(12),
-            Command::SetVolume(11)
-        ]
+        state.top_bar(),
+        [Target::StoreIcon, Target::SettingsIcon],
+        "Apps and Settings only"
     );
-    state.control_outbox.clear();
-    state.direction(Direction::Down, &controls(&state));
-    state.activate();
-    assert_eq!(state.control_outbox, [Command::SetMuted(true)]);
-    state.direction(Direction::Down, &controls(&state));
-    state.activate();
-    assert_eq!(state.control.output.as_deref(), Some("external_arc"));
-    // A refused change shows a quiet notice and re-reads the TV.
-    state.control_outbox.clear();
-    state.control_response(Reply {
-        command: Command::SetOutput("external_arc".into()),
-        result: Err("denied".into()),
-    });
-    assert!(state.notice.is_some());
-    assert_eq!(state.control_outbox, [Command::Status]);
-    // The inputs follow; OK switches to one and closes the panel.
-    state.direction(Direction::Down, &controls(&state));
-    let Target::Input(id) = state.focus.clone() else {
-        panic!("Inputs follow the sound output: {:?}", state.focus);
-    };
-    assert_eq!(state.activate(), vec![Effect::Launch(id)]);
+    // The inputs widget keeps its glyphs in the bar, and OK still switches to an input.
+    state.preferences.show_inputs = true;
+    let input = state.inventory.inputs[0].id.clone();
+    state
+        .preferences
+        .input_modes
+        .insert(input.clone(), InputMode::On);
+    assert_eq!(state.top_bar()[0], Target::Input(input.clone()));
+    state.focus = Target::Input(input.clone());
+    assert_eq!(state.activate(), vec![Effect::Launch(input)]);
     assert!(state.overlay.is_none());
-    // Back closes it and restores focus to its icon.
-    state.focus = Target::ControlIcon;
-    state.activate();
-    assert!(matches!(state.overlay, Some(Overlay::ControlCenter { .. })));
-    assert!(state.back().is_empty());
-    assert!(state.overlay.is_none());
-    assert_eq!(state.focus, Target::ControlIcon);
 }
 
 #[test]
@@ -4004,12 +3937,12 @@ fn the_top_bar_keeps_settings_without_the_app_store_and_icons_are_clickable() {
         .apps
         .retain(|app| app.id != crate::state::STORE_ID);
     state.set_inventory(inventory, None);
-    assert_eq!(state.top_bar(), [Target::ControlIcon, Target::SettingsIcon]);
+    assert_eq!(state.top_bar(), [Target::SettingsIcon]);
     let bar: Vec<_> = controls(&state)
         .into_iter()
-        .filter(|c| matches!(c.target, Target::ControlIcon | Target::SettingsIcon))
+        .filter(|c| matches!(c.target, Target::StoreIcon | Target::SettingsIcon))
         .collect();
-    assert_eq!(bar.len(), 2);
+    assert_eq!(bar.len(), 1);
     // Small icons on the clock's line, right-aligned inside the safe area.
     for icon in &bar {
         assert_eq!(icon.rect.w, view::TOP_ICON);

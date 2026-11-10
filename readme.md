@@ -27,12 +27,6 @@ https://github.com/user-attachments/assets/2156d640-b8fa-4ea4-a02c-0db4c93bcc5a
       <img src="docs/inputs.png" alt="Luma native input settings, desktop preview">
     </td>
   </tr>
-  <tr>
-    <td width="50%" align="center">
-      <img src="docs/control-center.png" alt="Luma Control Center opened from its top-bar icon, desktop preview">
-    </td>
-    <td width="50%"></td>
-  </tr>
 </table>
 
 </details>

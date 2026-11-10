@@ -609,34 +609,6 @@ fn inventory_read(uri: &str, field: &str) -> Result<Value, String> {
     })
 }
 
-/// A Control Center request: first as Luma itself, then (when the TV refuses Luma's own
-/// identity) as root through Homebrew's `exec`, as inventory reads do. Only fixed
-/// `luna://com.webos.` services with payloads built by Luma (no quotes) take the second path.
-pub fn system_call(uri: &str, payload: Value) -> Result<Value, String> {
-    if !cfg!(feature = "webos") {
-        return Err("TV services are only available on the TV".into());
-    }
-    let direct = match call(uri, payload.clone()) {
-        Ok(value) => return Ok(value),
-        Err(error) => error,
-    };
-    let text = payload.to_string();
-    if !uri.starts_with("luna://com.webos.")
-        || uri.contains(['\'', ' ', ';', '$', '`'])
-        || text.contains(['\'', '\\'])
-    {
-        return Err(direct);
-    }
-    let command = format!(
-        "if [ \"$(id -u)\" = 0 ]; then /usr/bin/luna-send -n 1 -w 4000 {uri} '{text}'; else printf '%s\\n' '{{\"returnValue\":false,\"errorText\":\"Homebrew Channel needs root access\"}}'; fi"
-    );
-    let envelope = call(
-        "luna://org.webosbrew.hbchannel.service/exec",
-        json!({"command": command}),
-    )?;
-    command_reply(&envelope).map_err(|error| format!("{uri}: {error} (directly: {direct})"))
-}
-
 pub fn read_app_icons(source: &app_artwork::Source) -> Result<Vec<Vec<u8>>, String> {
     if !cfg!(feature = "webos") {
         return Err("Installed artwork is only read on TV builds".into());

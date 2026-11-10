@@ -34,11 +34,7 @@ pub fn instant(target: &Target) -> bool {
 pub fn small(target: &Target) -> bool {
     matches!(
         target,
-        Target::StoreIcon
-            | Target::ControlIcon
-            | Target::SettingsIcon
-            | Target::Input(_)
-            | Target::Key(_)
+        Target::StoreIcon | Target::SettingsIcon | Target::Input(_) | Target::Key(_)
     )
 }
 
@@ -340,7 +336,7 @@ mod tests {
     fn small_controls_respond_in_the_first_frame_and_settle_in_about_120_ms() {
         let none = None;
         let settings = Target::SettingsIcon;
-        let control = Target::ControlIcon;
+        let control = Target::StoreIcon;
         let card = Target::App("a".into());
         let mut motion = Motion::default();
         let start = Instant::now();

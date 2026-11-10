@@ -84,7 +84,7 @@ scripts and `tools/screenshots.mjs` set it on macOS, so a local run never takes 
 ### Documentation screenshots
 
 `pnpm screenshots` generates `docs/home.png`, `docs/apps.png`, `docs/settings.png`,
-`docs/inputs.png` and `docs/control-center.png` (its TV values simulated), linked by the README. It builds the desktop executable without the TV feature,
+and `docs/inputs.png`, linked by the README. It builds the desktop executable without the TV feature,
 uses isolated temporary preferences, sample inventory and a fixed date/time, and captures actual
 1920×1080 OpenGL framebuffers. Weather is unconfigured, so no real weather APIs are contacted.
 It does not execute the test suites. A desktop display is required; on headless Linux use
@@ -159,7 +159,7 @@ Weather location and temperature choices return to Weather; Back from a widget r
 in Widgets. Input visibility/naming choices return to Inputs, then its Widgets row.
 **Widgets → Inputs → Show widget** (`show_inputs`, default Off) adds the visible inputs as small
 glyphs (the device icon, a green dot when connected, dim when not) at the start of the top bar,
-left of the Apps, Control Center and Settings icons. Focus names the input and its status
+left of the Apps and Settings icons. Focus names the input and its status
 beneath it, OK switches to it, and a long OK opens its existing settings (show mode and name). Off, inputs stay available on the TV remote and
 in the Inputs subpage, which keeps per-input visibility and names.
 Existing greeting, weather, shortcut and input preferences are unchanged. Every Settings list
@@ -198,10 +198,10 @@ above the grid, starting 28 px below the clock line. Hiding the greeting or weat
 weather up but leaves the grid at the bottom margin. The third row's focused caption reaches into
 that margin (it ends near y 1070), as tvOS captions do. There is no tab bar and no
 TV-settings button (the remote's own Settings button remains). The grid holds the
-pinned favourites in their saved order, then every other visible app by title. Three small
+pinned favourites in their saved order, then every other visible app by title. Two small
 icons sit at the top right on the clock's line, left to right: **Apps** (LG's app store,
-`com.webos.app.discovery`, launched from the icon and left out of the grid and Hidden apps),
-**Control Center** and **Settings** (full screen). Without the store app only the last two show.
+`com.webos.app.discovery`, launched from the icon and left out of the grid and Hidden apps) and
+**Settings** (full screen). Without the store app only Settings shows.
 They are 44 px glass circles with a glyph; focus lifts one onto a white circle and names it
 beneath. Pinning an app moves it into the
 favourites block; unpinning moves it back. Reorder mode moves a favourite within that block; OK or
@@ -452,7 +452,7 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
 
 - **Layout**: an 80 × 60 safe area; six columns of 260 × 156 (5:3) cards with 40 between them and
   76 between rows (pitch 300 × 232; the HIG's 100 was more space than wanted), holding every app
-  beneath the top shelf; the store, Control Center and Settings, and optionally the inputs, are
+  beneath the top shelf; the store and Settings, and optionally the inputs, are
   small icons in the top bar.
 - **Type**: the tvOS text styles with Inter instead of SF Pro. The bundled Inter 4.1 subset keeps
   its `opsz` axis, so text of 32 px and up (Title 2, Title 3, Headline) uses Inter Display and
@@ -504,22 +504,6 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   animate or react to focus or to any app. It lies directly on the wallpaper, so the renderer
   folds it into the wallpaper's own pass at no extra full-screen cost. Settings and Light keep
   their own treatment.
-- **Control Center**: its icon in the top bar (OK or a click; Back returns focus to it) opens a
-  glass panel that slides in from the right (250 ms; none under Reduced motion). Rows: **Sleep** (asks for a second OK, then
-  `luna://com.webos.service.tvpower/power/turnOff` with `{"reason":"remoteKey"}`), **Volume**
-  (Left/Right step by one through `luna://com.webos.audio/setVolume`, with a level bar),
-  **Mute** (`luna://com.webos.audio/setMuted`), **Sound output** (OK or Left/Right cycle TV
-  speakers, HDMI ARC, optical, Bluetooth and headphones through
-  `luna://com.webos.service.apiadapter/audio/changeSoundOutput`), then the visible inputs (OK
-  switches to one, reusing the input launch), and the network status at the bottom
-  (`luna://com.webos.service.connectionmanager/getStatus`). Opening it reads
-  `luna://com.webos.audio/getVolume` (webOS 5+ `volumeStatus` or the older flat reply),
-  `.../audio/getSoundOutput` and the network. `src/control_center.rs` runs every call on its own
-  worker: first as Luma, then, if the TV refuses Luma's identity, as root through Homebrew's
-  `exec` with `luna-send` (fixed `luna://com.webos.` URIs and Luma-built payloads only). Values the
-  TV does not answer are left out; a refused change shows a quiet notice and re-reads the status.
-  Back closes the panel. Desktop builds simulate the TV and never sleep. All of it is unverified on
-  a TV.
 - **Night wallpaper** (off by default): a background's options offer **Use at night** (and
   **Don't use at night** for the current one). Between sunset and sunrise, decided as for
   Automatic appearance, that wallpaper and its blurred glass copy replace the chosen one; the day

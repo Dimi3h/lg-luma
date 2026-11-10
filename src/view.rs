@@ -824,8 +824,7 @@ pub fn scene(state: &State, assets: &Assets, now: OffsetDateTime) -> Scene {
         | Overlay::BackgroundDelete { .. }
         | Overlay::Keyboard
         | Overlay::WallpaperUpload
-        | Overlay::TileEditor
-        | Overlay::ControlCenter { .. }),
+        | Overlay::TileEditor),
     ) = &state.overlay
     {
         let anchor = match overlay {
@@ -873,7 +872,6 @@ pub fn scene(state: &State, assets: &Assets, now: OffsetDateTime) -> Scene {
             Overlay::Keyboard => keyboard(&mut out, state, assets),
             Overlay::WallpaperUpload => wallpaper_upload(&mut out, state, assets),
             Overlay::TileEditor => tile_editor(&mut out, state, assets),
-            Overlay::ControlCenter { .. } => control_center(&mut out, state, assets),
             Overlay::SystemKeyboard | Overlay::Recents { .. } => {}
         }
         if !matches!(
@@ -1132,229 +1130,8 @@ fn screensaver_choices(
     }
 }
 
-const CONTROL_PANEL: Rect = Rect::new(1920. - SAFE_X - 640., 60., 640., 960.);
-const CONTROL_ROW_H: f32 = 80.;
-
-/// Control Center (tvOS): a glass panel that slides in from the right edge with Sleep, the
-/// volume, mute, sound output, the inputs and the network status. Values come from the TV
-/// through the Control Center worker; unknown ones are left out rather than guessed.
-fn control_center(out: &mut Scene, state: &State, assets: &Assets) {
-    use crate::control_center::Network;
-    let language = state.preferences.language;
-    let start = out.draw.len();
-    let panel = CONTROL_PANEL;
-    out.modal = Some(panel);
-    out.shadow(panel, PANEL_RADIUS, 90., 24., 0.42);
-    out.glass(panel, PANEL_RADIUS, Glass::Regular);
-    out.text(
-        language.t("controlCenter"),
-        Rect::new(panel.x + 40., panel.y + 32., panel.w - 80., 56.),
-        TITLE3,
-        WHITE,
-        false,
-    );
-    let mut y = panel.y + 116.;
-    let on_off = |value: bool| language.t(if value { "stateOn" } else { "stateOff" });
-    let output_label = |output: &str| match output {
-        "tv_speaker" => language.t("outputSpeaker").to_owned(),
-        "external_arc" => "HDMI ARC".to_owned(),
-        "external_optical" => language.t("outputOptical").to_owned(),
-        "bt_soundbar" => "Bluetooth".to_owned(),
-        "headphone" => language.t("outputHeadphones").to_owned(),
-        other => other.to_owned(),
-    };
-    let volume = state.control.volume;
-    let rows: Vec<(Target, &str, String, Option<String>)> = vec![
-        (
-            Target::Control(0),
-            "power",
-            if state.confirm_sleep {
-                language.t("sleepConfirm").to_owned()
-            } else {
-                language.t("sleep").to_owned()
-            },
-            None,
-        ),
-        (
-            Target::Control(1),
-            "volume",
-            language.t("volume").to_owned(),
-            volume.map(|volume| volume.to_string()),
-        ),
-        (
-            Target::Control(2),
-            "volume-x",
-            language.t("mute").to_owned(),
-            state.control.muted.map(|muted| on_off(muted).to_owned()),
-        ),
-        (
-            Target::Control(3),
-            "speaker",
-            language.t("soundOutput").to_owned(),
-            state.control.output.as_deref().map(output_label),
-        ),
-    ];
-    for (target, icon, title, value) in rows {
-        let slider = target == Target::Control(1) && volume.is_some();
-        let rect = Rect::new(
-            panel.x + 32.,
-            y,
-            panel.w - 64.,
-            if slider {
-                CONTROL_ROW_H + 30.
-            } else {
-                CONTROL_ROW_H
-            },
-        );
-        control_row(
-            out,
-            state,
-            assets,
-            target,
-            rect,
-            icon,
-            &title,
-            value.as_deref(),
-        );
-        if slider {
-            let level = state.focus_level(&Target::Control(1));
-            let drawn = grow(rect, ROW_LIFT * level);
-            let track = Rect::new(drawn.x + 72., drawn.y + drawn.h - 30., drawn.w - 104., 8.);
-            out.shape(
-                track,
-                4.,
-                mix_color(c(0xffffff, 0.22), c(0x000000, 0.14), level),
-            );
-            let fill = Rect::new(
-                track.x,
-                track.y,
-                track.w * volume.unwrap_or(0) as f32 / 100.,
-                track.h,
-            );
-            out.shape(fill, 4., mix_color(WHITE, ON_LIGHT, level));
-        }
-        y += rect.h + 12.;
-    }
-    let inputs: Vec<_> = state
-        .inventory
-        .inputs
-        .iter()
-        .filter(|input| state.preferences.input_visible(input))
-        .collect();
-    if !inputs.is_empty() {
-        y += 12.;
-        out.text(
-            language.t("inputs"),
-            Rect::new(panel.x + 40., y, panel.w - 80., 32.),
-            CAPTION1.weight(600),
-            SECONDARY,
-            false,
-        );
-        y += 44.;
-        for input in inputs {
-            let rect = Rect::new(panel.x + 32., y, panel.w - 64., CONTROL_ROW_H);
-            if rect.y + rect.h > panel.y + panel.h - 80. {
-                break;
-            }
-            let name = state.preferences.input_name(input);
-            let status = input_status(input, name.is_some(), language);
-            control_row(
-                out,
-                state,
-                assets,
-                Target::Input(input.id.clone()),
-                rect,
-                &format!("input-{}", input_icon(input, name)),
-                state.preferences.input_title(input),
-                Some(&status),
-            );
-            y += rect.h + 12.;
-        }
-    }
-    if let Some(network) = &state.control.network {
-        let label = match network {
-            Network::Wired => language.t("networkWired").to_owned(),
-            Network::Wifi(ssid) if ssid.is_empty() => "Wi-Fi".to_owned(),
-            Network::Wifi(ssid) => format!("Wi-Fi · {ssid}"),
-            Network::Offline => language.t("networkOffline").to_owned(),
-        };
-        let bottom = panel.y + panel.h - 64.;
-        out.icon(
-            assets,
-            "globe",
-            Rect::new(panel.x + 40., bottom + 2., 28., 28.),
-            SECONDARY,
-        );
-        let (label, style) = assets.single_line(&label, CAPTION1, panel.w - 130.);
-        out.text(
-            label,
-            Rect::new(panel.x + 82., bottom, panel.w - 130., 32.),
-            style,
-            SECONDARY,
-            false,
-        );
-    }
-    if let Some(opened) = state.panel_started {
-        // Slides in from the right edge.
-        let t = (opened.elapsed().as_secs_f32() / 0.25).min(1.);
-        let eased = 1. - (1. - t).powi(3);
-        out.shift(start, (1. - eased) * (panel.w + SAFE_X), 0.);
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn control_row(
-    out: &mut Scene,
-    state: &State,
-    assets: &Assets,
-    target: Target,
-    rect: Rect,
-    icon: &str,
-    title: &str,
-    value: Option<&str>,
-) {
-    let level = if state.pressed.as_ref() == Some(&target) {
-        0.
-    } else {
-        state.focus_level(&target)
-    };
-    let drawn = out.button(rect, ROW_RADIUS, level, false, ROW_LIFT);
-    let line = drawn.y + (CONTROL_ROW_H.min(drawn.h) - 36.) / 2.;
-    out.icon(
-        assets,
-        icon,
-        Rect::new(drawn.x + 24., line + 3., 30., 30.),
-        mix_color(WHITE, ON_LIGHT, level),
-    );
-    let value_width = value.map_or(0., |value| assets.width(value, BODY).ceil() + 8.);
-    let (title, style) = assets.single_line(title, BODY, drawn.w - 96. - value_width - 24.);
-    out.text(
-        title,
-        Rect::new(drawn.x + 72., line, drawn.w - 96. - value_width, 36.),
-        style,
-        mix_color(WHITE, ON_LIGHT, level),
-        false,
-    );
-    if let Some(value) = value {
-        out.text(
-            value,
-            Rect::new(
-                drawn.x + drawn.w - 24. - value_width,
-                line,
-                value_width,
-                36.,
-            ),
-            BODY.right(),
-            mix_color(SECONDARY, ON_LIGHT_SECONDARY, level),
-            false,
-        );
-    }
-    out.control(target, rect, false);
-}
-
-/// An app card in the tvOS focus model: at rest it sits flat with a small shadow; focus lifts
-/// it around its centre with a deep shadow and a brighter glassy edge, and its title fades in
-/// beneath it. The hit region stays at the unscaled card.
+/// An app card: at rest it sits flat with a small shadow; focus brightens it in place with a
+/// light rim and shows its title beneath it. The hit region is the card.
 fn tile(
     out: &mut Scene,
     state: &State,
@@ -1891,7 +1668,7 @@ fn home(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
 pub const HOME_DIM: f32 = 0.2;
 
 /// The main screen's top bar, right-aligned on the clock's line: LG's app store (when
-/// installed), Control Center and Settings as small glass circles with a glyph. Focus lifts
+/// installed) and Settings as small glass circles with a glyph. Focus lifts
 /// one onto a white circle and names it beneath.
 pub const TOP_ICON: f32 = 44.;
 const TOP_ICON_GAP: f32 = 14.;
@@ -2007,7 +1784,6 @@ fn top_bar(out: &mut Scene, state: &State, assets: &Assets) {
         let target = &target;
         let (icon, label) = match target {
             Target::StoreIcon => ("store", "storeApps"),
-            Target::ControlIcon => ("controls", "controlCenter"),
             _ => ("gear", "settings"),
         };
         let level = if state.pressed.as_ref() == Some(target) {
