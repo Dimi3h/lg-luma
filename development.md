@@ -116,11 +116,14 @@ OK (or a pointer click) on a grid card launches the app, as on tvOS; inputs and 
 directly too. Holding OK on any app, or pressing Menu, opens its side popup with **Move** first and
 focused, then **Open**, hide/show and **Delete app**. **Move** starts move mode for that app: the
 arrows move it one slot at a time (Left/Right through the order, wrapping across rows, Up/Down a
-whole row), the other cards shift, every card jiggles, and OK or Back keeps the new order (OK
-never launches there). Each step is saved.
+whole row) and the other cards shift to their new slots at once. Nothing animates: the moving
+card keeps its focus highlight with a slightly stronger rim (3.5 px), there is no jiggle and no
+arrow indicator, and the other cards are dimmed. OK or Back keeps the new order (OK never launches
+there). Each step is saved. Nothing on the grid changes while the menu is open: move mode starts
+only when **Move** is chosen.
 
 With the Magic Remote pointer, holding the button on a card for the long-press duration picks it
-up: moving the pointer then drags it (the card follows the pointer, drawn over the others, and the
+up without changing anything on the grid; moving the pointer past 16 px then drags it (the card follows the pointer, drawn over the others, and the
 slot under the pointer is outlined), and releasing drops it into that slot, shifting the others
 and ending move mode. Releasing without moving opens the card's options, like a long press. In
 move mode from the menu, pressing on the moving card drags it the same way. Only the dragged
@@ -540,11 +543,6 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   is applied in one place for measuring (`Assets::width`/`lines`, so fitting and ellipsis follow
   it) and drawing (`Scene::text`, whose box grows around its vertical centre). The main screen
   still fits three rows: the third row's focused caption ends near y 993, inside the safe area.
-- **Jiggle**: while an app is being moved, every card wobbles a little, each out of
-  phase at about 3 Hz. GLES2 has no rotation primitive, so the face moves up to
-  about 2 px and its logo layer about 4 px more, which reads as a small rotation. Hit regions
-  stay put; Reduced motion snaps it off, and frames redraw continuously only while move mode is
-  active.
 - **Appearance** (Settings › General: Dark (default), Light or Automatic): Light brightens the
   finished scene in one pass (`light_appearance` in `src/view.rs`): a white scrim over the
   wallpaper, a white layer on each glass panel, near-black text and interface icons instead of

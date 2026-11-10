@@ -3730,40 +3730,115 @@ fn forecasts_carry_todays_sunrise_and_sunset() {
     assert_eq!(polar.sun, None);
 }
 
+/// Where every card face is drawn: its rects, in drawing order.
+fn card_faces(state: &State) -> Vec<[f32; 4]> {
+    use crate::renderer::Draw;
+    scene(state)
+        .draw
+        .iter()
+        .filter_map(|draw| match draw {
+            Draw::Image(path, rect, ..) | Draw::TintedImage(path, rect, ..)
+                if path.contains("surfaces/") || path.contains("logos/") =>
+            {
+                Some([rect.x, rect.y, rect.w, rect.h])
+            }
+            Draw::AppImage(_, rect, ..) => Some([rect.x, rect.y, rect.w, rect.h]),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
-fn every_card_jiggles_while_one_is_moved_without_moving_hit_regions() {
+fn move_mode_draws_no_jiggle_or_arrows_and_never_animates() {
+    use crate::renderer::Draw;
+    use std::time::Duration;
     let mut state = ready();
     state.open(Page::Home);
     let before = controls(&state);
-    assert_eq!(view::jiggle(&state, "netflix"), [0., 0.]);
+    let faces = card_faces(&state);
     start_moving(&mut state, "netflix");
-    assert!(state.animating());
-    let ids = ["netflix", "youtube.leanback.v4", "com.apple.appletv"];
-    assert!(
-        ids.iter().any(|id| view::jiggle(&state, id) != [0., 0.]),
-        "Cards wobble"
-    );
-    for id in ids {
-        let [x, y] = view::jiggle(&state, id);
-        assert!(x.abs() <= 0.7 && y.abs() <= 0.45);
-    }
-    let during = controls(&state);
+    // Every card is drawn exactly where it was: no jiggle offsets, now or later.
+    assert_eq!(card_faces(&state), faces);
+    assert!(!state.animating(), "move mode redraws nothing by itself");
+    state.advance_motion(Duration::from_millis(700));
+    assert_eq!(card_faces(&state), faces);
+    // No arrow indicator; the moving card has its focus highlight and a stronger rim.
+    let frame = scene(&state);
+    assert!(!frame.draw.iter().any(|draw| matches!(draw,
+        Draw::TintedImage(path, ..) if path.ends_with("left.lvec") || path.ends_with("arrow.lvec"))));
+    let netflix = before
+        .iter()
+        .find(|c| c.target == Target::App("netflix".into()))
+        .unwrap()
+        .rect;
+    assert!(frame.draw.iter().any(|draw| matches!(draw,
+        Draw::Rim(rect, _, width, ..) if *width > view::FOCUS_RIM && rect.x == netflix.x && rect.y == netflix.y)));
     for control in &before {
-        if let Some(other) = during.iter().find(|c| c.target == control.target) {
+        if let Some(other) = frame.controls.iter().find(|c| c.target == control.target) {
             assert_eq!(
                 (control.rect.x, control.rect.y),
                 (other.rect.x, other.rect.y)
             );
         }
     }
-    // Reduced motion: no jiggle and no continuous redraw.
+    // Reduced motion draws exactly the same.
+    let normal = frame.draw;
     state.preferences.reduced_motion = true;
-    assert_eq!(view::jiggle(&state, "netflix"), [0., 0.]);
-    assert!(!state.animating());
-    state.preferences.reduced_motion = false;
+    let reduced = scene(&state).draw;
+    assert!(
+        normal.len() == reduced.len()
+            && normal
+                .iter()
+                .zip(&reduced)
+                .all(|(a, b)| crate::damage::same(a, b))
+    );
     state.back();
     assert!(state.moving.is_none());
-    assert_eq!(view::jiggle(&state, "netflix"), [0., 0.]);
+}
+
+#[test]
+fn the_grid_stays_unchanged_until_move_is_chosen() {
+    let mut state = ready();
+    state.open(Page::Home);
+    let faces = card_faces(&state);
+    // A remote long press opens the menu; the grid behind it is untouched, not in move mode.
+    state.focus = Target::App("netflix".into());
+    state.hold();
+    assert!(state.moving.is_none());
+    assert!(!state.animating());
+    // Only choosing Move starts move mode.
+    assert!(state.activate().is_empty());
+    assert_eq!(state.moving.as_deref(), Some("netflix"));
+    state.back();
+    assert_eq!(card_faces(&state), faces);
+    // A pointer hold that has not moved yet changes nothing either; releasing opens the menu.
+    let rect = controls(&state)
+        .into_iter()
+        .find(|c| c.target == Target::App("youtube.leanback.v4".into()))
+        .unwrap()
+        .rect;
+    state.drag_start(
+        "youtube.leanback.v4",
+        (rect.x + 20., rect.y + 20.),
+        rect,
+        true,
+    );
+    state.drag_move((rect.x + 25., rect.y + 22.), &controls(&state));
+    assert!(state.moving.is_none());
+    assert_eq!(card_faces(&state), faces);
+    assert!(state.drag_end().is_empty());
+    assert!(state.moving.is_none());
+    assert!(matches!(state.overlay, Some(Overlay::Options { .. })));
+    // Once it moves past the threshold it is a drag, and only then move mode.
+    state.back();
+    state.drag_start(
+        "youtube.leanback.v4",
+        (rect.x + 20., rect.y + 20.),
+        rect,
+        true,
+    );
+    state.drag_move((rect.x + 80., rect.y + 20.), &controls(&state));
+    assert_eq!(state.moving.as_deref(), Some("youtube.leanback.v4"));
 }
 
 #[test]
@@ -4525,11 +4600,14 @@ fn the_pointer_drags_a_card_to_a_new_slot_and_a_still_hold_opens_its_options() {
         |state: &State| -> Vec<String> { state.apps().iter().map(|app| app.id.clone()).collect() };
     let before = order(&state);
     let (dragged, onto) = (before[0].clone(), before[8].clone());
-    // Holding the pointer button on a card picks it up (move mode, every card jiggles).
+    // Holding the pointer button on a card picks it up; moving makes it a drag (move mode).
     let from = card(&state, &dragged);
     let grab = (from.x + 40., from.y + 30.);
     state.drag_start(&dragged, grab, from, true);
-    assert_eq!(state.moving.as_deref(), Some(dragged.as_str()));
+    assert!(
+        state.moving.is_none(),
+        "nothing changes until it is dragged"
+    );
     // A few pixels are not a drag yet.
     state.drag_move((grab.0 + 5., grab.1 + 3.), &controls(&state));
     assert!(!state.drag.as_ref().unwrap().active);
@@ -4542,8 +4620,8 @@ fn the_pointer_drags_a_card_to_a_new_slot_and_a_still_hold_opens_its_options() {
     assert!(drag.active);
     assert_eq!(drag.target.as_deref(), Some(onto.as_str()));
     let frame = scene(&state);
-    // Hit regions stay at their slots while dragging.
-    for control in &slots {
+    // Every card's hit region stays at its slot while dragging.
+    for control in slots.iter().filter(|c| matches!(c.target, Target::App(_))) {
         let now = frame
             .controls
             .iter()

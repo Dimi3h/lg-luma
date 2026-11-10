@@ -273,8 +273,6 @@ pub struct State {
     pub scroll: f32,
     pub overlay: Option<Overlay>,
     pub moving: Option<String>,
-    /// When move mode began, for the cards' jiggle.
-    pub moving_since: Option<Instant>,
     /// A card being dragged with the pointer (Magic Remote).
     pub drag: Option<Drag>,
     pub loading: bool,
@@ -333,7 +331,6 @@ impl State {
             overlay: None,
             moving: None,
             drag: None,
-            moving_since: None,
             loading: false,
             reload_artwork: false,
             launching: false,
@@ -679,7 +676,6 @@ impl State {
                 || self.recents.cards_animating(self.pointer)))
             || self.previous_background.is_some()
             || self.motion.animating()
-            || (self.moving.is_some() && !self.preferences.reduced_motion)
             || self.screensaver_fading()
             || (!self.preferences.reduced_motion
                 && self
@@ -736,15 +732,12 @@ impl State {
         apps
     }
 
-    /// Starts dragging the card `id` (at `card`) with the pointer at `at`: move mode for that
-    /// card, which follows the pointer once it moves past `DRAG_THRESHOLD`.
+    /// Starts dragging the card `id` (at `card`) with the pointer at `at`. Nothing on the grid
+    /// changes until the pointer moves past `DRAG_THRESHOLD`: only then does the card follow it
+    /// (and a hold become move mode), so a still hold that opens the menu leaves the grid as it is.
     pub fn drag_start(&mut self, id: &str, at: (f32, f32), card: Rect, from_hold: bool) {
         if self.page != Page::Home || self.overlay.is_some() {
             return;
-        }
-        if self.moving.as_deref() != Some(id) {
-            self.moving = Some(id.into());
-            self.moving_since = Some(Instant::now());
         }
         self.focus = Target::App(id.into());
         self.pressed = None;
@@ -770,6 +763,7 @@ impl State {
         drag.at = at;
         if !drag.active && (at.0 - drag.start.0).hypot(at.1 - drag.start.1) >= DRAG_THRESHOLD {
             drag.active = true;
+            self.moving = Some(drag.id.clone());
         }
         if drag.active {
             drag.target = controls.iter().find_map(|control| match &control.target {
@@ -2744,7 +2738,6 @@ impl State {
                     // (or the pointer drags it); OK or Back keeps the new order.
                     self.focus = Target::App(id.clone());
                     self.moving = Some(id);
-                    self.moving_since = Some(Instant::now());
                     self.notice = None;
                     self.pressed = None;
                     self.dirty = true;

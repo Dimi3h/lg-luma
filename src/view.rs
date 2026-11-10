@@ -1132,45 +1132,23 @@ fn tile(out: &mut Scene, state: &State, assets: &Assets, app: &App, rect: Rect, 
     } else {
         state.focus_level(&target)
     };
-    // While an app is being moved, every card jiggles (tvOS): its face and logo move by
-    // slightly different offsets, approximating a small rotation. Nothing else moves: focus
-    // changes instantly and the focused card only brightens. Hit regions stay put.
-    let jiggle = jiggle(state, &app.id);
-    let drawn = offset(rect, jiggle, JIGGLE_FACE);
+    // Nothing moves: focus changes instantly and the focused card only brightens. The card
+    // being moved keeps that highlight with a slightly stronger rim; no jiggle, no arrows.
+    let drawn = rect;
     let radius = CARD_RADIUS;
     if !unavailable {
         out.resting_shadow(drawn, radius);
     }
-    app_face_layered(
-        out,
-        assets,
-        app,
-        drawn,
-        state.preferences.language,
-        radius,
-        [jiggle[0] * JIGGLE_LAYER, jiggle[1] * JIGGLE_LAYER],
-    );
+    app_face(out, assets, app, drawn, state.preferences.language, radius);
     card_glass(out, drawn, radius, level);
     if state.moving.as_ref() == Some(&app.id) {
-        let indicator = Rect::new(
-            drawn.x + drawn.w / 2. - 44.,
-            drawn.y + drawn.h - 40.,
-            88.,
-            30.,
-        );
-        out.shape(indicator, 15., c(0x101318, 0.8));
-        out.icon(
-            assets,
-            "left",
-            Rect::new(indicator.x + 12., indicator.y + 5., 20., 20.),
-            c(0xededed, 1.),
-        );
-        out.icon(
-            assets,
-            "arrow",
-            Rect::new(indicator.x + 56., indicator.y + 5., 20., 20.),
-            c(0xededed, 1.),
-        );
+        out.draw.push(Draw::Rim(
+            drawn,
+            radius,
+            MOVING_RIM,
+            c(0xffffff, 0.9),
+            c(0xffffff, 0.7),
+        ));
     }
     if unavailable {
         out.fade(start, 0.45, 1.);
@@ -1220,6 +1198,9 @@ fn card_glass(out: &mut Scene, rect: Rect, radius: f32, level: f32) {
     ));
 }
 
+/// The card being moved: its rim, a little stronger than the focus rim.
+const MOVING_RIM: f32 = 3.5;
+
 /// How much brighter the focused card is: a white overlay of a few percent.
 pub const FOCUS_OVERLAY: f32 = 0.07;
 /// The focused card's light rim width, in logical pixels.
@@ -1255,20 +1236,6 @@ fn app_face(
     language: Language,
     radius: f32,
 ) {
-    app_face_layered(out, assets, app, rect, language, radius, [0., 0.]);
-}
-
-/// `app_face` with its logo layer moved by `parallax` relative to the background: a jiggling
-/// card's layers separate slightly, approximating a small rotation.
-fn app_face_layered(
-    out: &mut Scene,
-    assets: &Assets,
-    app: &App,
-    rect: Rect,
-    language: Language,
-    radius: f32,
-    parallax: [f32; 2],
-) {
     let logo = crate::branding::for_key(&app.brand);
     let artwork = logo
         .is_none()
@@ -1289,7 +1256,6 @@ fn app_face_layered(
             false,
         );
     }
-    let layer = out.draw.len();
     if let Some(brand) = logo {
         let (ratio, height) = brand.artwork_size();
         let height = height * rect.h / FACE_HEIGHT;
@@ -1307,38 +1273,6 @@ fn app_face_layered(
     } else if !installed {
         brand_mark(out, assets, app, rect, language);
     }
-    out.shift(layer, parallax[0], parallax[1]);
-}
-
-// How far a jiggling favourite's layers move per unit of jiggle: the face, and its logo on
-// top. Hit regions never move.
-const JIGGLE_FACE: f32 = 3.;
-const JIGGLE_LAYER: f32 = 6.;
-
-/// A favourite's jiggle while move mode is active: a few hertz, each card out of phase, up to
-/// about 2 px for the face and 4 px more for its logo. Nothing under Reduced motion.
-pub fn jiggle(state: &State, id: &str) -> [f32; 2] {
-    let Some(since) = state.moving_since.filter(|_| state.moving.is_some()) else {
-        return [0., 0.];
-    };
-    if state.preferences.reduced_motion {
-        return [0., 0.];
-    }
-    let phase = id.bytes().fold(0u32, |hash, byte| {
-        hash.wrapping_mul(31).wrapping_add(byte as u32)
-    }) as f32
-        % std::f32::consts::TAU;
-    let t = since.elapsed().as_secs_f32() * std::f32::consts::TAU * 3.2 + phase;
-    [0.7 * t.sin(), 0.45 * (1.3 * t).cos()]
-}
-
-fn offset(rect: Rect, by: [f32; 2], distance: f32) -> Rect {
-    Rect::new(
-        rect.x + by[0] * distance,
-        rect.y + by[1] * distance,
-        rect.w,
-        rect.h,
-    )
 }
 
 fn brand_mark(out: &mut Scene, assets: &Assets, app: &App, rect: Rect, language: Language) {
