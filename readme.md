@@ -185,7 +185,15 @@ sh /var/lib/luma-home/home.sh disable
 
 `restore` is an alias for `disable`.
 
-Boot log: `/var/lib/luma-home/boot.log`. See the
+After a cold boot (power cut or a full restart), LG Home and live TV can show for the 30–40 seconds
+until Homebrew Channel runs its startup hooks; Luma's hook runs first among them and takes over
+within a few seconds. Waking the TV from standby with Quick Start+ on keeps Luma as Home.
+
+After updating Luma, run `sh "$APP/home.sh" enable` again so the boot hook uses the new scripts.
+From 2.18.1 on, the next cold boot also copies them automatically when the installed files are
+owned by root.
+
+Boot log: `/var/lib/luma-home/boot.log`, with the time of each takeover step. See the
 [development guide](development.md#optional-native-home-integration) for implementation details.
 
 <details>

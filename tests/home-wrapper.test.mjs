@@ -31,11 +31,13 @@ async function fixture({ helper = true, relative = false } = {}) {
   for (const [name, body] of [
     ['id', 'echo 0'],
     ['stat', 'echo 0'],
-    ['sleep', 'exit 0'],
+    ['sleep', `echo slept >>'${path.join(root, 'slept')}'`],
+    // macOS has no flock(1); the lock itself is not under test here.
+    ['flock', 'exit 0'],
   ]) {
     await fs.writeFile(path.join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
   }
-  const hook = path.join(hooks, '64-luma-home');
+  const hook = path.join(hooks, '10-luma-home');
   await fs.symlink(relative ? '../state/home.sh' : path.join(state, 'home.sh'), hook);
   const run = (...args) =>
     spawnSync('/bin/sh', [hook, ...args], {
@@ -44,7 +46,6 @@ async function fixture({ helper = true, relative = false } = {}) {
       timeout: 10000,
     });
   const recorded = async () => {
-    // Long enough for a real 5 s sleep where the shell runs sleep as a builtin (busybox ash).
     for (let i = 0; i < 200; i++) {
       const text = await fs.readFile(calls, 'utf8').catch(() => '');
       if (text) return text.trim().split('\n');
@@ -74,6 +75,10 @@ test('a cold boot through the hook symlink schedules the copied apply', async ()
     const boot = tv.run();
     assert.equal(boot.status, 0, boot.stderr);
     assert.deepEqual(await tv.recorded(), [`[home][apply][${tv.state}][]`]);
+    // At once (no fixed sleep), with the hook's wall-clock start in the boot log.
+    await assert.rejects(fs.access(path.join(tv.root, 'slept')));
+    const log = await fs.readFile(path.join(tv.state, 'boot.log'), 'utf8');
+    assert.match(log, /^Luma Home boot hook: \d{4}-\d\d-\d\d \d\d:\d\d:\d\d, uptime /m);
   } finally {
     await fs.rm(tv.root, { recursive: true, force: true });
   }

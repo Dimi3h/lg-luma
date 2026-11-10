@@ -253,7 +253,7 @@ pub struct Scene {
     backdrop: Option<String>,
     /// A focused list row, drawn after its neighbours so its soft shadow lies over them.
     raised: Vec<Draw>,
-    /// Settings: focused controls appear at once in place (no lift), as cards do.
+    /// Settings and overlays: focused controls appear at once in place (no lift), as cards do.
     static_focus: bool,
 }
 
@@ -728,7 +728,8 @@ pub fn scene(state: &State, assets: &Assets, now: OffsetDateTime) -> Scene {
         return screensaver(state, assets, now, seed, step);
     }
     let mut out = Scene::new();
-    out.static_focus = state.page == Page::Settings;
+    out.static_focus =
+        state.page == Page::Settings || state.overlay.is_some() || state.recents_open();
     // The night wallpaper replaces the chosen one between sunset and sunrise.
     let shown = state.shown_background(now).to_owned();
     out.backdrop = assets.glass_backdrop(state, &shown);
@@ -844,7 +845,6 @@ pub fn scene(state: &State, assets: &Assets, now: OffsetDateTime) -> Scene {
             _ => None,
         };
         out.controls.clear();
-        let start = out.draw.len();
         // tvOS dims and blurs the stage behind menus and alerts.
         if let Some(path) = out.backdrop.clone() {
             out.draw.push(Draw::Backdrop(
@@ -857,15 +857,6 @@ pub fn scene(state: &State, assets: &Assets, now: OffsetDateTime) -> Scene {
         } else {
             out.shape(Rect::new(0., 0., 1920., 1080.), 0., c(0x080b12, 0.72));
         }
-        if matches!(
-            overlay,
-            Overlay::Options { .. } | Overlay::BackgroundOptions { .. }
-        ) && let Some(opened) = state.panel_started
-        {
-            // The lifted card stays opaque while the backdrop and popup fade.
-            // Fading it over its dimmed parent copy causes a brightness dip.
-            out.fade(start, (opened.elapsed().as_secs_f32() / 0.12).min(1.), 1.);
-        }
         match overlay {
             Overlay::Options { id, .. } | Overlay::BackgroundOptions { id, .. } => {
                 options(&mut out, state, assets, id, anchor)
@@ -877,13 +868,6 @@ pub fn scene(state: &State, assets: &Assets, now: OffsetDateTime) -> Scene {
             Overlay::WallpaperUpload => wallpaper_upload(&mut out, state, assets),
             Overlay::TileEditor => tile_editor(&mut out, state, assets),
             Overlay::SystemKeyboard | Overlay::Recents { .. } => {}
-        }
-        if !matches!(
-            overlay,
-            Overlay::Options { .. } | Overlay::BackgroundOptions { .. }
-        ) && let Some(opened) = state.panel_started
-        {
-            out.fade(start, (opened.elapsed().as_secs_f32() / 0.12).min(1.), 1.);
         }
     }
     if state.recents_open() || state.recents.visibility > 0. {
@@ -3822,7 +3806,6 @@ fn options(out: &mut Scene, state: &State, assets: &Assets, id: &str, anchor: Op
             favorite_badge(out, assets, lifted, favorite_color);
         }
     }
-    let panel_start = out.draw.len();
     out.modal = Some(panel);
     out.shadow(panel, PANEL_RADIUS, 90., 26., 0.42);
     out.glass(panel, PANEL_RADIUS, Glass::Regular);
@@ -3896,13 +3879,6 @@ fn options(out: &mut Scene, state: &State, assets: &Assets, id: &str, anchor: Op
             color,
         );
         out.control(target, rect, false);
-    }
-    if let Some(opened) = state.panel_started {
-        out.fade(
-            panel_start,
-            (opened.elapsed().as_secs_f32() / 0.12).min(1.),
-            1.,
-        );
     }
 }
 

@@ -451,6 +451,22 @@ fn main() {
     }
 }
 
+/// What a frame shows at the top level: the page, which overlay (if any) and whether Recents is
+/// open. A change between frames is a switch, presented as one complete frame.
+type Shown = (
+    state::Page,
+    Option<std::mem::Discriminant<state::Overlay>>,
+    bool,
+);
+
+fn shown(state: &State) -> Shown {
+    (
+        state.page,
+        state.overlay.as_ref().map(std::mem::discriminant),
+        state.recents_open(),
+    )
+}
+
 fn compose(state: &mut State, assets: &view::Assets, now: OffsetDateTime) -> view::Scene {
     state.sync_motion();
     let mut scene = view::scene(state, assets, now);
@@ -853,7 +869,10 @@ fn run() -> Result<(), String> {
     });
     let mut damage_tracker = damage::Tracker::default();
     let mut first_text = serde_json::Value::Null;
-    let mut drawn_page: Option<state::Page> = None;
+    // The page and overlay last presented: a change is drawn as one complete frame.
+    let mut drawn_page: Option<Shown> = None;
+    // Whether the current OK press has had its long-press menu prepared.
+    let mut hold_prepared = false;
     // Pages to prepare while the screen is idle (text, logos, icons), after each inventory.
     let mut prewarm: Vec<(state::Page, usize)> = Vec::new();
     let mut prewarm_now = false;
@@ -1683,6 +1702,19 @@ fn run() -> Result<(), String> {
         {
             state.start_screensaver();
         }
+        // While OK is held, prepare the menu a long press opens, so its labels are rasterised
+        // on the glyph worker before the hold fires and the menu is complete in that frame.
+        if press.as_ref().is_some_and(|held| !held.held) && !hold_prepared {
+            hold_prepared = true;
+            if let Some(hidden) = state.with_hold_preview(|state| view::scene(state, &assets, now))
+            {
+                let (width, height) = window.drawable_size();
+                renderer.prepare(&hidden.draw, width, height);
+            }
+        }
+        if press.is_none() {
+            hold_prepared = false;
+        }
         if let Some(held) = &mut press
             && !held.held
             && held.start.elapsed() >= Duration::from_millis(600)
@@ -1792,14 +1824,16 @@ fn run() -> Result<(), String> {
                         options.capture_size.unwrap_or(Size::HD),
                     )?);
                 }
-                // A page switch is presented as one complete frame: redrawn in full (no partial
-                // damage that could miss an area) and with all of the new page's glyphs.
-                if drawn_page != Some(state.page) {
+                // A page switch, or an overlay opening or closing, is presented as one complete
+                // frame: redrawn in full (no partial damage that could miss an area) and with
+                // all of its glyphs (normally already rasterised, so nothing waits).
+                let shown = shown(&state);
+                if drawn_page != Some(shown) {
                     if drawn_page.is_some() {
                         damage_tracker.reset();
                         renderer.complete_next_frame();
                     }
-                    drawn_page = Some(state.page);
+                    drawn_page = Some(shown);
                 }
                 let damage = partial.as_ref().and_then(|partial| {
                     if last_drawable != Some(Size::new(width, height)) {

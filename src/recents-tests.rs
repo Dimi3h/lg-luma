@@ -537,7 +537,7 @@ fn recents_pointer_focus_never_moves_hit_regions_and_reduced_motion_snaps() {
 }
 
 #[test]
-fn recents_crossfade_reverses_without_jumping_and_restores_parent_input_immediately() {
+fn recents_appears_and_disappears_in_one_frame_and_restores_parent_input_immediately() {
     use crate::renderer::Draw;
     let mut state = ready();
     state.open(crate::state::Page::Settings);
@@ -546,13 +546,13 @@ fn recents_crossfade_reverses_without_jumping_and_restores_parent_input_immediat
     let parent = controls(&state);
     state.open_recents();
     accept(&mut state, recents::demo());
+    // The first animation step already shows Recents completely: no fade in.
     let start = Instant::now();
     state.recents.updated = start;
     state
         .recents
-        .animate(true, false, false, start + Duration::from_millis(40));
-    let entering = state.recents.visibility;
-    assert!(entering > 0. && entering < 1.);
+        .animate(true, false, false, start + Duration::from_millis(16));
+    assert_eq!(state.recents.visibility, 1.);
     let incoming = scene(&state);
     assert!(incoming.modal.is_some());
     assert!(
@@ -561,10 +561,16 @@ fn recents_crossfade_reverses_without_jumping_and_restores_parent_input_immediat
             .iter()
             .all(|c| matches!(c.target, Target::Recent(_)))
     );
+    assert!(incoming.draw.iter().any(|draw| matches!(draw,
+        Draw::TintedImage(path, _, _, _, tint) if path.ends_with("logos/netflix.lvec") && tint[3] == 1.)));
+    // Back: input belongs to the parent at once, and the next step shows only the parent.
     state.back();
     assert!(!state.recents_open());
-    assert_eq!(state.recents.visibility, entering);
     assert_eq!(state.focus, Target::ClockFormat);
+    state
+        .recents
+        .animate(false, false, false, start + Duration::from_millis(32));
+    assert_eq!(state.recents.visibility, 0.);
     let outgoing = scene(&state);
     assert!(outgoing.modal.is_none());
     assert_eq!(
@@ -575,48 +581,18 @@ fn recents_crossfade_reverses_without_jumping_and_restores_parent_input_immediat
             .collect::<Vec<_>>(),
         parent.iter().map(|c| &c.target).collect::<Vec<_>>()
     );
-    assert!(outgoing.draw.iter().any(|draw| matches!(draw,
-        Draw::TintedImage(path, _, _, _, tint) if path.ends_with("logos/netflix.lvec") && tint[3] > 0. && tint[3] < 1.)));
-    state.recents.updated = start + Duration::from_millis(40);
+    assert!(!outgoing.draw.iter().any(|draw| matches!(draw,
+        Draw::TintedImage(path, ..) if path.ends_with("logos/netflix.lvec"))));
+    // Reopening is complete at once again.
+    state.open_recents();
     state
         .recents
-        .animate(false, false, false, start + Duration::from_millis(56));
-    let leaving = state.recents.visibility;
-    assert!(leaving > 0. && leaving < entering);
-    state.open_recents();
-    assert_eq!(state.recents.visibility, leaving);
-    assert_eq!(
-        state.recents.entries.len(),
-        8,
-        "Reversing dismissal must retain the visible cards"
-    );
-    state.recents.updated = start + Duration::from_millis(56);
-    state
-        .recents
-        .animate(true, false, false, start + Duration::from_millis(72));
-    assert!(state.recents.visibility > leaving);
-    for frame in 1..40 {
-        state.recents.animate(
-            true,
-            false,
-            false,
-            start + Duration::from_millis(72 + frame * 16),
-        );
-    }
+        .animate(true, false, false, start + Duration::from_millis(48));
     assert_eq!(state.recents.visibility, 1.);
-    state.back();
-    state.preferences.reduced_motion = true;
-    state.tick();
-    assert_eq!(state.recents.visibility, 0.);
-    assert!(state.recents.closing_focus.is_none());
-    state.open_recents();
-    assert_eq!(state.recents.visibility, 1.);
-    state.back();
-    assert_eq!(state.recents.visibility, 0.);
 }
 
 #[test]
-fn pointer_interruption_freezes_cards_without_freezing_the_crossfade() {
+fn pointer_interruption_freezes_cards_and_recents_is_shown_at_once() {
     let mut recent = recents::Recents::default();
     let start = Instant::now();
     recent.updated = start;

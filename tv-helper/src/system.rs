@@ -13,6 +13,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// How often the boot path re-checks a condition it waits for.
+pub const POLL: Duration = Duration::from_millis(100);
+
 pub struct Output {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
@@ -29,6 +32,32 @@ pub trait System {
     ) -> Result<Output>;
     fn pause(&self) {
         thread::sleep(Duration::from_secs(1));
+    }
+    /// The short wait between checks on the boot path (Home stopping, SAM rereading the
+    /// manifest, Home coming to the front), so each step ends as soon as it is done.
+    fn poll(&self) {
+        thread::sleep(POLL);
+    }
+    /// Whether root may run a copy of `path` at boot: a regular file owned by root and not
+    /// writable by group or others, in a directory with the same properties.
+    fn trusted(&self, path: &Path) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let safe = |path: &Path, dir: bool| {
+                fs::symlink_metadata(self.path(path)).is_ok_and(|meta| {
+                    meta.uid() == 0
+                        && meta.mode() & 0o022 == 0
+                        && if dir { meta.is_dir() } else { meta.is_file() }
+                })
+            };
+            path.parent().is_some_and(|parent| safe(parent, true)) && safe(path, false)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            false
+        }
     }
     fn terminate(&self, pid: u32) -> Result<()>;
     fn uid(&self) -> u32;

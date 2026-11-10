@@ -25,7 +25,7 @@ if [ "$COMMAND" = enable ] && grep -q 'release [569]\.' /etc/starfish-release 2>
     "  3. Bind-mount Luma's executable over the selected LG Home executable." \
     "     LG's Home manifest and role stay; Luma registers with SAM itself." \
     '  4. Stop the previous Home process and launch Luma as Home.' \
-    '  5. Install /var/lib/webosbrew/init.d/64-luma-home to reapply the mount at cold boot.' \
+    '  5. Install /var/lib/webosbrew/init.d/10-luma-home to reapply the mount at cold boot.' \
     '' \
     "LG Home's original executable remains underneath the mount." \
     'Home Auto Launch and Quick Start+ retain their current settings.' \
@@ -39,7 +39,7 @@ elif [ "$COMMAND" = enable ]; then
     "  3. Bind-mount $STATE/app over /usr/palm/applications/com.webos.app.home." \
     '  4. Temporarily block and release Home so SAM rereads its manifest.' \
     '  5. Stop the previous Home process and launch Luma as Home.' \
-    '  6. Install /var/lib/webosbrew/init.d/64-luma-home to reapply the mount at cold boot.' \
+    '  6. Install /var/lib/webosbrew/init.d/10-luma-home to reapply the mount at cold boot.' \
     '' \
     "LG Home's original files remain underneath the mount." \
     'Home Auto Launch and Quick Start+ retain their current settings.' \
@@ -66,8 +66,14 @@ fi
 if [ ! -d "$STATE" ]; then mkdir -m 755 "$STATE" || exit 1; fi
 [ "$(stat -c %u "$STATE")" = 0 ] || exit 1
 if [ "$COMMAND" = boot ]; then
+  # Apply at once, detached, so Homebrew Channel moves on to the next hook. The helper waits
+  # only until SAM answers, and logs each step with its timing.
+  if [ "$(wc -c <"$STATE/boot.log" 2>/dev/null || echo 0)" -gt 65536 ]; then
+    mv -f "$STATE/boot.log" "$STATE/boot.log.1"
+  fi
   (
-    sleep 5
+    printf 'Luma Home boot hook: %s, uptime %s s\n' "$(date '+%Y-%m-%d %H:%M:%S')" \
+      "$(cut -d ' ' -f 1 /proc/uptime 2>/dev/null)"
     exec sh "$STATE/home.sh" apply
   ) </dev/null >>"$STATE/boot.log" 2>&1 &
   exit 0

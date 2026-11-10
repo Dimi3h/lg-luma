@@ -4,12 +4,19 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{collections::BTreeMap, fs, path::Path, time::Instant};
 
 const STATE: &str = "/var/lib/luma-home";
 const CONFIG: &str = "/var/lib/luma-home/state.json";
 const STAGE: &str = "/var/lib/luma-home/app";
-const HOOK: &str = "/var/lib/webosbrew/init.d/64-luma-home";
+/// The cold-boot hook. Homebrew Channel runs `init.d` in name order, one hook after another,
+/// so a low number puts Luma before other apps' hooks (which can take tens of seconds).
+const HOOK: &str = "/var/lib/webosbrew/init.d/10-luma-home";
+/// Earlier names of the hook, removed when they still point at Luma's script.
+const LEGACY_HOOKS: [&str; 1] = ["/var/lib/webosbrew/init.d/64-luma-home"];
+/// How long the boot path waits for SAM to answer at all, and polls per second of a budget.
+const SAM_WAIT_POLLS: usize = 200;
+const POLLS_PER_SECOND: usize = 10;
 const MARKER: &str = "/var/run/luma-home";
 pub const HOME: &str = "com.webos.app.home";
 pub const FULL_HOME: &str = "com.webos.app.fullhome";
@@ -168,11 +175,11 @@ impl<'a, S: System> Home<'a, S> {
                 stopped.push(proc);
             }
         }
-        for _ in 0..5 {
+        for _ in 0..5 * POLLS_PER_SECOND {
             if stopped.iter().all(|p| !self.exists(p)) {
                 return Ok(());
             }
-            self.system.pause();
+            self.system.poll();
         }
         Err("The previous Home process has not stopped".into())
     }
@@ -180,8 +187,8 @@ impl<'a, S: System> Home<'a, S> {
         accepted(self.luna("launch", json!({"id":self.id}))?).map(|_| ())
     }
     fn open_executable(&self) -> Result<()> {
-        for i in 0..15 {
-            if (i == 0 || i == 6)
+        for i in 0..15 * POLLS_PER_SECOND {
+            if (i == 0 || i == 6 * POLLS_PER_SECOND)
                 && let Err(error) = self.launch()
             {
                 eprintln!("Luma Home: {error}");
@@ -189,7 +196,7 @@ impl<'a, S: System> Home<'a, S> {
             if self.foreground()? == self.id {
                 return Ok(());
             }
-            self.system.pause();
+            self.system.poll();
         }
         Err("Home did not come to the front".into())
     }
@@ -211,7 +218,9 @@ impl<'a, S: System> Home<'a, S> {
                 }
                 Err(error) => last = error,
             }
-            self.system.pause();
+            for _ in 0..3 {
+                self.system.poll();
+            }
         }
         Err(format!("Could not release Home: {last}"))
     }
@@ -243,7 +252,7 @@ impl<'a, S: System> Home<'a, S> {
             (Err(error), _) | (_, Err(error)) => return Err(error),
             _ => {}
         }
-        for _ in 0..15 {
+        for _ in 0..15 * POLLS_PER_SECOND {
             let reply = accepted(self.luna("getAppInfo", json!({"id":self.id}))?)?;
             let info = &reply["appInfo"];
             let main = expected["main"].as_str();
@@ -260,7 +269,7 @@ impl<'a, S: System> Home<'a, S> {
             {
                 return Ok(());
             }
-            self.system.pause();
+            self.system.poll();
         }
         Err("SAM did not read the expected Home manifest".into())
     }
@@ -332,7 +341,28 @@ impl<'a, S: System> Home<'a, S> {
         }
         Ok(())
     }
+    /// Waits (briefly, at boot) until SAM answers at all; Homebrew Channel's startup hooks run
+    /// once LG's services are up, so this normally returns at the first check.
+    fn wait_for_sam(&self) -> Result<()> {
+        let mut last = String::new();
+        for _ in 0..SAM_WAIT_POLLS {
+            match self.foreground() {
+                Ok(_) => return Ok(()),
+                Err(error) => last = error,
+            }
+            self.system.poll();
+        }
+        Err(format!("SAM did not answer: {last}"))
+    }
     pub fn apply(&self, config: &Config, open: bool) -> Result<()> {
+        let steps = Steps::new(self.system);
+        self.wait_for_sam()?;
+        steps.log("SAM answered");
+        let result = self.apply_now(config, open, &steps);
+        steps.log(if result.is_ok() { "done" } else { "failed" });
+        result
+    }
+    fn apply_now(&self, config: &Config, open: bool, steps: &Steps<'_, S>) -> Result<()> {
         if !self.exists(Path::new(&config.app_dir).join("luma")) {
             return Err("Luma is no longer installed".into());
         }
@@ -349,6 +379,7 @@ impl<'a, S: System> Home<'a, S> {
         {
             eprintln!("Luma Home: splash not staged: {e}");
         }
+        steps.log("splash staged");
         let front = self.foreground()?;
         let result = (|| {
             if config.method == "executable" {
@@ -372,6 +403,7 @@ impl<'a, S: System> Home<'a, S> {
                     0o644,
                 )?;
                 system::write(self.system, MARKER, format!("{APP}\n").as_bytes(), 0o644)?;
+                steps.log("executable mounted");
             } else {
                 if !self.mounted() {
                     system::command(self.system, "/bin/mount", &["--bind", STAGE, &self.target])?;
@@ -379,15 +411,19 @@ impl<'a, S: System> Home<'a, S> {
                 if !self.mounted() {
                     return Err("The Home bind mount did not take".into());
                 }
+                steps.log("Home mounted");
                 self.reread(&system::json(self.system, format!("{STAGE}/appinfo.json"))?)?;
+                steps.log("SAM reread the Home manifest");
             }
             self.stop_home(&config.app_dir)?;
+            steps.log("previous Home stopped");
             if open || (front == self.id && self.foreground()? == self.id) {
                 if config.method == "executable" {
                     self.open_executable()?;
                 } else {
                     self.launch()?;
                 }
+                steps.log("Luma launched as Home");
             }
             Ok(())
         })();
@@ -397,7 +433,51 @@ impl<'a, S: System> Home<'a, S> {
                 Err(recovery) => Err(format!("{error}\nRestore also failed: {recovery}")),
             };
         }
+        // After Home is up: the next cold boot runs the installed app's scripts, and the hook
+        // carries its current name.
+        self.refresh_scripts(Path::new(&config.app_dir));
+        if let Err(error) = self.install_hook() {
+            eprintln!("Luma Home: boot hook not updated: {error}");
+        }
         Ok(())
+    }
+    /// Copies the installed app's `home.sh` and `luma-helper` over the state copies the boot
+    /// hook runs when they differ, so an updated Luma takes effect at the next cold boot without
+    /// enabling again. Only root-owned files that nobody else can write are copied, since root
+    /// runs them at boot; otherwise enabling again picks them up.
+    fn refresh_scripts(&self, app: &Path) {
+        let names = ["home.sh", "luma-helper"];
+        let differs = names.iter().any(|name| {
+            system::read(self.system, app.join(name), 16 * 1024 * 1024).ok()
+                != system::read(self.system, format!("{STATE}/{name}"), 16 * 1024 * 1024).ok()
+        });
+        if !differs {
+            return;
+        }
+        if !names
+            .iter()
+            .all(|name| self.system.trusted(&app.join(name)))
+        {
+            eprintln!(
+                "Luma Home: the installed scripts are newer but not root-owned; run home.sh enable to use them"
+            );
+            return;
+        }
+        match self.install_scripts(app) {
+            Ok(()) => eprintln!("Luma Home: copied the installed app's newer boot scripts"),
+            Err(error) => eprintln!("Luma Home: boot scripts not refreshed: {error}"),
+        }
+    }
+    /// Links the boot hook under its current name and removes earlier names that still point
+    /// at Luma's script. Homebrew Channel lists `init.d` once per boot, so changing it while
+    /// hooks run affects only the next boot.
+    fn install_hook(&self) -> Result<()> {
+        system::mkdir(self.system, "/var/lib/webosbrew")?;
+        system::mkdir(self.system, "/var/lib/webosbrew/init.d")?;
+        if !hook_owned(self.system) {
+            system::link(self.system, format!("{STATE}/home.sh"), HOOK)?;
+        }
+        remove_legacy_hooks(self.system)
     }
     fn install_scripts(&self, app: &Path) -> Result<()> {
         // The copied native helper lets disable/recovery work after an app package was removed.
@@ -448,7 +528,7 @@ impl<'a, S: System> Home<'a, S> {
         }
         self.owned_mount()?;
         if self.exists(HOOK) && !hook_owned(self.system) {
-            return Err("64-luma-home is already in use".into());
+            return Err("10-luma-home is already in use".into());
         }
         if self.exists("/var/lib/webosbrew/init.d/65-luma") {
             return Err(
@@ -516,11 +596,7 @@ impl<'a, S: System> Home<'a, S> {
             extra: previous.map_or_else(BTreeMap::new, |c| c.extra),
         };
         system::write_json(self.system, CONFIG, &config)?;
-        system::mkdir(self.system, "/var/lib/webosbrew")?;
-        system::mkdir(self.system, "/var/lib/webosbrew/init.d")?;
-        if !hook_owned(self.system) {
-            system::link(self.system, format!("{STATE}/home.sh"), HOOK)?;
-        }
+        self.install_hook()?;
         self.apply(&config, true)?;
         config.enabled = true;
         system::write_json(self.system, CONFIG, &config)
@@ -583,8 +659,51 @@ pub fn method<'a>(release: &str, stock: &Value, id: &str) -> Result<&'a str> {
     Err("This Home integration currently targets webOS 5/6, 24 (9.x) and 25/26 (10.x/11.x)".into())
 }
 pub fn hook_owned(system: &impl System) -> bool {
-    fs::read_link(system.path(Path::new(HOOK)))
+    owned_link(system, HOOK)
+}
+fn owned_link(system: &impl System, hook: &str) -> bool {
+    fs::read_link(system.path(Path::new(hook)))
         .is_ok_and(|p| p == system.path(Path::new("/var/lib/luma-home/home.sh")))
+}
+/// Removes hooks under earlier names that point at Luma's script (never anyone else's).
+fn remove_legacy_hooks(system: &impl System) -> Result<()> {
+    for hook in LEGACY_HOOKS {
+        if owned_link(system, hook) {
+            system::remove(system, hook)?;
+        }
+    }
+    Ok(())
+}
+/// Timestamps of the apply steps in the boot log: time since apply started and the TV's
+/// uptime, so a cold boot shows how long each step took.
+struct Steps<'a, S: System> {
+    system: &'a S,
+    started: Instant,
+}
+impl<'a, S: System> Steps<'a, S> {
+    fn new(system: &'a S) -> Self {
+        let steps = Self {
+            system,
+            started: Instant::now(),
+        };
+        steps.log("apply started");
+        steps
+    }
+    fn log(&self, step: &str) {
+        let uptime = system::read(self.system, "/proc/uptime", 256)
+            .ok()
+            .and_then(|bytes| {
+                String::from_utf8_lossy(&bytes)
+                    .split_whitespace()
+                    .next()
+                    .and_then(|value| value.parse::<f64>().ok())
+            })
+            .map_or_else(String::new, |seconds| format!(", uptime {seconds:.2} s"));
+        eprintln!(
+            "Luma Home apply: {step} (+{} ms{uptime})",
+            self.started.elapsed().as_millis()
+        );
+    }
 }
 pub fn load(system: &impl System) -> Result<Option<Config>> {
     if !system::exists(system, CONFIG) {
@@ -627,6 +746,7 @@ pub fn dispatch(
                 if hook_owned(system) {
                     system::remove(system, HOOK)?;
                 }
+                remove_legacy_hooks(system)?;
             }
             Ok(json!({"returnValue":true}))
         }
