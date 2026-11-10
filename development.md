@@ -259,14 +259,14 @@ native Exit signal opens the switcher without waiting for another timer; repeat/
 are consumed until release, so the same press cannot dismiss an overlay and then reopen it from Home.
 
 The switcher follows the tvOS app switcher: one horizontal row of large landscape cards on a
-dimmed, blurred wallpaper, a short, reversible crossfade to and from the actual parent interface,
-and a non-bouncy, interruptible transition. The focused card is centred, lifted with a deep shadow
+dimmed, blurred wallpaper. It appears and disappears at once, complete in its first frame (no
+crossfade), while moving between cards keeps a short, non-bouncy carousel movement. The focused
+card is centred, lifted with a deep shadow
 and titled beneath; its neighbours are smaller and dimmer at the sides, without overlapping. Cards
 are painted and hit-tested back-to-front.
-Reopening during dismissal reverses from the current opacity and keeps the visible cards.
-Dismissal restores parent input immediately while the outgoing cards finish fading. The transition
-does not move card hit targets; pointer interruption pauses only carousel movement, not the fade.
-Reduced motion makes the crossfade, navigation and close transitions immediate.
+Dismissal restores parent input and the parent interface immediately. Card hit targets never
+move; pointer interruption pauses carousel movement. Reduced motion makes navigation and close
+transitions immediate too.
 Pointer hover/down preserves the current card positions and interrupts remote carousel movement.
 The backdrop is the blurred wallpaper under a 50% dimming layer. Only the focused card has a caption; there are no action buttons,
 empty-state subtitle, heading, separate dismiss button, card count, footer instructions or Home
@@ -319,7 +319,7 @@ pnpm dev --script recents,await-recents
 
 `hold-back` is also a scripted opening action. Desktop smoke scenarios render normal, close-one,
 empty, launch, pointer and Home Back flows; unit tests cover hold timing, cancelled
-presses, stale responses, failures, navigation, reduced motion, reversible crossfades and consistent card artwork.
+presses, stale responses, failures, navigation, reduced motion, the instant open and close, and consistent card artwork.
 
 ## Custom wallpaper uploads
 
@@ -461,16 +461,23 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   Title 3 (48/56, overlay and sidebar titles), Headline (38/46, section headings), Callout (31/38),
   Body (29/36, rows and captions), Caption 1 (25/32, values and status) and Caption 2 (23/30, the
   smallest text anywhere).
-- **Focus** is static on app and wallpaper cards and everywhere in Settings: it changes in the
+- **Focus** is static on app and wallpaper cards, everywhere in Settings and in every overlay
+  (the context menu, alerts, the keyboard, Recents): it changes in the
   first frame after the key, with no lift, scale, spring, tilt or fade on the item itself. The
   focused card is a few percent brighter (a 7% white overlay) with a light 2.5 px rim, and its
   title appears beneath it; every card keeps the same small resting shadow. In Settings the
   focused sidebar entry, row, choice, button or key turns opaque white with dark labels and its
-  shadow at once, at its own rectangle (`Scene::lift` is 0 there), and holding OK keeps that look
-  (the release changes a toggle's value in the same frame). A focused list row is drawn above its
+  shadow at once, at its own rectangle (`Scene::lift` is 0 there and in overlays), and holding OK
+  keeps that look (the release acts in the same frame). A focused list row is drawn above its
   neighbours so its shadow falls over them. Selected items (the sidebar section, the background)
   stay highlighted. Hit regions never move.
-- **Motion** elsewhere (Home's top-bar icons, input glyphs, popups and their buttons): a gained
+- **Overlays** (the context menu, delete and other alerts, the keyboard, Recents) open and close
+  at once, complete in their first frame: no fade or scale. Opening or closing one is drawn like a
+  page switch (in full, with all its glyphs). While OK is held on an item, the menu a long press
+  opens is prepared off screen (`State::with_hold_preview`), so its labels are rasterised on the
+  glyph worker before the 600 ms hold fires and the menu is drawn in that very frame. Only the
+  passive notice pill keeps its short fade.
+- **Motion** elsewhere (Home's top-bar icons and input glyphs): a gained
   focus lifts on a light spring (damping 0.76 at 34 rad/s: about 2.3% overshoot, at rest after
   about 200 ms; rows 2.5%, buttons 6%); pressed items return to their resting size. Small
   controls (the top-bar icons and input glyphs) respond in the frame focus moves: the gaining one
@@ -804,8 +811,7 @@ per-frame `timeline` of interval, compose, render and swap time and redrawn shar
 Full-screen translucent fills drawn straight over the wallpaper (the Recents backdrop and
 gradient) each map a pixel p to p * (1 - a) + c * a, so together they are p * m + k. The renderer
 draws the wallpaper once with m and k per vertex (16 strips keep gradients' colour-alpha products
-exact) instead of one full-screen pass per fill. During the Recents crossfade these fills sit
-beneath the outgoing interface rather than over it, so they fold in while both fade.
+exact) instead of one full-screen pass per fill.
 
 ### Idle preparation
 

@@ -207,9 +207,8 @@ impl Recents {
                 *current += (target - *current) * (1. - (-speed * dt).exp());
             }
         };
-        // Opacity always settles, even after pointer input interrupts carousel
-        // movement. Retargeting starts from the current presentation value.
-        approach(&mut self.visibility, visibility, 24.);
+        // Recents appears and disappears at once, fully composed in its first frame (no fade).
+        self.visibility = visibility;
         if !pointer {
             approach(&mut self.position, self.selected as f32, 18.);
         }
@@ -287,7 +286,6 @@ impl State {
         self.pointer = false;
         self.pressed = None;
         self.notice = None;
-        self.panel_started = None;
         self.recent_request(Command::List)
     }
 

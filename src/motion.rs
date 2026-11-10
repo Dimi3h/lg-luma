@@ -26,9 +26,10 @@ const SMALL_FREQUENCY: f32 = 55.;
 const SMALL_RATE: f32 = 40.;
 
 /// Focus changes instantly, with no lift, spring or fade, on app and wallpaper cards (only a
-/// highlight) and on everything in Settings: its sidebar, rows, choices, buttons and keys.
-pub fn instant(target: &Target, page: Page) -> bool {
-    page == Page::Settings || matches!(target, Target::App(_) | Target::Background(_))
+/// highlight), on everything in Settings (its sidebar, rows, choices, buttons and keys) and in
+/// every overlay (context menus, alerts, the keyboard, Recents).
+pub fn instant(target: &Target, page: Page, overlay: bool) -> bool {
+    overlay || page == Page::Settings || matches!(target, Target::App(_) | Target::Background(_))
 }
 
 /// Controls small enough that the cards' 200 ms lift feels sluggish on them.
@@ -74,6 +75,8 @@ pub struct Inputs<'a> {
     pub reduced: bool,
     /// Wheel scrolling and pointer hover keep display and hit regions identical.
     pub pointer: bool,
+    /// An overlay (menu, alert, keyboard, Recents) is open: its focus is instant too.
+    pub overlay: bool,
 }
 
 /// Advances an underdamped spring towards 1 in small steps; snaps once it has settled.
@@ -129,7 +132,7 @@ impl Motion {
         // Small controls change visibly in the very frame focus moves, before the next tick;
         // app cards change completely.
         for (target, level, velocity) in &mut self.levels {
-            if instant(target, input.page) {
+            if instant(target, input.page, input.overlay) {
                 *level = if target == input.focus { 1. } else { 0. };
                 *velocity = 0.;
             } else if small(target) {
@@ -160,7 +163,7 @@ impl Motion {
         let mut changed = false;
         for (target, level, velocity) in &mut self.levels {
             let goal = if target == input.focus { 1. } else { 0. };
-            if input.reduced || instant(target, input.page) {
+            if input.reduced || instant(target, input.page, input.overlay) {
                 changed |= *level != goal;
                 *level = goal;
                 *velocity = 0.;
@@ -243,6 +246,7 @@ mod tests {
             scroll: 0.,
             reduced,
             pointer: false,
+            overlay: false,
         }
     }
 

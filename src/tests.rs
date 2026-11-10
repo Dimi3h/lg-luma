@@ -71,7 +71,6 @@ fn home_relaunch_dismisses_overlays_without_cancelling_mutations() {
         let mut state = ready();
         state.open(crate::state::Page::Settings);
         state.overlay = Some(overlay);
-        state.panel_started = Some(std::time::Instant::now());
         state.wallpaper_upload = Some(Err("test".into()));
         state.uninstalling = Some("test.app".into());
         state.deleting_wallpaper = Some("dunes".into());
@@ -80,7 +79,6 @@ fn home_relaunch_dismisses_overlays_without_cancelling_mutations() {
         assert!(state.return_home().is_empty());
         assert_eq!(state.page, Page::Home);
         assert!(state.overlay.is_none());
-        assert!(state.panel_started.is_none());
         assert!(state.wallpaper_upload.is_none());
         assert!(state.moving.is_none());
         assert_eq!(state.uninstalling.as_deref(), Some("test.app"));
@@ -1089,7 +1087,6 @@ fn system_version_is_inside_the_update_status_card_without_a_separate_row() {
     let mut state = ready();
     state.open(crate::state::Page::Settings);
     state.section = crate::state::SYSTEM_SECTION;
-    state.panel_started = None;
     let system = scene(&state);
     // One glass status card holds the update state and the installed version.
     assert!(system.draw.iter().any(|draw| matches!(
@@ -4364,4 +4361,76 @@ fn page_switches_are_instant_and_every_frame_is_fully_composed() {
     assert!(compare(&back.draw, &settled, icon), "no fade back to Home");
     assert!(back.draw.iter().any(|draw| matches!(draw,
         Draw::Shape(rect, 0., 0., color) if rect.w >= 1920. && color[3] == view::HOME_DIM)));
+}
+
+#[test]
+fn overlays_are_complete_in_their_first_frame_and_the_hold_preview_changes_nothing() {
+    use crate::renderer::Draw;
+    use std::time::Duration;
+    let same = |a: &[Draw], b: &[Draw]| {
+        a.len() == b.len() && a.iter().zip(b).all(|(a, b)| crate::damage::same(a, b))
+    };
+    let first_and_settled = |state: &mut State| {
+        state.sync_motion();
+        state.tick();
+        let first = scene(state).draw;
+        state.advance_motion(Duration::from_millis(800));
+        (first, scene(state).draw)
+    };
+    let mut state = ready();
+    state.open(Page::Home);
+    state.sync_motion();
+    let favorites = state.preferences.favorites(&state.inventory.apps);
+    let plain = state
+        .grid()
+        .into_iter()
+        .find(|target| matches!(target, Target::App(id) if !favorites.contains(id)))
+        .unwrap();
+    // While OK is held, the menu a long press opens can be built (its labels rasterised)
+    // without changing anything; a favourite's long press opens move mode, not a menu.
+    state.focus = plain.clone();
+    state.dirty = false;
+    let menu = state
+        .with_hold_preview(scene)
+        .expect("an app's long press opens its menu");
+    assert!(menu.modal.is_some());
+    assert!(state.overlay.is_none() && state.focus == plain && !state.dirty);
+    let favorite = Target::App(favorites[0].clone());
+    state.focus = favorite;
+    assert!(state.with_hold_preview(scene).is_none());
+    // The long press opens the menu complete in its first frame: no fade, no lift easing.
+    state.focus = plain.clone();
+    state.hold();
+    assert!(matches!(state.overlay, Some(Overlay::Options { .. })));
+    let (first, settled) = first_and_settled(&mut state);
+    assert!(same(&first, &settled), "the menu fades or moves in");
+    // Everything the shown frame writes was prepared, in the same styles (glyph keys depend on
+    // text, size and weight only, not on the focus colours).
+    let texts = |draws: &[Draw]| -> Vec<(String, u32, u16)> {
+        draws
+            .iter()
+            .filter_map(|draw| match draw {
+                Draw::Text(text, _, style, ..) => {
+                    Some((text.clone(), style.size.to_bits(), style.weight))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    let prepared = texts(&menu.draw);
+    for text in texts(&first) {
+        assert!(prepared.contains(&text), "{text:?} was not prepared");
+    }
+    // Its delete alert, and closing both, are instant too.
+    state.focus = Target::Option(2);
+    state.activate();
+    assert!(matches!(state.overlay, Some(Overlay::Delete { .. })));
+    let (first, settled) = first_and_settled(&mut state);
+    assert!(same(&first, &settled), "the alert fades or moves in");
+    state.back();
+    state.back();
+    assert!(state.overlay.is_none());
+    let (first, settled) = first_and_settled(&mut state);
+    assert!(same(&first, &settled), "closing fades");
+    assert!(!state.animating());
 }

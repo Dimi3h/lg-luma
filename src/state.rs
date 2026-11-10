@@ -255,7 +255,6 @@ pub struct State {
     pub tile_editor: Option<Result<crate::companion::Session, String>>,
     /// Luma update (Settings → System), driven by the update worker.
     pub update: crate::update::InstallStatus,
-    pub panel_started: Option<Instant>,
     pub weather: weather::Weather,
     pub keyboard_field: TextField,
     pub greeting_name_draft: String,
@@ -307,7 +306,6 @@ impl State {
             wallpaper_upload: None,
             tile_editor: None,
             update: crate::update::InstallStatus::default(),
-            panel_started: None,
             weather: weather::Weather::default(),
             keyboard_field: TextField::Location,
             greeting_name_draft: String::new(),
@@ -425,6 +423,7 @@ impl State {
             scroll: self.scroll,
             reduced: self.preferences.reduced_motion,
             pointer: self.pointer,
+            overlay: self.overlay.is_some() || self.recents_open(),
         }
     }
 
@@ -455,10 +454,12 @@ impl State {
     }
 
     /// The focus level to draw `target` with. Held OK returns a control to its resting look
-    /// (tvOS click feedback), except in Settings, where focus is static: the row keeps its
-    /// focused look and the release changes its value in the same frame.
+    /// (tvOS click feedback), except in Settings and overlays, where focus is static: the
+    /// control keeps its focused look and the release acts in the same frame.
     pub fn display_level(&self, target: &Target) -> f32 {
-        if self.pressed.as_ref() == Some(target) && self.page != Page::Settings {
+        let static_focus =
+            self.page == Page::Settings || self.overlay.is_some() || self.recents_open();
+        if self.pressed.as_ref() == Some(target) && !static_focus {
             0.
         } else {
             self.focus_level(target)
@@ -566,14 +567,6 @@ impl State {
                 Instant::now(),
             );
         }
-        if let Some(start) = self.panel_started {
-            self.dirty = true;
-            let duration = if self.overlay.is_some() { 120 } else { 150 };
-            if self.preferences.reduced_motion || start.elapsed() >= Duration::from_millis(duration)
-            {
-                self.panel_started = None;
-            }
-        }
         if self
             .notice
             .as_ref()
@@ -605,7 +598,6 @@ impl State {
             && (self.recents.visibility != if self.recents_open() { 1. } else { 0. }
                 || self.recents.cards_animating(self.pointer)))
             || self.previous_background.is_some()
-            || self.panel_started.is_some()
             || self.motion.animating()
             || (self.moving.is_some() && !self.preferences.reduced_motion)
             || (!self.preferences.reduced_motion
@@ -636,7 +628,6 @@ impl State {
         self.overlay = None;
         self.moving = None;
         self.subpage = None;
-        self.panel_started = None;
         if page == Page::Settings {
             self.section = 0;
         }
@@ -1101,7 +1092,6 @@ impl State {
         if matches!(&self.overlay, Some(Overlay::BackgroundOptions { id: current, .. } | Overlay::BackgroundDelete { id: current, .. }) if current == id)
         {
             self.overlay = None;
-            self.panel_started = None;
             self.focus = Target::Background(index.min(self.background_count().saturating_sub(1)));
             self.pointer = false;
         } else if let Some(focused) = focused {
@@ -1132,7 +1122,6 @@ impl State {
             };
             self.focus = Target::Background(index.min(self.background_count().saturating_sub(1)));
             self.overlay = None;
-            self.panel_started = None;
             self.pressed = None;
             self.pointer = false;
         }
@@ -1165,7 +1154,6 @@ impl State {
         if self.subpage == Some(Subpage::WeatherLocation) {
             self.weather.cancel_search();
         }
-        self.panel_started = None;
         self.pointer = false;
         self.focus = match self.subpage.take() {
             Some(Subpage::Greeting) => Target::Widget(0),
@@ -1767,6 +1755,32 @@ impl State {
         self.activate();
     }
 
+    /// Builds `build` from the options overlay a long press on the focused item would open,
+    /// then leaves everything as it was: the menu's labels can be rasterised while OK is still
+    /// held, so the menu is complete in the frame the hold fires. `None` when a long press opens
+    /// no menu here (move mode for favourites, input settings, or an overlay already open).
+    pub fn with_hold_preview<T>(&mut self, build: impl FnOnce(&State) -> T) -> Option<T> {
+        if self.overlay.is_some() || self.moving.is_some() {
+            return None;
+        }
+        if let Target::App(id) = &self.focus
+            && self.page == Page::Home
+            && self
+                .preferences
+                .favorites(&self.inventory.apps)
+                .contains(id)
+        {
+            return None;
+        }
+        let (focus, dirty) = (self.focus.clone(), self.dirty);
+        self.options();
+        let result = self.overlay.is_some().then(|| build(self));
+        self.overlay = None;
+        self.focus = focus;
+        self.dirty = dirty;
+        result
+    }
+
     pub fn options(&mut self) {
         if self.overlay.is_some() || self.moving.is_some() {
             return;
@@ -1778,9 +1792,6 @@ impl State {
                     restore: self.focus.clone(),
                 });
                 self.focus = Target::UseBackground;
-                if !self.preferences.reduced_motion {
-                    self.panel_started = Some(Instant::now());
-                }
                 self.dirty = true;
             }
         } else if let Target::Tile(id) = &self.focus {
@@ -1792,7 +1803,6 @@ impl State {
                 restore: self.focus.clone(),
             });
             self.focus = Target::TileTest(id.clone());
-            self.panel_started = (!self.preferences.reduced_motion).then(Instant::now);
             self.dirty = true;
         } else if let Target::App(id) = &self.focus {
             self.overlay = Some(Overlay::Options {
@@ -1800,9 +1810,6 @@ impl State {
                 restore: self.focus.clone(),
             });
             self.focus = Target::OpenApp;
-            if !self.preferences.reduced_motion {
-                self.panel_started = Some(Instant::now());
-            }
             self.dirty = true;
         }
     }
@@ -1823,7 +1830,6 @@ impl State {
                 {
                     self.focus = restore;
                 }
-                self.panel_started = None;
                 self.pressed = None;
                 self.reconcile_focus();
             }
@@ -1841,7 +1847,6 @@ impl State {
         if matches!(&self.overlay, Some(Overlay::Delete { id: current, .. } | Overlay::Options { id: current, .. }) if current == &id)
         {
             self.overlay = None;
-            self.panel_started = None;
             self.focus = Target::App(id.clone());
         }
         if self.focus == Target::App(id) {
@@ -1944,7 +1949,6 @@ impl State {
     pub fn finish_text_input(&mut self) -> Vec<Effect> {
         if self.text_input_active() {
             self.overlay = None;
-            self.panel_started = None;
             self.focus = self.keyboard_return();
             self.pointer = false;
             self.dirty = true;
@@ -2016,7 +2020,6 @@ impl State {
                 })
             ) {
                 self.overlay = None;
-                self.panel_started = None;
             }
             self.focus = Target::TileEditor;
         }
@@ -2103,15 +2106,11 @@ impl State {
                 TextField::Name => Target::GreetingName,
                 TextField::InputName => Target::InputRename,
             };
-            self.panel_started = None;
             self.dirty = true;
             return;
         }
         self.overlay = Some(Overlay::Keyboard);
         self.focus = Target::Key(0);
-        if !self.preferences.reduced_motion {
-            self.panel_started = Some(Instant::now());
-        }
         self.dirty = true;
     }
     fn open_location(&mut self) {
@@ -2293,7 +2292,6 @@ impl State {
                             .format("tileRemoved", &[("tile", &tile.title)]),
                     );
                     self.subpage = Some(Subpage::Shortcuts);
-                    self.panel_started = None;
                     self.scroll = 0.;
                     self.sync_custom_tiles();
                     self.focus = Target::TileEditor;
@@ -2326,7 +2324,6 @@ impl State {
                     // A suggestion picked from the keyboard also closes it.
                     if matches!(self.overlay, Some(Overlay::Keyboard)) {
                         self.overlay = None;
-                        self.panel_started = None;
                     }
                     self.preferences.weather_location = Some(place);
                     self.weather.invalidate_forecast();
@@ -2454,7 +2451,6 @@ impl State {
                     self.focus = Target::CancelDelete;
                     self.pointer = false;
                     self.pressed = None;
-                    self.panel_started = None;
                 }
             }
             Target::InputMode(id) => {
@@ -2554,14 +2550,12 @@ impl State {
                         self.focus = Target::CancelDelete;
                         self.pointer = false;
                         self.pressed = None;
-                        self.panel_started = None;
                     }
                     return vec![];
                 }
                 let Some(Overlay::Options { id, restore }) = self.overlay.take() else {
                     return vec![];
                 };
-                self.panel_started = None;
                 let old_ids: Vec<_> = self.apps().iter().map(|a| a.id.clone()).collect();
                 let old_index = old_ids.iter().position(|item| item == &id).unwrap_or(0);
                 let mut favorites = self.preferences.favorites(&self.inventory.apps);
@@ -2658,7 +2652,6 @@ impl State {
                 },
                 "Done" => {
                     self.overlay = None;
-                    self.panel_started = None;
                     self.focus = self.keyboard_return();
                     return self.commit_text_input();
                 }
@@ -2676,7 +2669,6 @@ impl State {
             return vec![];
         }
         if let Some(overlay) = self.overlay.take() {
-            self.panel_started = None;
             if let Overlay::BackgroundDelete { id, restore } = overlay {
                 self.overlay = Some(Overlay::BackgroundOptions { id, restore });
                 self.focus = Target::DeleteBackground;
