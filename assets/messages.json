@@ -132,12 +132,12 @@
     "nl": "Tekstweergave"
   },
   "textRenderingMsaa": {
-    "en": "MSAA (default)",
-    "nl": "MSAA (standaard)"
+    "en": "MSAA",
+    "nl": "MSAA"
   },
   "textRenderingAnalytic": {
-    "en": "Analytic",
-    "nl": "Analytisch"
+    "en": "Analytic (default)",
+    "nl": "Analytisch (standaard)"
   },
   "textRenderingRestart": {
     "en": "Restart Luma to apply changes.",

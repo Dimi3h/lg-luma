@@ -4,8 +4,10 @@ use serde::{Deserialize, Deserializer, Serialize};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TextRendering {
-    #[default]
     Msaa,
+    /// The default: at a TV's density of 1, the one-pixel analytic ramp grades edges more finely
+    /// than 4x MSAA's four coverage levels (preferred on an LG B4 / Mali-G57).
+    #[default]
     Analytic,
 }
 
@@ -30,8 +32,9 @@ impl TextRendering {
 pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<TextRendering, D::Error> {
     Ok(
         match serde_json::Value::deserialize(deserializer)?.as_str() {
-            Some("analytic") => TextRendering::Analytic,
-            _ => TextRendering::Msaa,
+            // A saved choice stays; anything else gets the default.
+            Some("msaa") => TextRendering::Msaa,
+            _ => TextRendering::Analytic,
         },
     )
 }
@@ -73,7 +76,8 @@ mod tests {
 
     #[test]
     fn old_style_defaults_keep_no_emboldening_even_on_single_sample_fallbacks() {
-        let config = Configuration::new(TextRendering::default(), None, None);
+        assert_eq!(TextRendering::default(), TextRendering::Analytic);
+        let config = Configuration::new(TextRendering::Msaa, None, None);
         assert_eq!(config.sample_counts, &[4, 2, 0]);
         assert_eq!(config.embolden, 0.);
         let analytic = Configuration::new(TextRendering::Analytic, None, None);

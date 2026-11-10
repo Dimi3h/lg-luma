@@ -566,16 +566,18 @@ draws with a texture-free GLES2 shader. No SVG parser runs on the TV. The shared
 handles font outlines. Installed app PNG/JPEG/WebP artwork, wallpaper photos, tile-background
 images and the webOS installation icon remain raster assets. See [assets.md](assets.md) for licenses.
 
-TV and desktop windows default to 4× MSAA with 2×/single-sample fallbacks and no text
-emboldening, restoring the text treatment used in v2.8.0. **Settings → System → Text rendering**
-offers **MSAA (default)** and **Analytic**. The `text_rendering` preference (`msaa` or `analytic`)
-is saved immediately and applies when Luma next starts because SDL selects MSAA when it creates
-the window. Missing or invalid preferences use MSAA. The setting shows a restart reminder.
+Text defaults to the analytic path: a single-sample window with the one-pixel edge ramp
+described below. **Settings → System → Text rendering** offers **MSAA** and **Analytic
+(default)**. The `text_rendering` preference (`msaa` or `analytic`) is saved immediately and
+applies when Luma next starts because SDL selects MSAA when it creates the window. Missing or
+invalid preferences use Analytic; a saved `msaa` stays. MSAA requests 4× with 2×/single-sample
+fallbacks and no emboldening. The setting shows a restart reminder.
 
 Analytic mode uses a single-sample window and analytic text/logo edge filters. Text up to 16
 physical pixels is emboldened by 0.25 px per edge, fading out by 28 px. The choice is visual:
-analytic rendering was preferred on a contributor's webOS 5 TV, while MSAA was preferred in
-manual Mali-G52 TV comparisons. `LUMA_MSAA=4` or `0` overrides the saved mode and its default
+analytic rendering was preferred on a contributor's webOS 5 TV and, after its ramp was widened
+to one pixel, on an LG B4 (Mali-G57, which grants 4× MSAA: four coverage levels per pixel look
+coarser at density 1), while MSAA was preferred in earlier manual Mali-G52 TV comparisons. `LUMA_MSAA=4` or `0` overrides the saved mode and its default
 emboldening. `LUMA_EMBOLDEN` overrides the strength independently. Diagnostics report the
 startup `text_rendering` configuration, and `last_presented.multisample_samples` reports the
 actual window's samples. Offscreen captures can still be single-sample.

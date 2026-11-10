@@ -1150,7 +1150,7 @@ fn system_category_owns_refresh_and_quit_and_restores_sidebar_focus() {
 }
 
 #[test]
-fn text_rendering_preferences_default_to_msaa_and_recover_invalid_values() {
+fn text_rendering_preferences_default_to_analytic_and_recover_invalid_values() {
     use crate::text_rendering::TextRendering;
     for value in [
         json!({}),
@@ -1161,9 +1161,12 @@ fn text_rendering_preferences_default_to_msaa_and_recover_invalid_values() {
         let mut value = value;
         value["greeting_name"] = json!("Ana");
         let preferences: Preferences = serde_json::from_value(value).unwrap();
-        assert_eq!(preferences.text_rendering, TextRendering::Msaa);
+        assert_eq!(preferences.text_rendering, TextRendering::Analytic);
         assert_eq!(preferences.greeting_name, "Ana");
     }
+    // A saved MSAA choice stays.
+    let saved: Preferences = serde_json::from_value(json!({"text_rendering": "msaa"})).unwrap();
+    assert_eq!(saved.text_rendering, TextRendering::Msaa);
 }
 
 #[test]
@@ -1175,13 +1178,12 @@ fn text_rendering_choices_persist_and_back_restores_the_system_row() {
     state.focus = Target::Setting(7);
     state.direction(Direction::Right, &controls(&state));
     assert_eq!(state.subpage, Some(Subpage::TextRendering));
-    assert_eq!(state.focus, Target::Choice(0));
+    // Analytic, the default, is selected.
+    assert_eq!(state.focus, Target::Choice(1));
     assert!(scene(&state).draw.iter().any(|draw| matches!(
         draw,
         crate::renderer::Draw::Text(label, ..) if label == "Restart Luma to apply changes."
     )));
-    state.direction(Direction::Down, &controls(&state));
-    assert_eq!(state.focus, Target::Choice(1));
     assert_eq!(state.activate(), vec![Effect::Save]);
     assert_eq!(state.preferences.text_rendering, TextRendering::Analytic);
     assert_eq!(state.focus, Target::Setting(7));
