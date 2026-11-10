@@ -1109,15 +1109,7 @@ fn screensaver_choices(out: &mut Scene, state: &State, assets: &Assets, labels: 
 
 /// An app card: at rest it sits flat with a small shadow; focus brightens it in place with a
 /// light rim and shows its title beneath it. The hit region is the card.
-fn tile(
-    out: &mut Scene,
-    state: &State,
-    assets: &Assets,
-    app: &App,
-    rect: Rect,
-    names: bool,
-    pinned: bool,
-) {
+fn tile(out: &mut Scene, state: &State, assets: &Assets, app: &App, rect: Rect, names: bool) {
     let target = Target::App(app.id.clone());
     out.control(target.clone(), rect, true);
     let viewport = state.content_viewport();
@@ -1140,20 +1132,16 @@ fn tile(
     } else {
         state.focus_level(&target)
     };
-    // While a favourite is being moved, every favourite jiggles (tvOS): its face and logo
-    // move by slightly different offsets, approximating a small rotation. Nothing else moves:
-    // focus changes instantly and the focused card only brightens. Hit regions stay put.
-    let jiggle = if pinned {
-        jiggle(state, &app.id)
-    } else {
-        [0., 0.]
-    };
+    // While an app is being moved, every card jiggles (tvOS): its face and logo move by
+    // slightly different offsets, approximating a small rotation. Nothing else moves: focus
+    // changes instantly and the focused card only brightens. Hit regions stay put.
+    let jiggle = jiggle(state, &app.id);
     let drawn = offset(rect, jiggle, JIGGLE_FACE);
     let radius = CARD_RADIUS;
     if !unavailable {
         out.resting_shadow(drawn, radius);
     }
-    let favorite_color = app_face_layered(
+    app_face_layered(
         out,
         assets,
         app,
@@ -1163,9 +1151,6 @@ fn tile(
         [jiggle[0] * JIGGLE_LAYER, jiggle[1] * JIGGLE_LAYER],
     );
     card_glass(out, drawn, radius, level);
-    if pinned && state.preferences.favorite_badges {
-        favorite_badge(out, assets, drawn, favorite_color);
-    }
     if state.moving.as_ref() == Some(&app.id) {
         let indicator = Rect::new(
             drawn.x + drawn.w / 2. - 44.,
@@ -1199,8 +1184,16 @@ fn tile(
         let area = caption_area(assets, &title, style, rect, 36.);
         out.text(title, area, style, c(0xffffff, level.min(1.)), true);
     }
-    if state.moving.is_some() && state.moving.as_ref() != Some(&app.id) {
+    // The slot a dragged card would drop into is outlined and stays bright.
+    let drop_target = state
+        .drag
+        .as_ref()
+        .is_some_and(|drag| drag.active && drag.target.as_deref() == Some(app.id.as_str()));
+    if state.moving.is_some() && state.moving.as_ref() != Some(&app.id) && !drop_target {
         out.fade(start, 0.48, 1.);
+    }
+    if drop_target {
+        out.border(rect, CARD_RADIUS, 4., c(0xffffff, 0.95));
     }
 }
 
@@ -1252,17 +1245,6 @@ fn caption_title(state: &State, app: &App) -> String {
     }
 }
 
-fn favorite_badge(out: &mut Scene, assets: &Assets, card: Rect, color: Color) {
-    let size = 20. * card.h / CARD_HEIGHT;
-    let icon = Rect::new(
-        card.x + card.w - size - 12. * card.h / CARD_HEIGHT,
-        card.y + 12. * card.h / CARD_HEIGHT,
-        size,
-        size,
-    );
-    out.icon(assets, "heart-filled", icon, color);
-}
-
 /// Shared card artwork for Home, Apps and Recents. Curated vectors always take
 /// precedence over installed artwork, with the same relative logo proportions.
 fn app_face(
@@ -1272,12 +1254,12 @@ fn app_face(
     rect: Rect,
     language: Language,
     radius: f32,
-) -> Color {
-    app_face_layered(out, assets, app, rect, language, radius, [0., 0.])
+) {
+    app_face_layered(out, assets, app, rect, language, radius, [0., 0.]);
 }
 
 /// `app_face` with its logo layer moved by `parallax` relative to the background: a jiggling
-/// favourite's layers separate slightly, approximating a small rotation.
+/// card's layers separate slightly, approximating a small rotation.
 fn app_face_layered(
     out: &mut Scene,
     assets: &Assets,
@@ -1286,7 +1268,7 @@ fn app_face_layered(
     language: Language,
     radius: f32,
     parallax: [f32; 2],
-) -> Color {
+) {
     let logo = crate::branding::for_key(&app.brand);
     let artwork = logo
         .is_none()
@@ -1296,16 +1278,6 @@ fn app_face_layered(
                 .and_then(|source| assets.artwork.get(source))
         })
         .flatten();
-    // The heart's centre is 19.2px below the top, outside the inset installed icon.
-    // Bundled and generic surfaces are dark, so their badge remains white.
-    let favorite_color = if artwork
-        .as_ref()
-        .is_some_and(|image| image.dark_badge(19.2 / rect.h))
-    {
-        c(0x000000, 1.)
-    } else {
-        c(0xffffff, 1.)
-    };
     let installed = artwork.is_some();
     if let Some(image) = artwork {
         out.draw.push(Draw::AppImage(image, rect, radius, [1.; 4]));
@@ -1336,7 +1308,6 @@ fn app_face_layered(
         brand_mark(out, assets, app, rect, language);
     }
     out.shift(layer, parallax[0], parallax[1]);
-    favorite_color
 }
 
 // How far a jiggling favourite's layers move per unit of jiggle: the face, and its logo on
@@ -1601,7 +1572,6 @@ fn home(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
     }
     let grid_y = grid_top(state) - s;
     let apps = state.apps();
-    let favorites = state.preferences.favorites(&state.inventory.apps);
     let names = state.preferences.show_app_names;
     let loading = state.loading && state.inventory.apps.is_empty();
     let error = state.inventory_failed_empty();
@@ -1610,16 +1580,41 @@ fn home(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
             out.shape(card_rect(index, grid_y), CARD_RADIUS, c(0xffffff, 0.06));
         }
     }
+    // A card dragged with the pointer is drawn last, over the others, where the pointer holds
+    // it; its slot (and hit region) stays put until the drop.
+    let dragged = state
+        .drag
+        .as_ref()
+        .filter(|drag| drag.active)
+        .map(|drag| drag.id.as_str());
+    let mut lifted = None;
     for (index, app) in apps.iter().enumerate() {
-        tile(
+        let rect = card_rect(index, grid_y);
+        if dragged == Some(app.id.as_str()) {
+            out.border(rect, CARD_RADIUS, 2., c(0xffffff, 0.35));
+            lifted = Some((*app, rect));
+            continue;
+        }
+        tile(out, state, assets, app, rect, names);
+    }
+    if let (Some((app, slot)), Some(drag)) = (lifted, &state.drag) {
+        out.control(Target::App(app.id.clone()), slot, true);
+        let held = Rect::new(
+            drag.at.0 - drag.grab.0,
+            drag.at.1 - drag.grab.1,
+            slot.w,
+            slot.h,
+        );
+        out.shadow(held, CARD_RADIUS, 40., 16., 0.45);
+        app_face(
             out,
-            state,
             assets,
             app,
-            card_rect(index, grid_y),
-            names,
-            favorites.contains(&app.id),
+            held,
+            state.preferences.language,
+            CARD_RADIUS,
         );
+        card_glass(out, held, CARD_RADIUS, 1.);
     }
     // Without apps after a failed inventory, explain beneath the grid's cards.
     if error && !loading {
@@ -2883,17 +2878,6 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                     }),
                     false,
                 ),
-                (
-                    10,
-                    "favoriteBadges",
-                    "heart",
-                    Some(if state.preferences.favorite_badges {
-                        language.t("stateOn")
-                    } else {
-                        language.t("stateOff")
-                    }),
-                    false,
-                ),
                 (11, "hiddenApps", "eye-off", Some(hidden.as_str()), true),
                 (
                     15,
@@ -3721,11 +3705,6 @@ fn options(out: &mut Scene, state: &State, assets: &Assets, id: &str, anchor: Op
     );
     let background = matches!(state.overlay, Some(Overlay::BackgroundOptions { .. }));
     let app = state.inventory.apps.iter().find(|app| app.id == id);
-    let favorite = state
-        .preferences
-        .favorites(&state.inventory.apps)
-        .iter()
-        .any(|item| item == id);
     let deletable = if background {
         state.can_delete_background(id) && state.deleting_wallpaper.is_none()
     } else {
@@ -3755,15 +3734,9 @@ fn options(out: &mut Scene, state: &State, assets: &Assets, id: &str, anchor: Op
         actions
     } else {
         vec![
+            // Move first: a long press then OK starts moving the app.
+            (Target::Option(0), language.t("moveApp")),
             (Target::OpenApp, language.t("open")),
-            (
-                Target::Option(0),
-                if favorite {
-                    language.t("removeFavorite")
-                } else {
-                    language.t("addFavorite")
-                },
-            ),
             (
                 Target::Option(1),
                 language.t(if hidden { "showApp" } else { "hideApp" }),
@@ -3803,11 +3776,8 @@ fn options(out: &mut Scene, state: &State, assets: &Assets, id: &str, anchor: Op
         card_glass(out, lifted, radius, 1.);
     } else if let Some(app) = app.filter(|_| !shortcut) {
         out.resting_shadow(lifted, radius);
-        let favorite_color = app_face(out, assets, app, lifted, language, radius);
+        app_face(out, assets, app, lifted, language, radius);
         card_glass(out, lifted, radius, 1.);
-        if favorite && state.preferences.favorite_badges {
-            favorite_badge(out, assets, lifted, favorite_color);
-        }
     }
     out.modal = Some(panel);
     out.shadow(panel, PANEL_RADIUS, 90., 26., 0.42);
@@ -3857,13 +3827,7 @@ fn options(out: &mut Scene, state: &State, assets: &Assets, id: &str, anchor: Op
                 Target::OpenApp | Target::TileTest(_) => "arrow",
                 Target::UseBackground => "check",
                 Target::NightBackground => "weather-moon",
-                Target::Option(0) => {
-                    if favorite {
-                        "heart-filled"
-                    } else {
-                        "heart"
-                    }
-                }
+                Target::Option(0) => "grid",
                 Target::Option(1) => {
                     if hidden {
                         "eye"

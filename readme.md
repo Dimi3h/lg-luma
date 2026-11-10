@@ -1,8 +1,8 @@
 # Luma
 
 A native launcher for rooted LG webOS TVs, styled after Apple tvOS: one screen with the clock,
-date, greeting and weather above a grid of every app, small icons for the app store, Control
-Center and Settings, 5:3 cards that brighten on focus with their title beneath, and Liquid
+date, greeting and weather above a grid of every app in your own order, small icons for the app
+store and Settings, 5:3 cards that brighten on focus with their title beneath, and Liquid
 Glass-style panels.
 
 https://github.com/user-attachments/assets/2156d640-b8fa-4ea4-a02c-0db4c93bcc5a
@@ -267,6 +267,15 @@ LG splash unchanged.
 Toggle **Gradient** beside **Rotation** to turn background shading on or off. It defaults to On
 and remembers your choice. Older uploads without an unshaded copy keep their full-resolution
 shaded image. This does not change LG's launch splash.
+
+### Arranging apps
+
+Every app sits in one grid, in your own order. To move one, hold **OK** on it (or press the menu
+key) and choose **Move**: the arrows then move it one slot at a time (Up/Down by a whole row), and
+**OK** or **Back** keeps the new order. With the Magic Remote, hold the pointer button on an app
+until it is picked up, drag it to another app's place and let go; letting go without moving opens
+its options. The same menu hides apps (Settings › General › Hidden apps shows them again) and
+deletes apps that can be removed. Your order is saved; apps installed later appear at the end.
 
 ### Recent app switching
 

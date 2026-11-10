@@ -994,6 +994,8 @@ fn run() -> Result<(), String> {
     let mut foreground = platform::ForegroundCheck::default();
     let mut focused = true;
     let mut press: Option<Press> = None;
+    // The pointer's last logical position, for picking up a card by holding it.
+    let mut pointer_at: Option<(f32, f32)> = None;
     let mut back_button = BackButton::default();
     let mut last_minute = None;
     let mut frame = 0u64;
@@ -1159,7 +1161,20 @@ fn run() -> Result<(), String> {
                         options.test_extra_apps,
                         state.preferences.language,
                     );
-                    state.set_inventory(inventory, warning);
+                    // The first inventory stores the migrated app order once; later ones append
+                    // newly installed apps. Either is saved at once.
+                    if state.set_inventory(inventory, warning) {
+                        running &= effects(
+                            vec![Effect::Save],
+                            &mut state,
+                            &platform,
+                            &preferences_path,
+                            &weather_service,
+                            &wallpaper_service,
+                            &webhook_service,
+                            &updates,
+                        );
+                    }
                     // Decode every installed icon now, on the artwork worker, rather than when
                     // the Apps page first shows it: a long-running Home then opens Apps ready.
                     assets.artwork.prefetch(
@@ -1538,10 +1553,18 @@ fn run() -> Result<(), String> {
                         pending = state.activate();
                     }
                 }
+                // A dragged card follows the pointer; the card under it is the drop target.
+                Event::MouseMotion { x, y, .. } if state.drag.is_some() => {
+                    pointer_at = pointer_position(&window, x, y);
+                    if let Some(at) = pointer_at {
+                        state.drag_move(at, &scene.controls);
+                    }
+                }
                 Event::MouseMotion { x, y, .. }
                     if state.moving.is_none()
                         && !matches!(state.overlay, Some(Overlay::SystemKeyboard)) =>
                 {
+                    pointer_at = pointer_position(&window, x, y);
                     let hovered = hit(&scene.controls, &window, x, y, &state);
                     if let Some(target) = hovered.clone() {
                         state.pointer_focus(target);
@@ -1557,7 +1580,22 @@ fn run() -> Result<(), String> {
                     mouse_btn, x, y, ..
                 } => {
                     back_button.cancel();
-                    if let Some(target) = hit(&scene.controls, &window, x, y, &state)
+                    pointer_at = pointer_position(&window, x, y);
+                    // In move mode, pressing on the moving card picks it up to drag.
+                    if mouse_btn == MouseButton::Left
+                        && let Some(id) = state.moving.clone()
+                        && let Some(at) = pointer_at
+                        && let Some(card) = scene
+                            .controls
+                            .iter()
+                            .find(|c| {
+                                c.target == Target::App(id.clone()) && c.rect.contains(at.0, at.1)
+                            })
+                            .map(|c| c.rect)
+                    {
+                        press = None;
+                        state.drag_start(&id, at, card, false);
+                    } else if let Some(target) = hit(&scene.controls, &window, x, y, &state)
                         && state.moving.is_none()
                     {
                         if matches!(state.overlay, Some(Overlay::SystemKeyboard)) {
@@ -1579,6 +1617,15 @@ fn run() -> Result<(), String> {
                     } else if mouse_btn == MouseButton::Left {
                         press = None;
                     }
+                }
+                // Dropping a dragged card reorders the grid (or, for a still hold, opens its
+                // options).
+                Event::MouseButtonUp {
+                    mouse_btn: MouseButton::Left,
+                    ..
+                } if state.drag.is_some() => {
+                    press = None;
+                    pending = state.drag_end();
                 }
                 Event::MouseButtonUp {
                     mouse_btn: MouseButton::Left,
@@ -1721,7 +1768,25 @@ fn run() -> Result<(), String> {
         {
             held.held = true;
             state.pressed = None;
-            state.hold();
+            // Holding the pointer button on an app card picks it up: moving then drags it,
+            // releasing without moving opens its options as a long press does.
+            let card = match (&held.target, held.pointer, pointer_at) {
+                (Target::App(id), true, Some(at))
+                    if state.page == state::Page::Home && state.overlay.is_none() =>
+                {
+                    scene
+                        .controls
+                        .iter()
+                        .find(|c| c.target == held.target)
+                        .map(|c| (id.clone(), at, c.rect))
+                }
+                _ => None,
+            };
+            if let Some((id, at, rect)) = card {
+                state.drag_start(&id, at, rect, true);
+            } else {
+                state.hold();
+            }
         }
         if !state.loading
             && frame.is_multiple_of(3)

@@ -391,10 +391,6 @@
     "en": "Location search is unavailable. Check your connection and try again.",
     "nl": "Locaties zoeken is niet beschikbaar. Controleer je verbinding en probeer het opnieuw."
   },
-  "favoriteBadges": {
-    "en": "Favorite badges",
-    "nl": "Hartje bij favorieten"
-  },
   "clearCategory": {
     "en": "Clear category filter",
     "nl": "Categoriefilter wissen"
@@ -487,6 +483,10 @@
     "en": "Try again",
     "nl": "Opnieuw proberen"
   },
+  "moveApp": {
+    "en": "Move",
+    "nl": "Verplaatsen"
+  },
   "open": {
     "en": "Open",
     "nl": "Openen"
@@ -555,14 +555,6 @@
     "en": "External input",
     "nl": "Externe ingang"
   },
-  "addFavorite": {
-    "en": "Add favorite",
-    "nl": "Toevoegen aan favorieten"
-  },
-  "removeFavorite": {
-    "en": "Remove favorite",
-    "nl": "Verwijderen uit favorieten"
-  },
   "hideApp": {
     "en": "Hide app",
     "nl": "App verbergen"
@@ -622,10 +614,6 @@
   "desktopPreview": {
     "en": "Desktop preview · {app} will open on your TV.",
     "nl": "Desktopvoorbeeld · {app} wordt geopend op je tv."
-  },
-  "favoriteRemoved": {
-    "en": "{app} removed from favorites.",
-    "nl": "{app} verwijderd uit favorieten."
   },
   "favoriteAdded": {
     "en": "{app} added to favorites.",

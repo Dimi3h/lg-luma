@@ -96,8 +96,10 @@ It does not execute the test suites. A desktop display is required; on headless 
 | ----------------------------- | ------------------------------------------------------------- |
 | Arrows                        | Move focus, revealing remote-focused content                  |
 | OK / Enter                    | Activate on release                                           |
-| Hold OK for 600 ms            | Reorder Home favorite or open app options                     |
-| OK or Back in move mode       | Finish reordering without launching                           |
+| Hold OK for 600 ms            | App options (**Move** first), or input settings on a glyph    |
+| Arrows in move mode           | Move the app one slot (Up/Down a whole row)                   |
+| OK or Back in move mode       | Keep the new order without launching                          |
+| Hold the pointer on an app    | Pick it up: move to drag, release to drop (still: options)    |
 | Escape / Back / Backspace     | Parent navigation, overlay dismissal or Recent apps from Home |
 | Hold Back / Escape for 600 ms | Open Recent apps while Luma is focused                        |
 | Menu / M / right-click        | App or background options side popup                          |
@@ -111,9 +113,19 @@ returns to the main screen with the Settings icon focused. **System** in the sid
 **Refresh apps & inputs** and the vector power-icon **Quit app** action separately from General
 preferences.
 OK (or a pointer click) on a grid card launches the app, as on tvOS; inputs and Recent apps launch
-directly too. Hold OK on a pinned favourite to reorder it; hold OK on any other app, or press Menu,
-to open its side popup, with **Open** first and focused by default, followed by favorite,
-hide/show and **Delete app** actions.
+directly too. Holding OK on any app, or pressing Menu, opens its side popup with **Move** first and
+focused, then **Open**, hide/show and **Delete app**. **Move** starts move mode for that app: the
+arrows move it one slot at a time (Left/Right through the order, wrapping across rows, Up/Down a
+whole row), the other cards shift, every card jiggles, and OK or Back keeps the new order (OK
+never launches there). Each step is saved.
+
+With the Magic Remote pointer, holding the button on a card for the long-press duration picks it
+up: moving the pointer then drags it (the card follows the pointer, drawn over the others, and the
+slot under the pointer is outlined), and releasing drops it into that slot, shifting the others
+and ending move mode. Releasing without moving opens the card's options, like a long press. In
+move mode from the menu, pressing on the moving card drags it the same way. Only the dragged
+card's drawing follows the pointer; every hit region stays at its slot until the drop
+(`State::drag_start`/`drag_move`/`drag_end`, a 16 px threshold).
 Background cards open the same side popup with **Use background** first and **Delete background**
 only for inactive backgrounds. Deletion requires confirmation with **Cancel** focused by default.
 Uploaded images are deleted on the wallpaper worker; bundled assets remain in the package, with
@@ -197,15 +209,16 @@ the grid starts at y 396 and up to 18 cards need no scrolling. The shelf takes t
 above the grid, starting 28 px below the clock line. Hiding the greeting or weather moves the
 weather up but leaves the grid at the bottom margin. The third row's focused caption reaches into
 that margin (it ends near y 1070), as tvOS captions do. There is no tab bar and no
-TV-settings button (the remote's own Settings button remains). The grid holds the
-pinned favourites in their saved order, then every other visible app by title. Two small
+TV-settings button (the remote's own Settings button remains). The grid holds every
+visible app in the user's own order (`app_order`). On the first run it is built once from the
+former favourites (first, in their saved order) and then every other app by title, and saved;
+newly installed apps and new shortcuts are appended; hidden apps keep their place for when they
+are shown again. The former `favorites` key is only read for that migration. Two small
 icons sit at the top right on the clock's line, left to right: **Apps** (LG's app store,
 `com.webos.app.discovery`, launched from the icon and left out of the grid and Hidden apps) and
 **Settings** (full screen). Without the store app only Settings shows.
 They are 44 px glass circles with a glyph; focus lifts one onto a white circle and names it
-beneath. Pinning an app moves it into the
-favourites block; unpinning moves it back. Reorder mode moves a favourite within that block; OK or
-Back finishes it without launching.
+beneath. There is no favourites block or pinning any more: every app is moved the same way.
 
 Up/Down follow the six-column grid indices, including offscreen rows, so the shelf cannot steal
 mid-grid navigation; Left/Right stay within a row. Up from the first row: the left-hand columns reach the shelf's weather button (when no location
@@ -410,9 +423,9 @@ Creation and editing are available only on this companion page, which uses a fla
 The TV lists saved shortcuts as selectable description rows matching HDMI settings. Pressing one
 opens a popup with **Test shortcut** and **Remove shortcut**; Back returns to the same row.
 The System version retains a separate muted, non-interactive surface. Removal clears the
-shortcut from preferences, favorites and hidden apps without attempting a platform uninstall.
+shortcut from preferences, the app order and hidden apps without attempting a platform uninstall.
 Each accepted companion change sends the complete list back to the launcher:
-new tiles join the end of the Home favorites, removed ones leave favorites and hidden apps, and
+new tiles join the end of the app order, removed ones leave the order and hidden apps, and
 preferences are saved. Accepted changes are revisioned and queued before replying to the page;
 reopening retains the worker's latest list until the launcher acknowledges every pending revision.
 Changes are applied even if the modal closed meanwhile, since the page was already told they were
@@ -527,7 +540,7 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   is applied in one place for measuring (`Assets::width`/`lines`, so fitting and ellipsis follow
   it) and drawing (`Scene::text`, whose box grows around its vertical centre). The main screen
   still fits three rows: the third row's focused caption ends near y 993, inside the safe area.
-- **Jiggle**: while a favourite is being moved, every favourite wobbles a little, each out of
+- **Jiggle**: while an app is being moved, every card wobbles a little, each out of
   phase at about 3 Hz. GLES2 has no rotation primitive, so the face moves up to
   about 2 px and its logo layer about 4 px more, which reads as a small rotation. Hit regions
   stay put; Reduced motion snaps it off, and frames redraw continuously only while move mode is
@@ -555,8 +568,6 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   pointer movement only ends it. Hidden or unfocused, the timer does not run, and returning to
   Luma restarts it. The former Screensaver clock toggle and the wallpaper slideshow are gone.
   Scripts can start it with the `screensaver` action.
-- **Favorite badges** (Settings › General, default Off): a heart on pinned favourites. tvOS has no
-  badges; the favourites block is first in the grid either way.
 - The focus highlight, glass and the second optical size are unverified on TV hardware.
 
 ## Vector rendering
@@ -1028,8 +1039,8 @@ pnpm dev --test-extra-apps 120
 On the TV, add `--test-extra-apps 120` after the JSON argument in the jailed command above.
 This explicitly appends up to 300 labeled non-launchable cards to a successful real inventory,
 using its apps as artwork/category templates. It uses `scroll-preview-preferences.json`,
-initialized from normal choices once. Favoriting test cards exercises a long favourites block without
-changing normal favorites. Ctrl+C then a normal launch restores real inventory/preferences.
+initialized from normal choices once. Moving test cards exercises a long grid without changing the
+normal order. Ctrl+C then a normal launch restores real inventory/preferences.
 The placeholder cards are never a fallback for an inventory failure.
 
 ## Storage, weather and languages
