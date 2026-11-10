@@ -28,7 +28,7 @@ pub const BACKGROUND_FADE: f32 = 0.4;
 pub const MAIN_TOP: f32 = 120.;
 pub const CYCLE_FADE: f32 = 1.6;
 /// Screensaver choices in minutes (0 is Off).
-pub const SCREENSAVER_MINUTES: [u32; 5] = [0, 5, 10, 15, 30];
+pub const SCREENSAVER_MINUTES: [u32; 6] = [0, 1, 5, 10, 15, 30];
 /// Crossfade of the top-shelf wash between apps, in seconds.
 pub const WASH_FADE: f32 = 0.35;
 
@@ -2605,7 +2605,7 @@ impl State {
                             SCREENSAVER_MINUTES
                                 .iter()
                                 .position(|m| *m == self.preferences.screensaver_minutes)
-                                .unwrap_or(2),
+                                .unwrap_or(3),
                         );
                         if !self.preferences.reduced_motion {
                             self.panel_started = Some(Instant::now());

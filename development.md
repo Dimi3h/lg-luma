@@ -538,7 +538,7 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   sunset at the weather location, which the forecast now requests (`daily=sunrise,sunset`,
   `forecast_days=1`, cached with the reading), and between 07:00 and 21:00 without a location or
   forecast. The scrim is one more full-screen layer while Light applies.
-- **Screensaver** (Settings › General › Screensaver: Off, 5, 10 (default), 15 or 30 minutes;
+- **Screensaver** (Settings › General › Screensaver: Off, 1, 5, 10 (default), 15 or 30 minutes;
   **Screensaver clock**, default On): after that long without a remote key, pointer movement or
   text input while Luma is visible and in front, the screen shows a slow Ken Burns (zoom from 4%
   to 12% and a gentle pan, 14 s per picture with a 2 s crossfade) over the bundled and uploaded

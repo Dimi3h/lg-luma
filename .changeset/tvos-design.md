@@ -18,7 +18,7 @@ Restyle the launcher after current Apple tvOS (tvOS 26/27, Liquid Glass) and tur
 - **Text size** (Settings › General): Default or Larger (about 1.15× body text; titles unchanged), with the three-row main screen still fitting.
 - **Jiggle**: while you move a favourite, all favourites wobble slightly, as tvOS icons do; none under Reduced motion.
 - **Appearance** (Settings › General): Dark (default, unchanged), Light (lighter wallpaper and glass, dark text) or Automatic, which switches at sunrise and sunset at the weather location (07:00–21:00 without one). Forecasts now include today's sunrise and sunset.
-- **Screensaver** (Settings › General, 10 minutes by default; Off, 5, 15 or 30 also): a slow Ken Burns over the bundled and uploaded wallpapers with an optional clock, only while Luma is in front; any key or pointer movement ends it. Still pictures under Reduced motion.
+- **Screensaver** (Settings › General, 10 minutes by default; Off, 1, 5, 15 or 30 also): a slow Ken Burns over the bundled and uploaded wallpapers with an optional clock, only while Luma is in front; any key or pointer movement ends it. Still pictures under Reduced motion.
 - **App artwork** (Settings › Widgets, on by default): the focused first-row app's background or splash image (else its icon) washes softly behind the top shelf, crossfading between apps; Reduced motion swaps instantly.
 - **Favorite badges** (Settings › General, off by default): the heart on pinned favourites is now optional.
 - **Typography and corners**: Inter Display (from the bundled Inter's optical-size axis) for large titles, lighter tracking, the date in sentence case, and continuous (superellipse) corners. Resting cards have no rim; it appears with the lift.

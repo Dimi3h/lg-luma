@@ -3681,8 +3681,23 @@ fn screensaver_defaults_to_ten_minutes_replaces_the_scene_and_any_input_ends_it(
     state.focus = Target::Setting(12);
     state.direction(Direction::Right, &controls(&state));
     assert_eq!(state.subpage, Some(Subpage::Screensaver));
-    assert_eq!(state.focus, Target::Choice(2));
+    // Off, 1, 5, 10 (selected), 15 and 30 minutes.
+    assert_eq!(state.focus, Target::Choice(3));
     state.direction(Direction::Up, &controls(&state));
+    state.direction(Direction::Up, &controls(&state));
+    assert_eq!(state.activate(), vec![Effect::Save]);
+    assert_eq!(state.preferences.screensaver_minutes, 1);
+    assert_eq!(
+        state.screensaver_after(),
+        Some(std::time::Duration::from_secs(60))
+    );
+    state.focus = Target::Setting(12);
+    state.activate();
+    assert_eq!(
+        state.focus,
+        Target::Choice(1),
+        "The saved minute is selected"
+    );
     state.direction(Direction::Up, &controls(&state));
     assert_eq!(state.activate(), vec![Effect::Save]);
     assert_eq!(state.preferences.screensaver_minutes, 0);
