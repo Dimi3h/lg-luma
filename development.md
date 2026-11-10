@@ -6,7 +6,7 @@
 Cargo.toml / Cargo.lock       Rust workspace and pinned dependencies
 src/                         Rust launcher, platform adapter and GLES2 shaders
 assets/                      Editable SVGs, fonts, wallpapers, translations and artwork metadata
-vector-geometry/             Shared fill tessellation and vector boundary coverage
+vector-geometry/             Shared fill tessellation, vector boundary coverage, glyph rasteriser
 tools/vector-assets/         Host-only SVG compiler
 tools/                       Asset preparation, SDK/runtime setup, packaging and release feed
 tests/                       Desktop rendering and mocked HTTP smoke scripts
@@ -37,25 +37,24 @@ woff2, Python/fontTools, CMake and Git. Linux includes Mesa and Xvfb. Supported 
 Apple Silicon macOS and ARM64/x86-64 Linux. Without Nix, supply those tools and Rust 1.88+,
 including `armv7-unknown-linux-gnueabi` for TV builds. No browser installation is needed.
 
-| Command                   | Purpose                                                    |
-| ------------------------- | ---------------------------------------------------------- |
-| `pnpm dev [--options]`    | Run the desktop preview                                    |
-| `pnpm assets [--4k]`      | Prepare fonts, vector artwork and raster backgrounds       |
-| `pnpm screenshots`        | Capture native Home, Apps, General and Inputs into `docs/` |
-| `pnpm assets:vector`      | Recompile bundled SVG icon/logo meshes                     |
-| `pnpm assets:fonts`       | Restore checksum-pinned Noto font source if needed         |
-| `pnpm sdk`                | Download/relocate a pinned host webOS SDK                  |
-| `pnpm runtime`            | Prepare checksum-pinned SDL-webOS                          |
-| `pnpm build`              | Release ARM cross-build using `WEBOS_NDK`                  |
-| `pnpm run package`        | Assets, cross-build, IPK verification and Homebrew feed    |
-| `pnpm deploy --device tv` | Build/install/launch through an ares device profile        |
-| `pnpm check`              | Oxlint and workspace Clippy, without executing tests       |
-| `pnpm format:check`       | Rust and tooling/document formatting checks                |
-| `pnpm test`               | Release-tooling and Rust workspace unit tests              |
-| `pnpm test:icons`         | Mocked runtime icon reads and bundled vector checks        |
-| `pnpm test:smoke`         | Desktop rendering, mocked weather and localization checks  |
-| `pnpm changeset`          | Add a release note and requested version bump to a PR      |
-| `pnpm version:check`      | Check synchronized app release versions                    |
+| Command                   | Purpose                                                                     |
+| ------------------------- | --------------------------------------------------------------------------- |
+| `pnpm dev [--options]`    | Run the desktop preview                                                     |
+| `pnpm assets [--4k]`      | Prepare fonts, vector artwork and raster backgrounds                        |
+| `pnpm screenshots`        | Capture the main screen, its scrolled grid, General and Inputs into `docs/` |
+| `pnpm assets:vector`      | Recompile bundled SVG icon/logo meshes                                      |
+| `pnpm sdk`                | Download/relocate a pinned host webOS SDK                                   |
+| `pnpm runtime`            | Prepare checksum-pinned SDL-webOS                                           |
+| `pnpm build`              | Release ARM cross-build using `WEBOS_NDK`                                   |
+| `pnpm run package`        | Assets, cross-build, IPK verification and Homebrew feed                     |
+| `pnpm deploy --device tv` | Build/install/launch through an ares device profile                         |
+| `pnpm check`              | Oxlint and workspace Clippy, without executing tests                        |
+| `pnpm format:check`       | Rust and tooling/document formatting checks                                 |
+| `pnpm test`               | Release-tooling and Rust workspace unit tests                               |
+| `pnpm test:icons`         | Mocked runtime icon reads and bundled vector checks                         |
+| `pnpm test:smoke`         | Desktop rendering, mocked weather and localization checks                   |
+| `pnpm changeset`          | Add a release note and requested version bump to a PR                       |
+| `pnpm version:check`      | Check synchronized app release versions                                     |
 
 The TV target is ARMv7 **soft-float calling convention**, `gnueabi`, not `gnueabihf`. Codegen
 uses the NDK's Cortex-A9/VFP baseline with NEON disabled for Rust code. Hardware floating point
@@ -72,10 +71,20 @@ backend. Avoid copying the whole SDK library directory or the TV's graphics driv
 
 ## Controls and navigation
 
+### Headless desktop runs
+
+`--headless` (or `LUMA_HEADLESS=1`) runs the desktop build without a visible window: on macOS SDL
+runs as a background app (no Dock icon, no activation), the window is created hidden, frames are
+drawn and counted but never presented (paced to 60 Hz, as a vsynced swap would be, so
+time-based animations finish within the same frame budget), and hide/focus-loss window events
+are ignored. Captures
+(`--screenshot`) and state dumps are unaffected, since they already render offscreen. The smoke
+scripts and `tools/screenshots.mjs` set it on macOS, so a local run never takes the foreground.
+
 ### Documentation screenshots
 
-`pnpm screenshots` generates `docs/home.png`, `docs/apps.png`, `docs/settings.png` and
-`docs/inputs.png`, linked by the README. It builds the desktop executable without the TV feature,
+`pnpm screenshots` generates `docs/home.png`, `docs/apps.png`, `docs/settings.png`,
+`docs/inputs.png` and `docs/screensaver.png`, linked by the README. It builds the desktop executable without the TV feature,
 uses isolated temporary preferences, sample inventory and a fixed date/time, and captures actual
 1920×1080 OpenGL framebuffers. Weather is unconfigured, so no real weather APIs are contacted.
 It does not execute the test suites. A desktop display is required; on headless Linux use
@@ -98,11 +107,13 @@ It does not execute the test suites. A desktop display is required; on headless 
 Backspace deletes while editing. Native Back uses SDL's webOS-specific keycode. Back dismisses
 the keyboard first; Weather Location then returns to its parent Location row, HDMI choices to
 that HDMI row, and the Background gallery to Background in the sidebar. Back from the sidebar
-focuses the Settings tab, then returns Home. **System** in the sidebar groups **Refresh apps & inputs**
-and the vector power-icon **Quit app** action separately from General preferences.
-On Apps, OK or a normal pointer click on an app opens its side popup, with **Open** first and focused by
-default, followed by favorite, hide/show and **Delete app** actions. A second OK launches the app.
-Home favorites, Inputs and Recent apps launch directly. Hold OK on Home still reorders favorites.
+returns to the main screen with the Settings icon focused. **System** in the sidebar groups
+**Refresh apps & inputs** and the vector power-icon **Quit app** action separately from General
+preferences.
+OK (or a pointer click) on a grid card launches the app, as on tvOS; inputs and Recent apps launch
+directly too. Hold OK on a pinned favourite to reorder it; hold OK on any other app, or press Menu,
+to open its side popup, with **Open** first and focused by default, followed by favorite,
+hide/show and **Delete app** actions.
 Background cards open the same side popup with **Use background** first and **Delete background**
 only for inactive backgrounds. Deletion requires confirmation with **Cancel** focused by default.
 Uploaded images are deleted on the wallpaper worker; bundled assets remain in the package, with
@@ -134,45 +145,92 @@ The **Clock** subpage contains **Clock format** (12-hour or 24-hour) and **Time 
 or `HH:MM:SS`, defaulting to `HH:MM`). Choosing a format returns to its row in Clock, and Back
 from Clock restores its General row. With seconds shown, the header clock redraws once per second
 instead of once per minute. Existing saved hour and seconds preferences are retained.
-General has an **App names** subpage with independent **Show on Home** and **Show on Apps** toggles.
-Home captions default to off and Apps captions default to on, stored independently in `show_home_names`
-and `show_app_names`. The legacy `show_names` preference does not override these defaults. Hidden
-captions do not reserve layout space.
+Until a format is chosen there (stored as `clock_24`), Dutch uses 24 hours and English 12; an
+earlier saved `hour_24: true` still counts as a choice. On the main screen the localized date
+follows the clock inside the line, so Dutch keeps its lowercase ("maandag 9 november"), and the
+screensaver shows it the same way.
+General has an **App names** row that toggles On/Off directly (stored in `show_app_names`, default
+On). As on tvOS, On shows the title beneath the focused grid card only, fading in with the focus
+lift; Off never shows titles. The former separate Home (`show_home_names`) preference is ignored
+now that there is one grid; the legacy `show_names` preference does not override the default.
+Captions never reserve layout space or extend a card's hit region.
 **Settings → Widgets** groups **Date**, **Greeting**, **Weather**, **Shortcuts**, and **Inputs** as separate subpages.
 Weather location and temperature choices return to Weather; Back from a widget returns to its row
 in Widgets. Input visibility/naming choices return to Inputs, then its Widgets row.
-Existing greeting, weather, shortcut and input preferences are unchanged. Scrollable Settings lists
-reserve 64 logical pixels below their last item for both remote focus and wheel scrolling,
-with a tighter 48-pixel spacing for Languages and Backgrounds.
+**Widgets → Inputs → Show widget** (`show_inputs`, default Off) adds the visible inputs as small
+glyphs (the device icon, a green dot when connected, dim when not) at the start of the top bar,
+left of the Apps and Settings icons. Focus names the input and its status
+beneath it, OK switches to it, and a long OK opens its existing settings (show mode and name). Off, inputs stay available on the TV remote and
+in the Inputs subpage, which keeps per-input visibility and names.
+Existing greeting, weather, shortcut and input preferences are unchanged. Every Settings list
+(pages, subpages and the Background gallery alike) fades out over 52 px above the bottom
+safe-area line (y 1020) instead of being cut at the screen edge, and remote focus and wheel
+scrolling keep the focused row, and the last row when scrolled to the end, above that fade. The
+bound lives in one place (`SETTINGS_SAFE_BOTTOM`/`SETTINGS_LIST_FADE`), so new rows need no work.
 **Widgets → Greeting → Show widget** is the first row and hides only the greeting text, preserving the saved name,
-date and weather. Weather moves directly below the date when the greeting is hidden, without
-moving favorites or inputs. It defaults to enabled for existing and new installations.
+date and weather. Weather moves up beneath the clock line when the greeting is hidden, and the
+grid follows it. It defaults to enabled for existing and new installations.
 **Widgets → Date** contains **Show widget** (enabled by default) and **Date format**. Choose the
 existing localized weekday/month/day display (default), `DD.MM.YYYY`, `MM/DD/YYYY`, or `YYYY-MM-DD`.
-Choosing a format returns to its Date row; Back from Date restores its Widgets row. Hiding the
-date removes its reserved space above the greeting/weather and preserves the chosen format.
-Lists render behind the fixed sidebar, navigation and background actions, without viewport clipping
-or edge fades. Pointer interaction and remote focus retain their safe content viewports.
+Choosing a format returns to its Date row; Back from Date restores its Widgets row. The date
+shares the clock's line, so hiding it moves nothing; the chosen format is preserved.
+Lists render behind the fixed sidebar, navigation and background actions without viewport
+clipping; they fade out just above their first row, beneath the content title line that shows the
+section and subpage path (tvOS-style breadcrumbs). Pointer interaction and remote focus retain their
+safe content viewports, which start below that title line.
 The **Greeting** subpage contains **Name** and **Clear name**. Selecting Name opens the text keyboard
 (the system keyboard on the TV) and the name is appended to the Home greeting ("Good evening, Ana.").
-Long greetings scale down to fit their existing single-line area, centred vertically without
-moving the weather summary or favorite cards. Short greetings retain their original size.
+Long greetings scale down to fit their single-line area, centred vertically without moving the
+weather summary or the grid. Short greetings retain their original size.
 The keyboard starts empty; closing it without a name preserves the saved value. Clear name removes
 it. Preferences are saved when the keyboard closes, including automatic system-keyboard dismissal.
 Back from Greeting restores its Widgets row; App names returns to General. Input name removal
 also uses **Clear name**.
 Choice checkmarks identify saved values, while the bright row fill identifies only the current focus.
 
-Home favorites form one horizontal strip, never a second row. Left/Right follows saved order,
-including reorder mode, and reveals complete cards. Up returns to Home navigation; Down enters
-the nearest input in the first row. The strip position survives page changes. Wheel movement over
-favorites scrolls horizontally; elsewhere it scrolls vertically. Pointer hover/down never moves
-the clicked control. Apps Up/Down follows the six-column grid order, including offscreen rows,
-and only the first row's Up route reaches the category toolbar. Scrolling Apps content fades into
-the existing wallpaper at the header/footer, with one alpha mask for surfaces, shadows, rings,
-vector icons/logos and text. The wallpaper/header are unmasked; no blur texture is needed.
+Luma has one main screen, as the tvOS Home Screen: a top shelf (the clock with the date on the
+same line, then the greeting and one row of weather) and under it one six-column grid of every
+app. One constant, `SCREEN_MARGIN` (64 px), sets the vertical rhythm: the clock's digits start
+that far below the top of the screen and the third card row ends that far above the bottom. Rows
+are 76 px apart (tighter than the HIG's 100; the focused caption still fits between them), so
+the grid starts at y 396 and up to 18 cards need no scrolling. The shelf takes the space left
+above the grid, starting 28 px below the clock line. Hiding the greeting or weather moves the
+weather up but leaves the grid at the bottom margin. The third row's focused caption reaches into
+that margin (it ends near y 1070), as tvOS captions do. There is no tab bar and no
+TV-settings button (the remote's own Settings button remains). The grid holds the
+pinned favourites in their saved order, then every other visible app by title. Two small
+icons sit at the top right on the clock's line, left to right: **Apps** (LG's app store,
+`com.webos.app.discovery`, launched from the icon and left out of the grid and Hidden apps) and
+**Settings** (full screen). Without the store app only Settings shows.
+They are 44 px glass circles with a glyph; focus lifts one onto a white circle and names it
+beneath. Pinning an app moves it into the
+favourites block; unpinning moves it back. Reorder mode moves a favourite within that block; OK or
+Back finishes it without launching.
 
-TV editing uses the system keyboard through SDL-webOS. Desktop editing uses the custom panel.
+Up/Down follow the six-column grid indices, including offscreen rows, so the shelf cannot steal
+mid-grid navigation; Left/Right stay within a row. Up from the first row: the left-hand columns reach the shelf's weather button (when no location
+is set) and the right-hand columns the top-bar icon above them. Right from the weather button
+reaches the icons, Left from the first icon returns to it, and Down from an icon enters the
+column beneath it. Pointer clicks work on every icon. With more than three rows,
+focusing a row below the third scrolls the grid by whole rows so the top visible row sits just
+below the clock, collapsing (moving and dimming) the shelf; returning to the first row brings it
+back (eased by `src/motion.rs`). Wheel scrolling moves the page directly. Pointer hover/down never moves the
+clicked control.
+
+There is no app search (this fork removed it; with few apps the grid holds them all). Hidden apps
+leave the grid and are listed by title in **Settings → General → Hidden apps**, whose row shows how
+many there are; OK on one shows it on the main screen again, and an empty state explains the list
+when nothing is hidden. The keyboard remains for text fields such as the weather location.
+Category filters were removed.
+
+TV editing uses the system keyboard through SDL-webOS, except for the weather location. Desktop
+editing uses the custom panel. The weather location always uses Luma's tvOS-style linear
+keyboard (TV and desktop): one row of keys (letters, digits, Space, Delete, Clear, Done) that
+scrolls so the focused key stays near the middle, the typed text above it, and live location
+suggestions beneath it. Once typing pauses for 350 ms with at least two characters, the existing
+weather worker searches (same generation IDs and stale-reply suppression as the explicit search);
+Down reaches the suggestions and OK picks one, saves it and closes the keyboard. Back keeps the
+typed text for the explicit search button, as before.
 
 HDMI status refreshes every two seconds while the TV's Home or input settings are visible and
 focused. Only inputs are read on the existing platform worker; installed apps, artwork and saved
@@ -200,16 +258,17 @@ include them. Both Back and Exit access policies are claimed before video initia
 native Exit signal opens the switcher without waiting for another timer; repeat/dismissal events
 are consumed until release, so the same press cannot dismiss an overlay and then reopen it from Home.
 
-The switcher uses an overlapping landscape-card stack on a dimmed wallpaper, a short, reversible
-crossfade to and from the actual parent interface, and a non-bouncy, interruptible depth transition.
-The front card is largest; neighboring cards recede in scale and brightness. Cards are painted and
-hit-tested back-to-front, so only exposed portions of rear cards can be selected with the pointer.
+The switcher follows the tvOS app switcher: one horizontal row of large landscape cards on a
+dimmed, blurred wallpaper, a short, reversible crossfade to and from the actual parent interface,
+and a non-bouncy, interruptible transition. The focused card is centred, lifted with a deep shadow
+and titled beneath; its neighbours are smaller and dimmer at the sides, without overlapping. Cards
+are painted and hit-tested back-to-front.
 Reopening during dismissal reverses from the current opacity and keeps the visible cards.
 Dismissal restores parent input immediately while the outgoing cards finish fading. The transition
 does not move card hit targets; pointer interruption pauses only carousel movement, not the fade.
 Reduced motion makes the crossfade, navigation and close transitions immediate.
 Pointer hover/down preserves the current card positions and interrupts remote carousel movement.
-The backdrop uses 86% opacity so more of the wallpaper shows through. There are no app captions, action buttons,
+The backdrop is the blurred wallpaper under a 50% dimming layer. Only the focused card has a caption; there are no action buttons,
 empty-state subtitle, heading, separate dismiss button, card count, footer instructions or Home
 header shortcut. Up immediately lifts the focused card off the top of the screen; after a successful
 close, the remaining cards slide into the gap and the next card comes forward. A failed close
@@ -385,6 +444,111 @@ the legacy installation-local preferences. Reapplying an active Home mount also 
 and no TV calls. Verify the system-rendered splash on a real TV by changing Background, quitting Luma,
 and relaunching its normal tile; desktop checks cannot establish SAM/compositor image caching behavior.
 
+## tvOS design language
+
+Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, at the logical
+1920×1080 layout where tvOS points map 1:1 to pixels. The constants live at the top of
+`src/view.rs`; motion lives in `src/motion.rs`.
+
+- **Layout**: an 80 × 60 safe area; six columns of 260 × 156 (5:3) cards with 40 between them and
+  76 between rows (pitch 300 × 232; the HIG's 100 was more space than wanted), holding every app
+  beneath the top shelf; the store and Settings, and optionally the inputs, are
+  small icons in the top bar.
+- **Type**: the tvOS text styles with Inter instead of SF Pro. The bundled Inter 4.1 subset keeps
+  its `opsz` axis, so text of 32 px and up (Title 2, Title 3, Headline) uses Inter Display and
+  smaller text uses Inter (one font file, instantiated by `tools/font-weights.py`). Tracking is
+  light (titles about -2%, body text none). The date reads in sentence case. Title 2 (57/68, greeting),
+  Title 3 (48/56, overlay and sidebar titles), Headline (38/46, section headings), Callout (31/38),
+  Body (29/36, rows and captions), Caption 1 (25/32, values and status) and Caption 2 (23/30, the
+  smallest text anywhere).
+- **Focus** is static on app and wallpaper cards and everywhere in Settings: it changes in the
+  first frame after the key, with no lift, scale, spring, tilt or fade on the item itself. The
+  focused card is a few percent brighter (a 7% white overlay) with a light 2.5 px rim, and its
+  title appears beneath it; every card keeps the same small resting shadow. In Settings the
+  focused sidebar entry, row, choice, button or key turns opaque white with dark labels and its
+  shadow at once, at its own rectangle (`Scene::lift` is 0 there), and holding OK keeps that look
+  (the release changes a toggle's value in the same frame). A focused list row is drawn above its
+  neighbours so its shadow falls over them. Selected items (the sidebar section, the background)
+  stay highlighted. Hit regions never move.
+- **Motion** elsewhere (Home's top-bar icons, input glyphs, popups and their buttons): a gained
+  focus lifts on a light spring (damping 0.76 at 34 rad/s: about 2.3% overshoot, at rest after
+  about 200 ms; rows 2.5%, buttons 6%); pressed items return to their resting size. Small
+  controls (the top-bar icons and input glyphs) respond in the frame focus moves: the gaining one
+  starts 40% lifted and the losing one drops to 60% before the next motion tick, then a stiffer
+  spring (0.85 at 55 rad/s) and a faster release settle both in about 120 ms. The main grid and
+  shelf scroll with a critically damped exponential (about 250 ms); Settings lists, which only
+  scroll to keep the focused row inside their fade, take about 120 ms (none when the row is
+  already visible). Switching a Settings section or opening a subpage has no fade, and neither
+  has a page switch (opening Settings, Back to Home): the first frame of the new page is
+  complete, with its wallpaper dim, glass and text. That frame is redrawn in full (partial
+  redraw's damage history is reset) and waits for any of the new page's glyphs the worker has
+  not finished (normally none: idle preparation has rasterised them). Controls always use the logical, unanimated
+  positions; the drawn content follows. Wheel and pointer scrolling, list changes and **Reduced
+  motion** snap immediately. `State::animating()` keeps presenting only while a value is moving.
+- **Liquid Glass**: GLES2 has no backdrop blur, so `pnpm assets` writes a 480 × 270 blurred copy
+  of every background, with 30% more saturation, slightly lower contrast and a light glass tint
+  baked in (rather than dimming) (`wallpapers/<id>-blur.jpg` and `<id>-plain-blur.jpg`), and the
+  upload worker writes `wallpaper-blur.jpg` and `original-blur.jpg` for uploads. Glass panels
+  (`Scene::glass`) draw that copy at the same screen coordinates inside their rounded rectangle
+  (`Draw::Backdrop`, one textured pass), add a soft highlight band along the top edge and a 1 px
+  edge (`Draw::Rim`) that is white (about 36%) at the top and faintly dark at the bottom. The top-bar icons, the
+  settings sidebar and rows, context menus, alerts, keyboard, notices and companion dialogs use it; menus, alerts and Recents put the blurred
+  copy behind the whole stage. Uploads made before this change have no blurred copy and fall back
+  to a dark translucent fill. There is no
+  real-time blur or refraction.
+- **Corners** are continuous (superellipse) as on tvOS: the rounded-rectangle distance in
+  `paint.frag` uses a p = 3 norm in the corner, normalised by the radius so mediump floats cannot
+  overflow, over a corner 1.2× the nominal radius so it reads as the same size; capsules and
+  circles keep circular ends. App faces, glass, buttons and shadows share the shape. The cost is
+  three `pow` calls per pixel of every rounded shape (unmeasured on Mali-class TVs).
+- **Notices**: a compact glass pill in Caption 1, centred with its bottom on the safe-area line
+  (y 1020). It fades in and rises 10 px (240 ms; neither under Reduced motion), dismisses itself
+  as before, and a new notice replaces the current one. It may cover part of the bottom card row
+  while shown.
+- **Wallpaper dim**: the main screen dims its wallpaper by a constant 20% (near-black,
+  `HOME_DIM`) behind the shelf and grid, in the dark appearance. It is static: it does not
+  animate or react to focus or to any app. It lies directly on the wallpaper, so the renderer
+  folds it into the wallpaper's own pass at no extra full-screen cost. Settings and Light keep
+  their own treatment.
+- **Night wallpaper** (off by default): a background's options offer **Use at night** (and
+  **Don't use at night** for the current one). Between sunset and sunrise, decided as for
+  Automatic appearance, that wallpaper and its blurred glass copy replace the chosen one; the day
+  choice, rotation and the splash are unchanged. A deleted night wallpaper falls back to the day
+  one.
+- **Text size** (Settings › General: Default or Larger): Larger scales every text style of
+  40 px and below (Headline, Callout, Body, Captions) by 1.15; titles keep their size. The scale
+  is applied in one place for measuring (`Assets::width`/`lines`, so fitting and ellipsis follow
+  it) and drawing (`Scene::text`, whose box grows around its vertical centre). The main screen
+  still fits three rows: the third row's focused caption ends near y 993, inside the safe area.
+- **Jiggle**: while a favourite is being moved, every favourite wobbles a little, each out of
+  phase at about 3 Hz. GLES2 has no rotation primitive, so the face moves up to
+  about 2 px and its logo layer about 4 px more, which reads as a small rotation. Hit regions
+  stay put; Reduced motion snaps it off, and frames redraw continuously only while move mode is
+  active.
+- **Appearance** (Settings › General: Dark (default), Light or Automatic): Light brightens the
+  finished scene in one pass (`light_appearance` in `src/view.rs`): a white scrim over the
+  wallpaper, a white layer on each glass panel, near-black text and interface icons instead of
+  white, white instead of dark veils, and softer shadows. Focused white surfaces and their labels
+  are unchanged, and the screensaver stays dark. Automatic is light between today's sunrise and
+  sunset at the weather location, which the forecast now requests (`daily=sunrise,sunset`,
+  `forecast_days=1`, cached with the reading), and between 07:00 and 21:00 without a location or
+  forecast. The scrim is one more full-screen layer while Light applies.
+- **Screensaver** (Settings › General › Screensaver: Off, 1, 5, 10 (default), 15 or 30 minutes):
+  after that long without a remote key, pointer movement or text input while Luma is visible and
+  in front, the screen turns pure black (#000000, so an OLED's pixels are off) with a minimal
+  digital clock: the time in Inter at Title 1 scale (76 px) in light grey (#bebebe) and the date
+  beneath it in Callout in a dimmer grey (#7c7c7c), in the clock and date formats from Settings
+  (24-hour and a lowercase date in Dutch). Nothing else is drawn. Against burn-in the block jumps
+  every 5 s (`SCREENSAVER_STEP`) to a new pseudo-random place that keeps it whole inside the
+  80 × 60 safe area; there is no sliding or fading, and frames are drawn only at a jump or when
+  the minute changes. It replaces the whole scene, so nothing behind it is reachable; any key or
+  pointer movement only ends it. Hidden or unfocused, the timer does not run, and returning to
+  Luma restarts it. The former Screensaver clock toggle and the wallpaper slideshow are gone.
+  Scripts can start it with the `screensaver` action.
+- **Favorite badges** (Settings › General, default Off): a heart on pinned favourites. tvOS has no
+  badges; the favourites block is first in the grid either way.
+- The focus highlight, glass and the second optical size are unverified on TV hardware.
+
 ## Vector rendering
 
 `assets/ui-icons/` holds standalone SVGs exported from the original Lucide/control artwork,
@@ -393,23 +557,17 @@ including the supplied PlayStation/Apple TV marks. `assets/logos/` holds origina
 the shared lyon tessellator to emit `.lvec` geometry. The format contains positions, edge offsets,
 vertex colors and coverage; holes, round strokes and the bundled gradients are preserved.
 Gradient colors are adaptively sampled at build time. The TV uploads each mesh lazily once and
-draws with a texture-free GLES2 shader. No SVG parser runs on the TV. The shared tessellator also
-handles font outlines. Installed app PNG/JPEG/WebP artwork, wallpaper photos, tile-background
+draws with a texture-free GLES2 shader. No SVG parser runs on the TV. Installed app PNG/JPEG/WebP artwork, wallpaper photos, tile-background
 images and the webOS installation icon remain raster assets. See [assets.md](assets.md) for licenses.
 
-TV and desktop windows default to 4× MSAA with 2×/single-sample fallbacks and no text
-emboldening, restoring the text treatment used in v2.8.0. **Settings → System → Text rendering**
-offers **MSAA (default)** and **Analytic**. The `text_rendering` preference (`msaa` or `analytic`)
-is saved immediately and applies when Luma next starts because SDL selects MSAA when it creates
-the window. Missing or invalid preferences use MSAA. The setting shows a restart reminder.
-
-Analytic mode uses a single-sample window and analytic text/logo edge filters. Text up to 16
-physical pixels is emboldened by 0.25 px per edge, fading out by 28 px. The choice is visual:
-analytic rendering was preferred on a contributor's webOS 5 TV, while MSAA was preferred in
-manual Mali-G52 TV comparisons. `LUMA_MSAA=4` or `0` overrides the saved mode and its default
-emboldening. `LUMA_EMBOLDEN` overrides the strength independently. Diagnostics report the
-startup `text_rendering` configuration, and `last_presented.multisample_samples` reports the
-actual window's samples. Offscreen captures can still be single-sample.
+Luma requests 4× MSAA for its window (2× and single-sample as fallbacks if EGL refuses a
+configuration). Under MSAA, vector logos and icons draw their exact outline: the shader zeroes
+the boundary offsets (`u_fringe`), so fringe triangles collapse and no one-pixel ramp can
+overlap a neighbour's and show a seam. Only when the GPU grants no samples do they fall back to
+the analytic one-pixel ramp. Text never depends on MSAA (see [Text](#text) below).
+`LUMA_MSAA=0` forces a single-sample window to check that fallback. Diagnostics report the
+samples requested and obtained, and `last_presented.multisample_samples` the actual window's;
+offscreen captures can still be single-sample.
 
 Shape edges use a one-drawable-pixel box filter centred on the edge, and rectangles (and logo
 placement) snap to whole drawable pixels. A straight edge is then a single step, and a one-pixel
@@ -464,7 +622,7 @@ and the [UK streaming catalogue](https://github.com/tjeffree/webOS-Streaming-Agg
 These sources do not establish that every alias is available on every region/firmware combination.
 
 Every curated logo has an app in `demo_inventory()`, including all 27 expanded streaming/music
-brands. Open them with `pnpm dev --script apps`, then scroll or search the Apps grid. A unit check
+brands. Open them with `pnpm dev --script home` and scroll the grid. A unit check
 keeps the SVG directory, curated catalogue and demo inventory aligned. `pnpm test:brands` renders
 every card through the actual desktop renderer and writes `.build/brands-gallery.png` for visual
 review. Like the other smoke scripts, it uses isolated preferences and no TV or real weather API.
@@ -472,27 +630,66 @@ The gallery also runs as part of `pnpm test:smoke`. Asset source/licence details
 
 Live TV (`com.webos.app.livetv`) and Web Browser (`com.webos.app.browser`) also have dedicated
 SVG-backed demo cards: a blue/cyan TV display with a live indicator, and a matching globe with a
-navigation pointer. Both are original Luma vector artwork. The existing card caption remains available when
+navigation pointer. Both are original Luma vector artwork. The focused card's caption remains available when
 names are visible. `Brand::artwork_size()` sets optical sizing per brand, keeping heavy wordmarks
 such as Hulu, Joyn and Plex closer to the visual weight of Apple TV, YouTube, Das Erste and ARTE.
 
-Text reads the bundled TTF's advances, kerning and line metrics lazily. Only needed glyph outlines
-are tessellated in font-em coordinates. Complete text runs are cached in static GPU buffers,
-independent of position/color/drawable density, avoiding a draw call per letter. CJK fonts open
-only when needed; there are no glyph bitmap atlases or full-font mesh exports.
+### Text
 
-MSAA mode requests 4× MSAA, with 2×/single-sample fallbacks if EGL rejects a configuration.
-Analytic mode requests a single-sample window. Multisampled text draws
-intact glyph fills without inward offsets/fringe triangles, which can cross on very thin
-small-text strokes. Single-sample targets use a narrower half-pixel boundary fringe. Glyph
-origins/baselines are pixel-aligned per drawable axis. There is no LCD subpixel rendering, font
-hinting or complex-script shaping. Inspect `multisample_samples` and `font_antialiasing`:
-offscreen captures can be single-sample while the actual window uses MSAA.
+Text reads the bundled TTF's advances, kerning and line metrics lazily on the SDL thread and lays
+runs out in logical units; laid-out runs (glyph indices and pen positions, no geometry) are cached
+up to 512 entries. Only Inter ships (no CJK fallback font, since the UI is English and Dutch); a
+missing character draws Inter's missing-glyph box. There is no LCD subpixel rendering, font
+hinting or complex-script shaping.
 
-Glyph geometry has an 8 MiB/4096-entry CPU cache target and text runs a 32 MiB/512-entry GPU
-target. Eviction preserves the current frame, which can temporarily exceed those targets.
-Raster artwork has a 48 MiB cache budget. Diagnostics include geometry bytes, triangles, draw
-calls and missing/failed artwork/glyphs. Idle screens draw on demand; VSync paces animation.
+Glyphs are rasterised on the CPU by a dedicated worker thread (`luma-glyphs`,
+`src/glyph_atlas.rs`), which opens its own copy of each font instance on first use. The rasteriser
+(`luma_vector_geometry::raster`) samples each pixel row with 32 sub-scanlines; on each, the true
+non-zero winding rule gives the spans inside the outline and each span adds its exact horizontal
+share to the pixels it covers, quantised to 256 levels. Inter keeps overlapping contours (an "n"
+is a stem plus an overlapping arch); the winding rule fills them as one shape, so there is no
+seam where they meet and no double coverage where their edges coincide inside a pixel (an
+edge-area accumulator would show up to 0.5 too much there). The error is at most 1/64 for
+horizontal edges and smaller for slanted ones. Sizes are quantised to a quarter physical pixel.
+
+Finished bitmaps go into a CPU cache (8 MiB/8192 entries, least recently used first out) and are
+packed into one single-channel atlas texture (`GL_LUMINANCE` on GLES 2, `GL_RED` on desktop):
+1024² (1 MiB), growing once to 2048² if a single frame needs more. Shelf packing leaves a cleared
+one-texel border around every glyph. Nothing is freed individually: when the atlas fills, it is
+cleared and the frame is built again, repacking the current glyphs from their CPU copies (uploads
+only). The SDL thread only uploads (`glTexSubImage2D`) and draws. Each glyph is one textured quad
+whose origin and baseline snap to a whole physical pixel, so its bitmap lands 1:1 on the
+drawable; consecutive text with the same clip and fade is one draw call.
+
+Coverage blends in sRGB, which thins light-on-dark edges. `glyph.vert` derives an exponent from
+the text colour's luminance: light text has its coverage raised to the power 0.7 (about 1/1.43,
+`LIGHT_TEXT_COVERAGE_EXPONENT`), dark text stays linear, and mid tones blend between the two.
+
+A frame that needs a glyph the worker has not finished waits up to 4 ms for it, then draws without
+it (or with a packed size of the same glyph scaled, as during an animated size change); when it
+arrives the loop redraws in full. The first frame and screenshots wait up to 3 s, so no text pops
+in at launch. Idle page preparation requests the other pages' glyphs without waiting. Measured on
+a desktop release build (Apple silicon): the first main screen needs 66 glyphs, rasterised in
+about 1.8 ms on the worker, with 0.06–0.5 ms on the SDL thread for uploads and waiting; the first
+General page needs 76 glyphs in about 2.1 ms, with up to 2 ms on the SDL thread. Each start writes
+its own figures to `first_frame_text` in `luma-diagnostics.json`; TV figures are unmeasured.
+
+`raster::reference_coverage` point-samples an outline 16 × 16 per pixel; tests compare the
+rasteriser with it on synthetic overlaps, curves and partial pixels, and on Inter's "n", "m", "e",
+"G", "o", "a", "s", "g", "H" and "8" at 29, 57 and 152 px (when `pnpm assets` has generated the
+fonts): fully covered pixels must be opaque (no seam), uncovered ones empty (no spike), and edges
+within the samplings' error.
+
+webOS discards stderr, so Luma also writes its startup facts to `luma-diagnostics.json` next to
+the preferences file, replacing it at every start and drawable change: the text path, the MSAA
+sample counts requested and obtained (and any refused), how vector edges are drawn, the first
+frame's glyph atlas fill (glyphs, worker milliseconds, SDL-thread milliseconds, uploads), the
+drawable size and density, the GL vendor, renderer and version strings, the SDL video driver and
+the partial-redraw mode. Read it over SSH to see what the TV actually granted.
+
+Raster artwork has a 48 MiB cache budget. Diagnostics include atlas and bitmap bytes, glyph
+uploads and pending glyphs, text quads, draw calls and missing/failed artwork/glyphs. Idle screens
+draw on demand; VSync paces animation.
 
 ## Resolution and profiling
 
@@ -590,7 +787,7 @@ measurable.
 
 Each frame redraws only what changed since the frame its back buffer holds. `src/damage.rs`
 compares consecutive scenes command by command, realigning after inserted or removed commands
-such as a focus ring; the union of changes since the buffer's frame (EGL buffer age) is the only
+such as a focus shadow; the union of changes since the buffer's frame (EGL buffer age) is the only
 area cleared and drawn, with a scissor intersected with each clip, and commands entirely outside
 it are not laid out. `EGL_KHR_partial_update` also tells the driver which tiles to keep (webOS
 Mali); `EGL_EXT_buffer_age` alone still allows the smaller redraw. The EGL entry points come from
@@ -612,10 +809,11 @@ beneath the outgoing interface rather than over it, so they fold in while both f
 
 ### Idle preparation
 
-The first visit to a page pays for laying out its text, outlining new glyphs, loading logo meshes
-and uploading icons. After each inventory, once the screen has been still for 1.5 s, Luma builds
-the other pages' scenes without drawing them (`Renderer::prepare`), one page per idle wake; the TV
-log reports each (`Luma prewarm: …`). The script action `prewarm` triggers it at once, and the
+The first visit to a page pays for laying out its text, rasterising new glyphs, loading logo
+meshes and uploading icons. After each inventory, once the screen has been still for 1.5 s, Luma builds
+the other pages' scenes without drawing them (`Renderer::prepare`), Home and then every Settings
+section, one per idle wake, so their glyphs are rasterised before focus reaches them; the TV log
+reports each (`Luma prewarm: …`). The script action `prewarm` triggers it at once, and the
 profiling timeline records first-use work per frame (`glyph_ms`, `vector_ms`, `image_ms`).
 
 ## TV startup diagnostics
@@ -701,9 +899,9 @@ is bound to that executable path. Luma detects this (`platform::runs_as_lg_home`
   registers with SAM itself through `registerApp` (lifecycle v2) on its own LS2 connection.
   `luna::subscribe` waits up to 10 s for SAM's first reply (`registered`); a failed connection,
   call or refused registration is a startup error, so Luma exits and SAM starts Home afresh.
-  Home-replacement mode also claims SDL-webOS's Home key, returning directly to the Home tab
+  Home-replacement mode also claims SDL-webOS's Home key, returning directly to the main screen
   when SAM does not relaunch an already-foreground Home. Normal app-tile launches do not claim it.
-  `relaunch` returns to Luma's Home tab, dismisses overlays, raises the window and refreshes
+  `relaunch` returns to Luma's main screen, dismisses overlays, raises the window and refreshes
   the inventory. Keyboard edits are saved before leaving their subpage. `close` and a later
   `returnValue: false` (registration lost) quit. SAM keeps the process across Home launches and
   standby (`pause`, reason `keepAlive`) instead of restarting it;
@@ -802,7 +1000,7 @@ pnpm dev --test-extra-apps 120
 On the TV, add `--test-extra-apps 120` after the JSON argument in the jailed command above.
 This explicitly appends up to 300 labeled non-launchable cards to a successful real inventory,
 using its apps as artwork/category templates. It uses `scroll-preview-preferences.json`,
-initialized from normal choices once. Favoriting test cards exercises long Home strips without
+initialized from normal choices once. Favoriting test cards exercises a long favourites block without
 changing normal favorites. Ctrl+C then a normal launch restores real inventory/preferences.
 The placeholder cards are never a fallback for an inventory failure.
 
@@ -838,16 +1036,19 @@ failure retries after five minutes. Unit changes convert unrounded cached Celsiu
 Removing a city clears its cache. The `.weather.json` sidecar uses Unix-seconds timestamps.
 Mock servers accept only literal loopback HTTP origins and are refused in TV builds.
 
-`assets/messages.json` supplies Czech, Dutch, English, French, German, Italian, Polish, Portuguese (Brazil),
-Russian, Simplified Chinese, Spanish, Swedish, Traditional Chinese and Vietnamese, including locale formatting
-and weather labels. App/device names and saved city names remain real data. No geolocation,
+`assets/messages.json` supplies Dutch and English, including locale formatting and weather
+labels. This fork deliberately ships only these two; a saved choice of a language earlier versions
+offered loads as English. Dropping the others also removed the Noto CJK fonts (about 28 MB of the
+IPK) and the lazy CJK fallback. App/device names and saved city names remain real data. No geolocation,
 runtime font/translation services or telemetry are used. Weather attribution: Open-Meteo,
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 
 ## Update availability
 
 On interactive desktop or TV startup a separate worker checks
-`https://github.com/ecklf/lg-luma/releases/latest/download/repo.json` once per process automatically.
+`https://github.com/Dimi3h/lg-luma/releases/latest/download/repo.json` once per process automatically.
+It reads only this fork's feed and never falls back to upstream; a 404 (no release published yet)
+counts as a successful check with nothing newer.
 **Settings → System → Check again** retries on the same worker, with one request in flight at a time.
 It only reads the `com.ecklf.luma` package/manifest version and compares numeric major/minor/patch
 components with the compiled version. Equal, older, malformed or prerelease versions do not offer
@@ -902,7 +1103,7 @@ prerelease than the pinned `.5` library, not a full Luma compatibility guarantee
 
 Rust behavior tests cover navigation, preferences, localization, rendering geometry and weather
 state without a TV. `tests/` scripts exercise actual desktop framebuffers and mock HTTP responses
-for navigation, persistence, pointer input, translations/CJK, weather limits/cache/races and
+for navigation, persistence, pointer input, English/Dutch translations, weather limits/cache/races and
 profiling. They contact no live weather APIs or television. On Linux:
 
 ```sh
@@ -949,6 +1150,12 @@ the existing Luma app. These builds are for manual TV verification; the ordinary
 run independently.
 
 ## Releases
+
+Releases, the Homebrew Channel feed and in-app updates come from this fork, `Dimi3h/lg-luma`,
+never from upstream `ecklf/lg-luma`. The fork's CI publishes them once GitHub Actions are enabled
+in its repository settings; until the first release exists the feed URL answers 404, which the
+update check treats as "no newer version" without a notice. The app ID stays `com.ecklf.luma`, so
+installed builds update in place instead of appearing as a second app.
 
 Add a changeset to feature/fix PRs that should be included in the next app release:
 

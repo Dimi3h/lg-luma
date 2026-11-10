@@ -3,6 +3,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
+// Desktop runs stay hidden on macOS so they never take the foreground (see --headless).
+if (process.platform === 'darwin') process.env.LUMA_HEADLESS ??= '1';
+
 const root = path.resolve(import.meta.dirname, '..');
 const docs = path.join(root, 'docs');
 const scratch = path.join(root, '.build');
@@ -24,7 +27,6 @@ const configuration = {
   language: 'en',
   background: 'dunes',
   hour_24: false,
-  show_home_names: false,
   show_weather: true,
   weather_location: null,
   hidden: [],
@@ -33,10 +35,14 @@ const configuration = {
 };
 try {
   for (const [name, script] of [
-    ['home', 'home,down'],
-    ['apps', 'apps,down'],
-    ['settings', 'settings,down'],
-    ['inputs', 'settings,down,down,down,enter,down,down,down,enter'],
+    ['home', 'home'],
+    // The grid below the third row, with the top shelf scrolled away.
+    ['apps', 'home,down,down,down'],
+    ['settings', 'settings'],
+    // Widgets lists Date, Greeting, Weather, Shortcuts, then Inputs.
+    ['inputs', 'settings,down,down,enter,down,down,down,down,enter'],
+    // The clock screensaver (its position is random per run).
+    ['screensaver', 'home,screensaver'],
   ]) {
     // Independent state makes screenshots stable regardless of capture order.
     await fs.writeFile(preferences, JSON.stringify(configuration));

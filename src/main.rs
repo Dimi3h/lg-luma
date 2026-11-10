@@ -10,12 +10,14 @@ mod damage;
 mod diagnostics;
 mod egl_damage;
 mod font;
+mod glyph_atlas;
 mod i18n;
 #[path = "input-refresh.rs"]
 mod input_refresh;
 #[cfg(all(feature = "webos", target_os = "linux", target_arch = "arm"))]
 mod luna;
 mod model;
+mod motion;
 mod platform;
 mod raster;
 mod recents;
@@ -25,7 +27,6 @@ mod scroll_preview;
 mod sdl_events;
 mod state;
 mod storage;
-mod text_rendering;
 #[path = "tile-editor.rs"]
 mod tile_editor;
 mod update;
@@ -70,6 +71,8 @@ struct Options {
     frames: Option<u64>,
     script: VecDeque<String>,
     fullscreen: bool,
+    /// Desktop checks without a visible window: hidden, never presented, no focus stealing.
+    headless: bool,
     time: Option<OffsetDateTime>,
     resolution: Option<Size>,
     capture_size: Option<Size>,
@@ -113,7 +116,7 @@ impl Options {
         while let Some(arg) = args.next() {
             if arg == "--help" {
                 println!(
-                    "Luma native\n\n  --assets PATH       Generated artwork directory\n  --preferences PATH  Isolated preferences file\n  --fullscreen        Fullscreen desktop preview\n  --resolution SIZE   Request 1080p, 4k, or WIDTHxHEIGHT; verify actual drawable\n  --frames N          Exit after N event-loop frames\n  --profile-frames N  Force N presentations (20+) and report pacing after warmup\n  --script ACTIONS    Comma-separated home/apps/settings/up/down/left/right/enter/back/menu/hold/type:TEXT/click:X:Y/wait\n  --time RFC3339      Fix the preview's clock and date\n  --screenshot PATH   Save an offscreen PNG\n  --capture-scale N   Capture at 1x/1080p (default) or 2x/4k\n  --diagnostics PATH  Save actual drawable, GPU, font-cache and timing information\n  --dump-state PATH   Save final UI state as JSON\n\nCompile with --features webos for the TV backend. Desktop builds never call TV services."
+                    "Luma native\n\n  --assets PATH       Generated artwork directory\n  --preferences PATH  Isolated preferences file\n  --fullscreen        Fullscreen desktop preview\n  --headless          Hidden window, never presented (also LUMA_HEADLESS=1)\n  --resolution SIZE   Request 1080p, 4k, or WIDTHxHEIGHT; verify actual drawable\n  --frames N          Exit after N event-loop frames\n  --profile-frames N  Force N presentations (20+) and report pacing after warmup\n  --script ACTIONS    Comma-separated home/apps/settings/up/down/left/right/enter/back/menu/hold/type:TEXT/click:X:Y/wait\n  --time RFC3339      Fix the preview's clock and date\n  --screenshot PATH   Save an offscreen PNG\n  --capture-scale N   Capture at 1x/1080p (default) or 2x/4k\n  --diagnostics PATH  Save actual drawable, GPU, font-cache and timing information\n  --dump-state PATH   Save final UI state as JSON\n\nCompile with --features webos for the TV backend. Desktop builds never call TV services."
                 );
                 println!(
                     "\n  --test-extra-apps N  Explicit scroll preview with up to 300 non-launchable extra cards; separate preferences"
@@ -128,6 +131,10 @@ impl Options {
             }
             if arg == "--fullscreen" {
                 result.fullscreen = true;
+                continue;
+            }
+            if arg == "--headless" {
+                result.headless = true;
                 continue;
             }
             let value = args
@@ -372,17 +379,24 @@ fn script(
     state: &mut State,
     controls: &[state::Control],
 ) -> Result<Vec<Effect>, String> {
+    // Any scripted input ends a running screensaver, as a real key would.
+    if !matches!(action, "screensaver" | "wait")
+        && !action.starts_with("await-")
+        && state.stop_screensaver()
+    {
+        return Ok(vec![]);
+    }
     Ok(match action {
-        "home" => {
-            state.open(0);
+        "screensaver" => {
+            state.start_screensaver();
             vec![]
         }
-        "apps" => {
-            state.open(1);
+        "home" => {
+            state.open(state::Page::Home);
             vec![]
         }
         "settings" => {
-            state.open(2);
+            state.open(state::Page::Settings);
             vec![]
         }
         "up" => state.direction(Direction::Up, controls),
@@ -402,20 +416,23 @@ fn script(
         }
         "wait" => vec![],
         action if action.starts_with("type:") => {
+            // Typing needs a text field: there is no app search on the main screen.
             let field = if state.text_input_active() {
-                state.keyboard_field
+                Some(state.keyboard_field)
             } else {
                 match state.subpage {
-                    Some(state::Subpage::Greeting) => state::TextField::Name,
-                    Some(state::Subpage::WeatherLocation) => state::TextField::Location,
-                    Some(state::Subpage::Input(_)) => state::TextField::InputName,
-                    _ => state::TextField::Apps,
+                    Some(state::Subpage::Greeting) => Some(state::TextField::Name),
+                    Some(state::Subpage::WeatherLocation) => Some(state::TextField::Location),
+                    Some(state::Subpage::Input(_)) => Some(state::TextField::InputName),
+                    _ => None,
                 }
             };
-            if !state.text_input_active() {
-                state.open_keyboard(field);
+            if let Some(field) = field {
+                if !state.text_input_active() {
+                    state.open_keyboard(field);
+                }
+                state.text(&action[5..]);
             }
-            state.text(&action[5..]);
             vec![]
         }
         "await-search" => vec![],
@@ -434,19 +451,14 @@ fn main() {
     }
 }
 
-fn compose(
-    state: &mut State,
-    assets: &view::Assets,
-    pill: f32,
-    width: f32,
-    now: OffsetDateTime,
-) -> view::Scene {
-    let scene = view::scene_with_pill(state, assets, pill, width, now);
+fn compose(state: &mut State, assets: &view::Assets, now: OffsetDateTime) -> view::Scene {
+    state.sync_motion();
+    let mut scene = view::scene(state, assets, now);
     if !state.pointer && state.overlay.is_none() && state.reveal_focus(&scene.controls) {
-        view::scene_with_pill(state, assets, pill, width, now)
-    } else {
-        scene
+        state.sync_motion();
+        scene = view::scene(state, assets, now);
     }
+    scene
 }
 
 fn wallpaper_upload_active(state: &State, webos: bool, focused: bool, visible: bool) -> bool {
@@ -463,7 +475,7 @@ fn input_refresh_active(state: &State, webos: bool, focused: bool, visible: bool
         && state.moving.is_none()
         && state.pressed.is_none()
         && state.recents.visibility == 0.
-        && (state.page == state::Page::Home
+        && ((state.page == state::Page::Home && state.preferences.show_inputs)
             || (state.page == state::Page::Settings
                 && matches!(
                     state.subpage,
@@ -559,13 +571,14 @@ fn log_home_output() {
     unsafe { sdl2::sys::SDL_LogSetAllPriority(sdl2::sys::SDL_LogPriority::SDL_LOG_PRIORITY_INFO) };
 }
 
-/// The next page to prepare while the screen is idle. Jobs wait while the scene would not
-/// contain their page (fully shown Recents replaces it), rather than preparing Recents again.
+/// The next page (and Settings section) to prepare while the screen is idle. Jobs wait while
+/// the scene would not contain their page (fully shown Recents replaces it), rather than
+/// preparing Recents again.
 fn next_prewarm(
-    prewarm: &mut Vec<state::Page>,
+    prewarm: &mut Vec<(state::Page, usize)>,
     state: &state::State,
     idle: bool,
-) -> Option<state::Page> {
+) -> Option<(state::Page, usize)> {
     if !idle || state.dirty || view::recents_replaces_page(state) {
         return None;
     }
@@ -718,6 +731,13 @@ fn run() -> Result<(), String> {
     platform.sync_splash(state.preferences.splash_background());
     startup_stage("preferences and workers");
 
+    // Headless desktop runs (smoke checks, screenshots) must not take the foreground: macOS
+    // runs SDL as a background app, the window stays hidden and frames are never presented.
+    let headless =
+        !webos && (options.headless || std::env::var("LUMA_HEADLESS").as_deref() == Ok("1"));
+    if headless {
+        sdl2::hint::set("SDL_MAC_BACKGROUND_APP", "1");
+    }
     let sdl = sdl2::init()?;
     let drivers: Vec<_> = sdl2::video::drivers().collect();
     if webos && !drivers.contains(&"wayland") {
@@ -756,6 +776,9 @@ fn run() -> Result<(), String> {
     let create_window = || {
         let mut builder = video.window("Luma", requested.width, requested.height);
         builder.opengl().allow_highdpi().position_centered();
+        if headless {
+            builder.hidden();
+        }
         if options.fullscreen || (webos && options.resolution.is_none()) {
             builder.fullscreen_desktop();
         } else if webos {
@@ -769,17 +792,15 @@ fn run() -> Result<(), String> {
     };
     let mut opened = None;
     let mut failures = Vec::new();
-    // MSAA is the default on TV and desktop. The System setting is applied only at launch.
-    let text_config = text_rendering::Configuration::new(
-        state.preferences.text_rendering,
-        std::env::var("LUMA_MSAA").ok().as_deref(),
-        std::env::var("LUMA_EMBOLDEN").ok().as_deref(),
-    );
-    eprintln!(
-        "Luma text rendering: {:?}, embolden {} px",
-        text_config.mode, text_config.embolden
-    );
-    for &samples in text_config.sample_counts {
+    // Vector logos and shapes use 4x MSAA where the GPU grants it, else their analytic edge.
+    // Text never depends on it (CPU glyph atlas). LUMA_MSAA=0 forces single-sample to check
+    // the fallback.
+    let sample_counts: &[u8] = if std::env::var("LUMA_MSAA").as_deref() == Ok("0") {
+        &[0]
+    } else {
+        &[4, 2, 0]
+    };
+    for &samples in sample_counts {
         attributes.set_multisample_buffers(u8::from(samples > 0));
         attributes.set_multisample_samples(samples);
         match create_window() {
@@ -802,8 +823,7 @@ fn run() -> Result<(), String> {
     if let Err(error) = video.gl_set_swap_interval(1) {
         eprintln!("VSync: {error}");
     }
-    let mut renderer =
-        renderer::Renderer::new(&assets.root.join("font.ttf"), webos, text_config.embolden)?;
+    let mut renderer = renderer::Renderer::new(&assets.root.join("font.ttf"), webos)?;
     startup_stage("renderer");
     // Redraw only what changed since the back buffer's frame (LUMA_PARTIAL=0 draws in full).
     let partial = (std::env::var("LUMA_PARTIAL").as_deref() != Ok("0"))
@@ -815,9 +835,27 @@ fn run() -> Result<(), String> {
             .as_ref()
             .map_or("off", egl_damage::PartialUpdate::describe)
     );
+    // webOS discards stderr, so the startup facts that matter for text quality also go to a
+    // small file next to the preferences (overwritten at every start and drawable change).
+    let diagnostics_path = preferences_path.with_file_name("luma-diagnostics.json");
+    let startup_facts = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "video_driver": video.current_video_driver(),
+        "text_rendering": "cpu glyph atlas",
+        "requested_samples": sample_counts,
+        "obtained_samples": samples,
+        "msaa_failures": failures,
+        "vector_edges": if samples > 1 { "msaa" } else { "analytic ramp" },
+        "gl": renderer.info,
+        "partial_redraw": partial
+            .as_ref()
+            .map_or("off", egl_damage::PartialUpdate::describe),
+    });
     let mut damage_tracker = damage::Tracker::default();
+    let mut first_text = serde_json::Value::Null;
+    let mut drawn_page: Option<state::Page> = None;
     // Pages to prepare while the screen is idle (text, logos, icons), after each inventory.
-    let mut prewarm: Vec<state::Page> = Vec::new();
+    let mut prewarm: Vec<(state::Page, usize)> = Vec::new();
     let mut prewarm_now = false;
     let mut last_present = Instant::now();
     let verify_damage = std::env::var("LUMA_DAMAGE_VERIFY").as_deref() == Ok("1");
@@ -938,10 +976,6 @@ fn run() -> Result<(), String> {
     let mut focused = true;
     let mut press: Option<Press> = None;
     let mut back_button = BackButton::default();
-    let initial_nav = view::navigation(&assets, state.preferences.language);
-    let mut pill = initial_nav.items[0].x;
-    let mut pill_width = initial_nav.items[0].w;
-    let mut last_frame = Instant::now();
     let mut last_minute = None;
     let mut frame = 0u64;
     let mut visible = true;
@@ -959,8 +993,6 @@ fn run() -> Result<(), String> {
     let mut scene = compose(
         &mut state,
         &assets,
-        pill,
-        pill_width,
         options.time.unwrap_or_else(OffsetDateTime::now_utc),
     );
     while running {
@@ -1048,6 +1080,12 @@ fn run() -> Result<(), String> {
             }
         }
         state.dirty |= assets.artwork.poll();
+        // Glyphs the last frame lacked have been rasterised: draw it again, in full (the draw
+        // list itself has not changed, so damage tracking alone would skip them).
+        if renderer.poll_glyphs() {
+            state.dirty = true;
+            damage_tracker.reset();
+        }
         let unix = state::unix_now();
         let startup_cycle = wallpaper_cycle::startup_due(
             state.preferences.wallpaper_cycle,
@@ -1085,7 +1123,13 @@ fn run() -> Result<(), String> {
                     if warning.is_none() {
                         input_refresh.superseded(Instant::now());
                     }
-                    prewarm = vec![state::Page::Settings, state::Page::Apps];
+                    // Home first, then every Settings section, so moving through the sidebar
+                    // never waits for its glyphs to be rasterised.
+                    prewarm = (0..=state::SYSTEM_SECTION)
+                        .rev()
+                        .map(|section| (state::Page::Settings, section))
+                        .chain([(state::Page::Home, 0)])
+                        .collect();
                     if std::mem::take(&mut state.reload_artwork) {
                         assets.artwork.reset();
                     } else {
@@ -1108,7 +1152,7 @@ fn run() -> Result<(), String> {
                             .filter_map(|app| app.icon.clone()),
                     );
                     if initial_focus
-                        && state.focus == Target::Nav(0)
+                        && state.focus == Target::SettingsIcon
                         && state.page == state::Page::Home
                     {
                         state.focus = state.first_content();
@@ -1213,7 +1257,7 @@ fn run() -> Result<(), String> {
         }
         // Rebuild hit regions before input whenever inventory/layout changed.
         if state.dirty {
-            scene = compose(&mut state, &assets, pill, pill_width, now);
+            scene = compose(&mut state, &assets, now);
         }
         for event in queued_event
             .take()
@@ -1246,6 +1290,20 @@ fn run() -> Result<(), String> {
             if matches!(event, Event::KeyDown { .. } | Event::KeyUp { .. }) {
                 focused = true;
                 foreground.confirmed();
+            }
+            // Input restarts the screensaver's idle timer; while it runs, a key or pointer
+            // movement only dismisses it (its key-up then finds no press to complete).
+            if matches!(
+                event,
+                Event::KeyDown { .. }
+                    | Event::MouseMotion { .. }
+                    | Event::MouseButtonDown { .. }
+                    | Event::MouseWheel { .. }
+                    | Event::TextInput { .. }
+            ) && state.stop_screensaver()
+            {
+                press = None;
+                continue;
             }
             // As Home, these go to /tmp/luma-home.log and show whether a relaunch reached the
             // compositor.
@@ -1293,7 +1351,7 @@ fn run() -> Result<(), String> {
                     window_id,
                     win_event,
                     ..
-                } if window_id == window.id() => match win_event {
+                } if window_id == window.id() && !headless => match win_event {
                     WindowEvent::Hidden | WindowEvent::Minimized => {
                         if matches!(
                             state.overlay,
@@ -1329,6 +1387,8 @@ fn run() -> Result<(), String> {
                     }
                     WindowEvent::Shown | WindowEvent::Restored | WindowEvent::FocusGained => {
                         visible = true;
+                        // Returning to Luma restarts the idle timer.
+                        state.last_input = Instant::now();
                         // Shown and Restored can come from SDL itself; only focus confirms.
                         if matches!(win_event, WindowEvent::FocusGained) {
                             focused = true;
@@ -1583,7 +1643,7 @@ fn run() -> Result<(), String> {
             }
             // SDL may deliver several navigation events in a single poll.
             if state.dirty {
-                scene = compose(&mut state, &assets, pill, pill_width, now);
+                scene = compose(&mut state, &assets, now);
             }
         }
         if back_button.held(Instant::now()) {
@@ -1599,6 +1659,29 @@ fn run() -> Result<(), String> {
                 &webhook_service,
                 &updates,
             );
+        }
+        // Location suggestions follow typing on the linear keyboard, off the SDL thread.
+        if let Some(command) = state.suggest_locations(Instant::now()) {
+            running &= effects(
+                vec![Effect::Weather(command)],
+                &mut state,
+                &platform,
+                &preferences_path,
+                &weather_service,
+                &wallpaper_service,
+                &webhook_service,
+                &updates,
+            );
+        }
+        // The screensaver's idle timer runs only while Luma is visible and in front.
+        if visible
+            && focused
+            && state.screensaver.is_none()
+            && state
+                .screensaver_after()
+                .is_some_and(|after| state.last_input.elapsed() >= after)
+        {
+            state.start_screensaver();
         }
         if let Some(held) = &mut press
             && !held.held
@@ -1691,21 +1774,6 @@ fn run() -> Result<(), String> {
             }
             text_active = keyboard;
         }
-        let dt = last_frame.elapsed().as_secs_f32().min(0.1);
-        last_frame = Instant::now();
-        let navigation = view::navigation(&assets, state.preferences.language);
-        let target = navigation.items[state.page_index()].x;
-        let target_width = navigation.items[state.page_index()].w;
-        if state.preferences.reduced_motion
-            || ((pill - target).abs() < 0.2 && (pill_width - target_width).abs() < 0.2)
-        {
-            pill = target;
-            pill_width = target_width;
-        } else {
-            pill += (target - pill) * (1. - (-20. * dt).exp());
-            pill_width += (target_width - pill_width) * (1. - (-20. * dt).exp());
-            state.dirty = true;
-        }
         let final_frame = options.frames.is_some_and(|limit| frame + 1 >= limit)
             || (visible
                 && options
@@ -1713,7 +1781,7 @@ fn run() -> Result<(), String> {
                     .is_some_and(|limit| presented + 1 >= limit));
         if ((state.dirty || options.profile_frames.is_some()) && visible) || final_frame {
             let compose_started = Instant::now();
-            scene = compose(&mut state, &assets, pill, pill_width, now);
+            scene = compose(&mut state, &assets, now);
             let compose_ms = compose_started.elapsed().as_secs_f64() * 1000.;
             let (width, height) = window.drawable_size();
             if width > 0 && height > 0 {
@@ -1723,6 +1791,15 @@ fn run() -> Result<(), String> {
                         path,
                         options.capture_size.unwrap_or(Size::HD),
                     )?);
+                }
+                // A page switch is presented as one complete frame: redrawn in full (no partial
+                // damage that could miss an area) and with all of the new page's glyphs.
+                if drawn_page != Some(state.page) {
+                    if drawn_page.is_some() {
+                        damage_tracker.reset();
+                        renderer.complete_next_frame();
+                    }
+                    drawn_page = Some(state.page);
                 }
                 let damage = partial.as_ref().and_then(|partial| {
                     if last_drawable != Some(Size::new(width, height)) {
@@ -1767,20 +1844,31 @@ fn run() -> Result<(), String> {
                     report.3 = report.3.max(largest);
                 }
                 let swap_started = Instant::now();
-                window.gl_swap_window();
+                // Headless frames are drawn and counted but never shown. Without a swap nothing
+                // waits for vsync, so pace them to 60 Hz: time-based animations then progress
+                // per frame as they do on screen, and a frame budget covers the same time.
+                if !headless {
+                    window.gl_swap_window();
+                } else {
+                    unsafe { gl::Finish() };
+                    let frame = Duration::from_micros(16_667);
+                    std::thread::sleep(frame.saturating_sub(last_present.elapsed()));
+                }
                 let swap_ms = swap_started.elapsed().as_secs_f64() * 1000.;
                 if presented == 0 {
                     startup_stage("first frame");
-                    if webos {
-                        let stats = renderer.stats();
-                        eprintln!(
-                            "Luma vector text: {} glyphs, {} text runs, {} KiB glyph geometry, {} KiB GPU text",
-                            stats.cached_glyphs,
-                            stats.cached_text_runs,
-                            stats.glyph_geometry_bytes / 1024,
-                            stats.text_geometry_bytes / 1024,
-                        );
-                    }
+                    // The atlas fill's startup cost: rasterisation on the glyph worker, and
+                    // what the SDL thread spent uploading and waiting for it.
+                    let stats = renderer.stats();
+                    first_text = serde_json::json!({
+                        "glyphs": renderer.glyphs_rasterised,
+                        "worker_raster_ms": renderer.glyph_raster_ms,
+                        "sdl_thread_ms": stats.glyph_ms,
+                        "uploads": stats.glyph_uploads,
+                        "atlas_size": stats.atlas_size,
+                        "text_runs": stats.cached_text_runs,
+                    });
+                    eprintln!("Luma glyph atlas, first frame: {first_text}");
                 }
                 presented += 1;
                 last_present = Instant::now();
@@ -1803,6 +1891,13 @@ fn run() -> Result<(), String> {
                 }
                 let drawable = Size::new(width, height);
                 if last_drawable != Some(drawable) {
+                    let mut facts = startup_facts.clone();
+                    facts["drawable"] = serde_json::json!([width, height]);
+                    facts["density"] = serde_json::json!(drawable.scale());
+                    facts["first_frame_text"] = first_text.clone();
+                    if let Err(error) = diagnostics::write_startup(&diagnostics_path, &facts) {
+                        eprintln!("Luma diagnostics file: {error}");
+                    }
                     if options.diagnostics.is_some() || options.resolution.is_some() {
                         eprintln!(
                             "Luma drawable: {}x{}, density {:.3}x, 4K buffer: {}",
@@ -1840,17 +1935,23 @@ fn run() -> Result<(), String> {
         let idle = visible
             && (prewarm_now
                 || (!state.animating() && last_present.elapsed() > Duration::from_millis(1500)));
-        while let Some(page) = next_prewarm(&mut prewarm, &state, idle) {
-            if page != state.page {
+        while let Some((page, section)) = next_prewarm(&mut prewarm, &state, idle) {
+            let shown =
+                page == state.page && (page == state::Page::Home || section == state.section);
+            if !shown {
                 let started = Instant::now();
                 let current = std::mem::replace(&mut state.page, page);
-                let hidden = view::scene_with_pill(&state, &assets, pill, pill_width, now);
+                let current_section = std::mem::replace(&mut state.section, section);
+                let current_subpage = state.subpage.take();
+                let hidden = view::scene(&state, &assets, now);
                 state.page = current;
+                state.section = current_section;
+                state.subpage = current_subpage;
                 let (width, height) = window.drawable_size();
                 renderer.prepare(&hidden.draw, width, height);
                 if webos {
                     eprintln!(
-                        "Luma prewarm: {page:?} in {} ms",
+                        "Luma prewarm: {page:?} {section} in {} ms",
                         started.elapsed().as_millis()
                     );
                 }
@@ -1865,16 +1966,13 @@ fn run() -> Result<(), String> {
         // decoded need short timed wakes.
         let timeout = if !visible {
             250
-        } else if pill != target
-            || pill_width != target_width
-            || state.animating()
-            || options.profile_frames.is_some()
-        {
+        } else if state.animating() || options.profile_frames.is_some() {
             0
         } else if press.is_some()
             || back_button.press.is_some()
             || options.frames.is_some()
             || assets.artwork.pending()
+            || renderer.glyphs_pending()
         {
             8
         } else if !prewarm.is_empty() {
@@ -1891,10 +1989,10 @@ fn run() -> Result<(), String> {
         return Err("Frame budget ended before the input script completed".into());
     }
     if let Some(path) = options.dump {
-        let state = serde_json::json!({ "page": state.page, "focus": state.focus, "query": state.query,
-            "filter": state.filter, "preferences": state.preferences, "apps": state.apps().iter().map(|a| &a.id).collect::<Vec<_>>(),
+        let state = serde_json::json!({ "page": state.page, "focus": state.focus,
+            "preferences": state.preferences, "apps": state.apps().iter().map(|a| &a.id).collect::<Vec<_>>(),
             "update_status": state.update_status, "available_update": state.available_update,
-            "error": state.error, "scroll": state.scroll, "home_scroll": state.home_scroll, "subpage": state.subpage, "modal": state.overlay.is_some(), "weather": state.weather,
+            "error": state.error, "scroll": state.scroll, "subpage": state.subpage, "modal": state.overlay.is_some(), "weather": state.weather,
             "inventory": state.inventory.apps,
             "recents": state.recents.entries, "recents_pending": state.recents.pending, "recents_error": state.recents.error, "recents_visibility": state.recents.visibility,
             "ui_text": scene.draw.iter().filter_map(|draw| match draw { renderer::Draw::Text(value, ..) => Some(value), _ => None }).collect::<Vec<_>>() });
@@ -1915,7 +2013,14 @@ fn run() -> Result<(), String> {
             "display_mode": display_mode,
             "drawable_is_4k": Size::new(dw, dh).is_4k(), "presented_frames": presented,
             "graphics": renderer.info, "last_presented": renderer.stats(), "capture": captured,
-            "text_rendering": text_config,
+            "text_rendering": serde_json::json!({
+                "path": "cpu glyph atlas",
+                "requested_samples": sample_counts,
+                "obtained_samples": samples,
+                "glyphs_rasterised": renderer.glyphs_rasterised,
+                "worker_raster_ms": renderer.glyph_raster_ms,
+                "first_frame": first_text,
+            }),
             "profile": options.profile_frames.map(|_| profile.summary()),
             "partial_redraw": partial.as_ref().map(egl_damage::PartialUpdate::describe),
             "redrawn_fraction_mean": redrawn_total / presented.max(1) as f64,

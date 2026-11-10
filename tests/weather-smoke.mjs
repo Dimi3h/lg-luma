@@ -5,6 +5,9 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import sharp from 'sharp';
 
+// Desktop runs stay hidden on macOS so they never take the foreground (see --headless).
+if (process.platform === 'darwin') process.env.LUMA_HEADLESS ??= '1';
+
 const root = path.resolve(import.meta.dirname, '..');
 const out = path.join(root, '.build');
 await fs.mkdir(out, { recursive: true });
@@ -143,13 +146,13 @@ async function scenario(name, script, frames = 210) {
 }
 const forecastCount = () => requests.filter((request) => request.path === '/v1/forecast').length;
 const searchCount = () => requests.filter((request) => request.path === '/v1/search').length;
-const weatherPage = 'settings,down,down,down,enter,down,down,enter';
+const weatherPage = 'settings,down,down,enter,down,down,enter';
 const locationPage = `${weatherPage},down,enter`;
 try {
   if (process.env.LUMA_SMOKE_SKIP_BUILD !== '1')
     await run('cargo', ['build', '--locked', '--package', 'luma']);
   await writePreferences();
-  await scenario('unconfigured', 'home,down');
+  await scenario('unconfigured', 'home');
   assert.equal(requests.length, 0, 'No geolocation or automatic city discovery');
   const short = await scenario('short-query', `${locationPage},enter,back,enter`);
   assert.equal(short.weather.searching, false);
@@ -208,7 +211,7 @@ try {
   await fs.rm(cache);
 
   forecastMode = 'slow';
-  const removed = await scenario('remove-in-flight', `home,${locationPage},click:1716:201,home`);
+  const removed = await scenario('remove-in-flight', `home,${locationPage},click:1784:292,home`);
   assert.equal(removed.preferences.weather_location, null);
   assert.equal(removed.weather.cache, null);
   await assert.rejects(fs.access(cache));
@@ -232,7 +235,8 @@ try {
   );
   const latest = await scenario(
     'latest-search',
-    `${locationPage},type:slow,back,enter,click:900:197,click:1364:726,type:Paris,back,enter,await-search,down,enter`,
+    // Reopen the keyboard on the field and reach Clear (key 38) along the linear keyboard's row.
+    `${locationPage},type:slow,back,enter,click:900:278,${Array(38).fill('right').join(',')},enter,type:Paris,back,enter,await-search,down,enter`,
   );
   assert.equal(latest.preferences.weather_location.name, 'Paris');
   assert.ok(latest.weather.results.length === 0);

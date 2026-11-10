@@ -1,6 +1,9 @@
 # Luma
 
-A native launcher for rooted LG webOS TVs, inspired by Apple TV.
+A native launcher for rooted LG webOS TVs, styled after Apple tvOS: one screen with the clock,
+date, greeting and weather above a grid of every app, small icons for the app store, Control
+Center and Settings, 5:3 cards that brighten on focus with their title beneath, and Liquid
+Glass-style panels.
 
 https://github.com/user-attachments/assets/2156d640-b8fa-4ea4-a02c-0db4c93bcc5a
 
@@ -10,10 +13,10 @@ https://github.com/user-attachments/assets/2156d640-b8fa-4ea4-a02c-0db4c93bcc5a
 <table>
   <tr>
     <td width="50%" align="center">
-      <img src="docs/home.png" alt="Luma native Home screen, desktop preview">
+      <img src="docs/home.png" alt="Luma main screen with the top shelf above the app grid, desktop preview">
     </td>
     <td width="50%" align="center">
-      <img src="docs/apps.png" alt="Luma native app library, desktop preview">
+      <img src="docs/apps.png" alt="Luma app grid scrolled past the third row, desktop preview">
     </td>
   </tr>
   <tr>
@@ -23,6 +26,12 @@ https://github.com/user-attachments/assets/2156d640-b8fa-4ea4-a02c-0db4c93bcc5a
     <td width="50%" align="center">
       <img src="docs/inputs.png" alt="Luma native input settings, desktop preview">
     </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/screensaver.png" alt="Luma clock screensaver on black, desktop preview">
+    </td>
+    <td width="50%"></td>
   </tr>
 </table>
 
@@ -115,8 +124,11 @@ https://github.com/user-attachments/assets/2156d640-b8fa-4ea4-a02c-0db4c93bcc5a
 ### Homebrew Channel
 
 ```text
-https://github.com/ecklf/lg-luma/releases/latest/download/repo.json
+https://github.com/Dimi3h/lg-luma/releases/latest/download/repo.json
 ```
+
+This is the `Dimi3h/lg-luma` fork's feed; Luma's in-app update check reads the same feed and
+never offers upstream releases.
 
 ### SSH
 

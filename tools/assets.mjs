@@ -26,28 +26,15 @@ if (decoded.error || decoded.status !== 0) {
   });
 }
 await fs.rm(font);
-const cjk = path.join(source, 'fonts/noto-sans-sc.ttf');
-const hangul = path.join(source, 'fonts/noto-sans-kr.ttf');
-try {
-  await fs.access(cjk);
-  await fs.access(hangul);
-} catch {
-  throw new Error('Prepare the bundled Chinese and Korean fonts with pnpm assets:fonts first.');
-}
-const weights = spawnSync(
-  'python3',
-  [path.join(import.meta.dirname, 'font-weights.py'), out, cjk, hangul],
-  {
-    encoding: 'utf8',
-  },
-);
+const weights = spawnSync('python3', [path.join(import.meta.dirname, 'font-weights.py'), out], {
+  encoding: 'utf8',
+});
 if (weights.error || weights.status !== 0) {
   throw new Error('Font weights need Python/fontTools. Run pnpm assets inside nix develop.', {
     cause: weights.error ?? new Error(weights.stderr),
   });
 }
 await fs.copyFile(path.join(source, 'fonts/ofl.txt'), path.join(out, 'font-license.txt'));
-await fs.copyFile(path.join(source, 'fonts/noto-ofl.txt'), path.join(out, 'font-cjk-license.txt'));
 
 for (const file of await fs.readdir(path.join(source, 'wallpapers'))) {
   if (!/\.(jpg|svg)$/.test(file)) continue;
@@ -99,6 +86,19 @@ for (const file of await fs.readdir(path.join(source, 'wallpapers'))) {
       .jpeg({ quality: 96 })
       .toFile(path.join(out, 'wallpapers', `${id}${scale === 2 ? '@2x' : ''}.jpg`));
   }
+  // Liquid Glass approximation: GLES2 has no backdrop blur, so glass panels sample a small,
+  // blurred copy of each background at the same screen position. Saturation is lifted rather
+  // than the image dimmed, and a light glass tint (about 10% white) is baked in, saving a pass
+  // per panel on the TV. The same treatment is applied to uploads in src/wallpapers.rs.
+  for (const variant of ['', '-plain']) {
+    await sharp(path.join(out, 'wallpapers', `${id}${variant}.jpg`))
+      .resize(480, 270)
+      .blur(10)
+      .modulate({ saturation: 1.3 })
+      .linear(0.88, 24)
+      .jpeg({ quality: 85 })
+      .toFile(path.join(out, 'wallpapers', `${id}${variant}-blur.jpg`));
+  }
   await sharp(input)
     .resize(480, 270, { fit: 'cover' })
     .jpeg({ quality: 82 })
@@ -107,7 +107,13 @@ for (const file of await fs.readdir(path.join(source, 'wallpapers'))) {
 // webOS shows `splashBackground` (a static image, scaled to 1080p) until the window opens. One
 // 1080p PNG per background lets the package start on the user's wallpaper instead of a grey card.
 for (const file of await fs.readdir(path.join(out, 'wallpapers'))) {
-  if (!file.endsWith('.jpg') || file.includes('@2x') || file.includes('-plain')) continue;
+  if (
+    !file.endsWith('.jpg') ||
+    file.includes('@2x') ||
+    file.includes('-plain') ||
+    file.includes('-blur')
+  )
+    continue;
   await sharp(path.join(out, 'wallpapers', file))
     .resize(1920, 1080, { fit: 'cover' })
     .png({ compressionLevel: 9 })

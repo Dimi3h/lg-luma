@@ -497,16 +497,11 @@ fn grid_and_options_use_matching_adaptive_hearts_without_a_backing_circle() {
             },
             None,
         );
-        state.open(1);
+        state.open(crate::state::Page::Home);
+        state.preferences.favorite_badges = true;
         state.focus = Target::App("regional.app".into());
         let render = |state: &crate::state::State| {
-            crate::view::scene_with_pill(
-                state,
-                &assets,
-                800.,
-                100.,
-                time::OffsetDateTime::UNIX_EPOCH,
-            )
+            crate::view::scene(state, &assets, time::OffsetDateTime::UNIX_EPOCH)
         };
         poll_until(&assets.artwork, || {
             render(&state)
@@ -524,7 +519,8 @@ fn grid_and_options_use_matching_adaptive_hearts_without_a_backing_circle() {
                 .iter()
                 .filter_map(|draw| match draw {
                     Draw::TintedImage(path, rect, _, _, color)
-                        if path.ends_with("heart-filled.lvec") && rect.w == 16. =>
+                        if path.ends_with("heart-filled.lvec")
+                            && (20. ..=22.01).contains(&rect.w) =>
                     {
                         Some(*color)
                     }
@@ -560,15 +556,7 @@ fn visible_cards_switch_from_fallback_to_a_single_composited_installed_surface()
         },
         None,
     );
-    let scene = || {
-        crate::view::scene_with_pill(
-            &state,
-            &assets,
-            800.,
-            100.,
-            time::OffsetDateTime::UNIX_EPOCH,
-        )
-    };
+    let scene = || crate::view::scene(&state, &assets, time::OffsetDateTime::UNIX_EPOCH);
     assert!(
         !scene()
             .draw
@@ -596,8 +584,9 @@ fn visible_cards_switch_from_fallback_to_a_single_composited_installed_surface()
     // A separate backdrop would be faded twice under the icon and expose its box.
     let same_face =
         |r: &crate::state::Rect| r.x == face.x && r.y == face.y && r.w == face.w && r.h == face.h;
-    assert!(loaded.draw.iter().any(|draw| matches!(draw,
-        crate::renderer::Draw::Shape(rect, r, border, _) if same_face(rect) && r == radius && *border == 1.
+    // A resting card has no rim (it appears with the focus lift) and no second fill.
+    assert!(!loaded.draw.iter().any(|draw| matches!(draw,
+        crate::renderer::Draw::Rim(rect, ..) if same_face(rect)
     )));
     assert!(!loaded.draw.iter().any(|draw| match draw {
         crate::renderer::Draw::Shape(rect, _, border, _) => same_face(rect) && *border == 0.,

@@ -1,9 +1,8 @@
 use crate::i18n::Language;
 use crate::model::{
-    App, BACKGROUNDS, CATEGORIES, CUSTOM_TILE_PREFIX, CustomTile, INPUT_NAME_LIMIT, InputMode,
-    Inventory, Preferences, clean_input_name,
+    App, BACKGROUNDS, CUSTOM_TILE_PREFIX, CustomTile, INPUT_NAME_LIMIT, InputMode, Inventory,
+    Preferences, clean_input_name,
 };
-use crate::text_rendering::TextRendering;
 use crate::weather::{self, Unit};
 use serde::Serialize;
 use std::time::{Duration, Instant};
@@ -11,22 +10,34 @@ use std::time::{Duration, Instant};
 pub const WIDGETS_SECTION: usize = 2;
 pub const SYSTEM_SECTION: usize = 3;
 pub const SECTION_COUNT: usize = 4;
-pub const SETTINGS_BOTTOM_PADDING: f32 = 64.;
-pub const SETTINGS_LIST_BOTTOM_PADDING: f32 = 48.;
+/// Every Settings list ends at the bottom safe-area line and fades out over this distance above
+/// it; focused rows (and the last row, scrolled fully in) stay above the fade.
+pub const SETTINGS_SAFE_BOTTOM: f32 = 1080. - 60.;
+pub const SETTINGS_LIST_FADE: f32 = 52.;
+/// The main screen's grid: six tvOS columns.
 pub const APPS_COLUMNS: usize = 6;
 /// Automatic inventory retries before the error shows: with the 6.5 s Luna timeout about 50 s.
 pub const INVENTORY_RETRIES: u32 = 5;
 pub const INVENTORY_RETRY_DELAY: Duration = Duration::from_secs(2);
-pub const HOME_STRIP_LEFT: f32 = 84.;
-// Six favourites in full and the seventh cut off and fading out at the right (Apple TV rows):
-// the strip ends after the sixth tile, so a focused tile never sits in the fade.
-pub const HOME_STRIP_RIGHT: f32 = 1748.;
-pub const HOME_TILE_WIDTH: f32 = 256.;
-pub const HOME_TILE_PITCH: f32 = 281.6;
-pub const HOME_FADE_LEFT: f32 = 8.;
-pub const HOME_FADE_RIGHT: f32 = 1910.;
+/// With more rows than fit beneath the shelf, the grid scrolls only as far as needed to show
+/// the focused row, and never above this line (just below the clock).
+pub const GRID_TOP_LIMIT: f32 = 150.;
 pub const BACKGROUND_FADE: f32 = 0.4;
+/// The clock line; scrolled content is not hit-testable above it.
+pub const MAIN_TOP: f32 = 120.;
 pub const CYCLE_FADE: f32 = 1.6;
+/// The screensaver's clock jumps to a new position this often (OLED burn-in).
+pub const SCREENSAVER_STEP: Duration = Duration::from_secs(5);
+/// Screensaver choices in minutes (0 is Off).
+pub const SCREENSAVER_MINUTES: [u32; 6] = [0, 1, 5, 10, 15, 30];
+
+/// A card of the main screen's grid (inputs, apps and the system cards).
+fn is_grid_card(target: &Target) -> bool {
+    matches!(target, Target::App(_) | Target::Input(_))
+}
+
+/// LG's app store: an icon in the main screen's top bar, not a card in the grid.
+pub const STORE_ID: &str = "com.webos.app.discovery";
 
 pub fn unix_now() -> u64 {
     std::time::SystemTime::now()
@@ -37,15 +48,14 @@ pub fn unix_now() -> u64 {
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub enum Page {
+    /// The only main screen: the top shelf above one grid of every app.
     Home,
-    Apps,
+    /// Settings, opened from the grid's Settings card.
     Settings,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum Target {
-    Nav(usize),
-    TvSettings,
     InstallUpdate,
     CheckUpdates,
     Recent(String),
@@ -53,21 +63,18 @@ pub enum Target {
     RecentRetry,
     App(String),
     Input(String),
-    Browse,
-    Filter(usize),
-    ClearFilter,
-    Search,
-    ClearSearch,
+    /// The main screen's top-bar icons: LG's app store and Settings.
+    StoreIcon,
+    SettingsIcon,
     Sidebar(usize),
     Setting(usize),
     Widget(usize),
     GreetingName,
     GreetingNameClear,
     GreetingToggle,
+    InputsToggle,
     DateToggle,
     DateFormat,
-    AppNamesHome,
-    AppNamesApps,
     ClockFormat,
     ClockTimeFormat,
     Background(usize),
@@ -75,6 +82,8 @@ pub enum Target {
     WallpaperCycle,
     WallpaperGradient,
     UseBackground,
+    /// Background options: use this wallpaper between sunset and sunrise (or stop).
+    NightBackground,
     DeleteBackground,
     InputMode(String),
     InputRename,
@@ -146,7 +155,6 @@ pub enum Overlay {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub enum Subpage {
-    AppNames,
     Greeting,
     Date,
     DateFormat,
@@ -160,12 +168,18 @@ pub enum Subpage {
     WeatherLocation,
     Temperature,
     Language,
-    TextRendering,
+    /// Settings › General › Hidden apps: hidden apps as rows, OK shows one again.
+    HiddenApps,
+    /// Settings › General › Screensaver: Off or the idle minutes.
+    Screensaver,
+    /// Settings › General › Appearance: Dark, Light or Automatic.
+    Appearance,
+    /// Settings › General › Text size: Default or Larger.
+    TextSize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub enum TextField {
-    Apps,
     Location,
     Name,
     InputName,
@@ -211,14 +225,13 @@ pub struct State {
     pub focus: Target,
     pub inventory: Inventory,
     pub preferences: Preferences,
-    pub query: String,
-    pub filter: usize,
     pub section: usize,
     pub subpage: Option<Subpage>,
     pub scroll: f32,
-    pub home_scroll: f32,
     pub overlay: Option<Overlay>,
     pub moving: Option<String>,
+    /// When move mode began, for the favourites' jiggle.
+    pub moving_since: Option<Instant>,
     pub loading: bool,
     /// Set by Refresh apps: the next inventory also reloads every app icon.
     pub reload_artwork: bool,
@@ -248,23 +261,32 @@ pub struct State {
     pub greeting_name_draft: String,
     pub input_name: String,
     pub recents: crate::recents::Recents,
+    /// Display-only easing of focus and scrolling.
+    pub motion: crate::motion::Motion,
+    /// Live location suggestions: the query last seen while typing and when to search it.
+    pub suggested_query: String,
+    pub suggest_at: Option<Instant>,
+    /// The last remote key, pointer movement or text input, for the screensaver's idle timer.
+    pub last_input: Instant,
+    /// The running screensaver: when it started, the seed of its clock positions, and the
+    /// position step last drawn (the clock jumps every `SCREENSAVER_STEP`).
+    pub screensaver: Option<(Instant, u64)>,
+    pub screensaver_step: u64,
 }
 
 impl State {
     pub fn new(preferences: Preferences) -> Self {
         Self {
             page: Page::Home,
-            focus: Target::Nav(0),
+            focus: Target::SettingsIcon,
             inventory: Inventory::default(),
             preferences,
-            query: String::new(),
-            filter: 0,
             section: 0,
             subpage: None,
             scroll: 0.,
-            home_scroll: 0.,
             overlay: None,
             moving: None,
+            moving_since: None,
             loading: false,
             reload_artwork: false,
             launching: false,
@@ -287,11 +309,165 @@ impl State {
             update: crate::update::InstallStatus::default(),
             panel_started: None,
             weather: weather::Weather::default(),
-            keyboard_field: TextField::Apps,
+            keyboard_field: TextField::Location,
             greeting_name_draft: String::new(),
             input_name: String::new(),
             recents: crate::recents::Recents::default(),
+            motion: crate::motion::Motion::default(),
+            suggested_query: String::new(),
+            suggest_at: None,
+            last_input: Instant::now(),
+            screensaver: None,
+            screensaver_step: 0,
         }
+    }
+
+    /// Night at the weather location: between today's sunset and sunrise from the forecast,
+    /// or between 21:00 and 07:00 without one.
+    pub fn is_night(&self, now: time::OffsetDateTime) -> bool {
+        let minutes = now.hour() as u16 * 60 + now.minute() as u16;
+        let [sunrise, sunset] = self
+            .preferences
+            .weather_location
+            .as_ref()
+            .and_then(|place| self.weather.reading(place))
+            .and_then(|reading| reading.sun)
+            .unwrap_or([7 * 60, 21 * 60]);
+        minutes < sunrise || minutes >= sunset
+    }
+
+    /// The wallpaper to show now: the night wallpaper between sunset and sunrise when one is
+    /// set and still exists, otherwise the chosen one.
+    pub fn shown_background(&self, now: time::OffsetDateTime) -> &str {
+        match &self.preferences.night_background {
+            Some(night)
+                if self.is_night(now) && self.background_ids().any(|known| known == night) =>
+            {
+                night
+            }
+            _ => &self.preferences.background,
+        }
+    }
+
+    /// Whether the light appearance applies now.
+    pub fn light(&self, now: time::OffsetDateTime) -> bool {
+        match self.preferences.appearance {
+            crate::model::Appearance::Dark => false,
+            crate::model::Appearance::Light => true,
+            crate::model::Appearance::Automatic => !self.is_night(now),
+        }
+    }
+
+    /// While the location keyboard is open, searches what was typed once typing pauses
+    /// (350 ms), so suggestions appear beneath the keys. Returns the search to run, if due.
+    pub fn suggest_locations(&mut self, now: Instant) -> Option<weather::Command> {
+        let typing = matches!(self.overlay, Some(Overlay::Keyboard))
+            && self.keyboard_field == TextField::Location;
+        if !typing {
+            self.suggest_at = None;
+            self.suggested_query.clear();
+            return None;
+        }
+        if self.weather.query != self.suggested_query {
+            self.suggested_query = self.weather.query.clone();
+            self.suggest_at = Some(now + Duration::from_millis(350));
+        }
+        if self.suggest_at.is_some_and(|at| now >= at) {
+            self.suggest_at = None;
+            if self.weather.query.trim().chars().count() >= 2 {
+                self.dirty = true;
+                return self.weather.search(self.preferences.language);
+            }
+        }
+        None
+    }
+
+    /// How long Luma waits without input before the screensaver, when it is on.
+    pub fn screensaver_after(&self) -> Option<Duration> {
+        let minutes = self.preferences.screensaver_minutes;
+        (minutes > 0).then(|| Duration::from_secs(minutes as u64 * 60))
+    }
+
+    /// Starts the clock screensaver (the idle timer ran out), at a random first position.
+    pub fn start_screensaver(&mut self) {
+        if self.screensaver.is_none() {
+            let seed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| since.as_nanos() as u64);
+            self.screensaver = Some((Instant::now(), seed));
+            self.screensaver_step = 0;
+            self.dirty = true;
+        }
+    }
+
+    /// Which position the screensaver's clock is at: a new one every `SCREENSAVER_STEP`.
+    pub fn screensaver_position_step(&self) -> Option<(u64, u64)> {
+        self.screensaver.map(|(started, seed)| {
+            let step = started.elapsed().as_millis() / SCREENSAVER_STEP.as_millis();
+            (seed, step as u64)
+        })
+    }
+
+    /// Any key or pointer movement ends the screensaver (and only does that).
+    pub fn stop_screensaver(&mut self) -> bool {
+        self.last_input = Instant::now();
+        let running = self.screensaver.take().is_some();
+        self.dirty |= running;
+        running
+    }
+
+    fn motion_inputs(&self) -> crate::motion::Inputs<'_> {
+        crate::motion::Inputs {
+            focus: &self.focus,
+            page: self.page,
+            section: self.section,
+            subpage: &self.subpage,
+            scroll: self.scroll,
+            reduced: self.preferences.reduced_motion,
+            pointer: self.pointer,
+        }
+    }
+
+    /// Registers the current focus before a scene is composed (see `Motion::sync`).
+    pub fn sync_motion(&mut self) {
+        let mut motion = std::mem::take(&mut self.motion);
+        motion.sync(&self.motion_inputs());
+        self.motion = motion;
+    }
+
+    /// Tests: lets display motion run `by` from now (eased values settle).
+    #[cfg(test)]
+    pub fn advance_motion(&mut self, by: Duration) {
+        let mut motion = std::mem::take(&mut self.motion);
+        let now = Instant::now();
+        motion.advance(&self.motion_inputs(), now);
+        let mut at = now;
+        while at < now + by {
+            at += Duration::from_millis(16);
+            motion.advance(&self.motion_inputs(), at);
+        }
+        self.motion = motion;
+    }
+
+    /// How far `target` is lifted by focus, 0 at rest and 1 fully focused.
+    pub fn focus_level(&self, target: &Target) -> f32 {
+        self.motion.focus_level(target, &self.focus)
+    }
+
+    /// The focus level to draw `target` with. Held OK returns a control to its resting look
+    /// (tvOS click feedback), except in Settings, where focus is static: the row keeps its
+    /// focused look and the release changes its value in the same frame.
+    pub fn display_level(&self, target: &Target) -> f32 {
+        if self.pressed.as_ref() == Some(target) && self.page != Page::Settings {
+            0.
+        } else {
+            self.focus_level(target)
+        }
+    }
+
+    /// The scroll offset content is drawn with; controls keep `scroll`.
+    pub fn display_scroll(&self) -> f32 {
+        self.motion.scroll(self.scroll)
     }
 
     pub fn notify(&mut self, text: impl Into<String>) {
@@ -371,6 +547,16 @@ impl State {
     }
 
     pub fn tick(&mut self) {
+        // The screensaver draws nothing that moves between jumps; redraw only at a jump.
+        if let Some((_, step)) = self.screensaver_position_step()
+            && step != self.screensaver_step
+        {
+            self.screensaver_step = step;
+            self.dirty = true;
+        }
+        let mut motion = std::mem::take(&mut self.motion);
+        self.dirty |= motion.advance(&self.motion_inputs(), Instant::now());
+        self.motion = motion;
         let recents_open = self.recents_open();
         if recents_open || self.recents.visibility > 0. {
             self.dirty |= self.recents.animate(
@@ -391,7 +577,7 @@ impl State {
         if self
             .notice
             .as_ref()
-            .is_some_and(|(_, start)| start.elapsed() < Duration::from_millis(120))
+            .is_some_and(|(_, start)| start.elapsed() < Duration::from_millis(240))
             && !self.preferences.reduced_motion
         {
             self.dirty = true;
@@ -414,25 +600,19 @@ impl State {
         }
     }
 
-    pub fn page_index(&self) -> usize {
-        match self.page {
-            Page::Home => 0,
-            Page::Apps => 1,
-            Page::Settings => 2,
-        }
-    }
-
     pub fn animating(&self) -> bool {
         ((self.recents_open() || self.recents.visibility > 0.)
             && (self.recents.visibility != if self.recents_open() { 1. } else { 0. }
                 || self.recents.cards_animating(self.pointer)))
             || self.previous_background.is_some()
             || self.panel_started.is_some()
+            || self.motion.animating()
+            || (self.moving.is_some() && !self.preferences.reduced_motion)
             || (!self.preferences.reduced_motion
                 && self
                     .notice
                     .as_ref()
-                    .is_some_and(|(_, start)| start.elapsed() < Duration::from_millis(120)))
+                    .is_some_and(|(_, start)| start.elapsed() < Duration::from_millis(240)))
     }
 
     /// Home's lifecycle relaunch returns directly to Home, even from an overlay.
@@ -445,52 +625,34 @@ impl State {
         self.wallpaper_upload = None;
         self.pointer = false;
         self.pressed = None;
-        self.open(0);
+        self.open(Page::Home);
         pending
     }
 
-    pub fn open(&mut self, index: usize) {
+    pub fn open(&mut self, page: Page) {
         self.weather.cancel_search();
-        self.page = match index {
-            1 => Page::Apps,
-            2 => Page::Settings,
-            _ => Page::Home,
-        };
-        self.focus = Target::Nav(self.page_index());
+        self.page = page;
         self.scroll = 0.;
-        if self.page == Page::Home {
-            self.scroll_favorites(0.);
-        }
-        self.query.clear();
-        self.filter = 0;
         self.overlay = None;
         self.moving = None;
         self.subpage = None;
         self.panel_started = None;
+        if page == Page::Settings {
+            self.section = 0;
+        }
+        self.focus = self.first_content();
         self.dirty = true;
     }
 
+    /// The main grid's apps: pinned favourites in their saved order, then every other visible
+    /// app by title. Hidden apps are listed in Settings › General › Hidden apps instead.
     pub fn apps(&self) -> Vec<&App> {
         let ids = self.preferences.favorites(&self.inventory.apps);
-        if self.page == Page::Home {
-            return ids
-                .iter()
-                .filter(|id| !self.preferences.hidden.contains(id))
-                .filter_map(|id| self.inventory.apps.iter().find(|app| &app.id == id))
-                .collect();
-        }
-        let query = self.query.to_lowercase();
         let mut apps: Vec<_> = self
             .inventory
             .apps
             .iter()
-            .filter(|app| {
-                self.preferences.hidden.contains(&app.id) == (self.filter == 5)
-                    && (self.filter == 0
-                        || self.filter == 5
-                        || app.category == CATEGORIES[self.filter - 1])
-                    && app.title.to_lowercase().contains(&query)
-            })
+            .filter(|app| !self.preferences.hidden.contains(&app.id) && app.id != STORE_ID)
             .collect();
         apps.sort_by(|a, b| {
             let rank = |app: &App| {
@@ -505,44 +667,78 @@ impl State {
         apps
     }
 
+    /// Hidden apps that are still installed, by title (Settings › General › Hidden apps).
+    pub fn hidden_apps(&self) -> Vec<&App> {
+        let mut apps: Vec<_> = self
+            .inventory
+            .apps
+            .iter()
+            .filter(|app| self.preferences.hidden.contains(&app.id) && app.id != STORE_ID)
+            .collect();
+        apps.sort_by_key(|app| app.title.to_lowercase());
+        apps
+    }
+
+    /// Every focusable grid card in order: the apps, then Settings.
+    pub fn grid(&self) -> Vec<Target> {
+        let mut grid = Vec::new();
+        grid.extend(
+            self.apps()
+                .into_iter()
+                .map(|app| Target::App(app.id.clone())),
+        );
+        grid
+    }
+
+    /// Input cards shown above the apps when Settings › Widgets › Inputs is on.
+    pub fn home_inputs(&self) -> Vec<&crate::model::Input> {
+        if !self.preferences.show_inputs {
+            return vec![];
+        }
+        self.inventory
+            .inputs
+            .iter()
+            .filter(|input| self.preferences.input_visible(input))
+            .collect()
+    }
+
     pub fn content_viewport(&self) -> Rect {
-        Rect::new(64., 108.8, 1792., 1080. - 108.8)
+        if self.page == Page::Settings {
+            // Settings lists fade out beneath the title line above their first row.
+            let top = crate::view::SETTINGS_TOP - 16.;
+            return Rect::new(
+                crate::view::SETTINGS_X - 40.,
+                top,
+                1920. - (crate::view::SETTINGS_X - 40.),
+                1080. - top,
+            );
+        }
+        // The grid scrolls beneath the clock; cards stay hit-testable below it.
+        Rect::new(0., MAIN_TOP, 1920., 1080. - MAIN_TOP)
     }
 
     fn scroll_bottom(&self) -> f32 {
         let viewport = self.content_viewport();
-        viewport.y + viewport.h
-            - if self.page == Page::Settings {
-                if self.subpage == Some(Subpage::Language)
-                    || (self.section == 1 && self.subpage.is_none())
-                {
-                    SETTINGS_LIST_BOTTOM_PADDING
-                } else {
-                    SETTINGS_BOTTOM_PADDING
-                }
-            } else {
-                12.
-            }
-    }
-
-    pub fn favorites_viewport(&self) -> Rect {
-        let content = self.content_viewport();
-        let left = if self.home_scroll > 0. {
-            HOME_FADE_LEFT
-        } else {
-            0.
-        };
-        Rect::new(left, content.y, HOME_FADE_RIGHT - left, content.h)
-    }
-
-    pub fn apps_viewport(&self) -> Rect {
-        let content = self.content_viewport();
-        Rect::new(content.x, 244.8, content.w, content.y + content.h - 244.8)
+        if self.page == Page::Settings {
+            // The same for every page and subpage, so new rows are covered as well.
+            return SETTINGS_SAFE_BOTTOM - SETTINGS_LIST_FADE;
+        }
+        viewport.y + viewport.h - {
+            // The third row ends at the bottom margin; the last row's focused caption may
+            // reach into that margin, as on tvOS.
+            crate::view::SCREEN_MARGIN
+        }
     }
 
     pub fn backgrounds_viewport(&self) -> Rect {
         let content = self.content_viewport();
-        Rect::new(620., 244.8, 1160., content.y + content.h - 244.8)
+        let top = crate::view::SETTINGS_TOP - 12.;
+        Rect::new(
+            crate::view::SETTINGS_X - 20.,
+            top,
+            crate::view::SETTINGS_W + 40.,
+            content.y + content.h - top,
+        )
     }
 
     pub fn hit_test(&self, controls: &[Control], x: f32, y: f32) -> Option<Target> {
@@ -550,27 +746,23 @@ impl State {
             .iter()
             .rev()
             .find(|control| {
-                let viewport =
-                    if self.page == Page::Home && matches!(control.target, Target::App(_)) {
-                        self.favorites_viewport()
-                    } else if matches!(control.target, Target::Background(_)) {
-                        self.backgrounds_viewport()
-                    } else if self.page == Page::Apps {
-                        self.apps_viewport()
-                    } else {
-                        self.content_viewport()
-                    };
+                let viewport = if matches!(control.target, Target::Background(_)) {
+                    self.backgrounds_viewport()
+                } else {
+                    self.content_viewport()
+                };
                 control.rect.contains(x, y) && (!control.scrollable || viewport.contains(x, y))
             })
             .map(|control| control.target.clone())
     }
 
-    /// Returns whether this wheel event scrolled favorites, so a pending card press is cancelled.
+    /// Scrolls the page under the pointer. Returns whether the main grid moved, so a pending
+    /// card press is cancelled rather than released on a different card.
     pub fn wheel_scroll(
         &mut self,
         controls: &[Control],
         position: Option<(f32, f32)>,
-        x: i32,
+        _x: i32,
         y: i32,
     ) -> bool {
         let backgrounds =
@@ -579,53 +771,17 @@ impl State {
         {
             return false;
         }
-        let over_favorites = self.page == Page::Home
-            && position.is_some_and(|(x, y)| {
-                self.favorites_viewport().contains(x, y)
-                    && controls.iter().any(|control| {
-                        matches!(control.target, Target::App(_)) && control.rect.contains(x, y)
-                    })
-            });
-        let favorites = self.page == Page::Home && (x != 0 || over_favorites);
-        if favorites {
-            self.scroll_favorites((if x != 0 { x } else { -y }) as f32 * HOME_TILE_PITCH);
-        } else {
-            let bottom = self.scroll_bottom();
-            let max = controls
-                .iter()
-                .filter(|c| {
-                    c.scrollable && (!backgrounds || matches!(c.target, Target::Background(_)))
-                })
-                .map(|c| c.rect.y + c.rect.h + self.scroll - bottom)
-                .fold(0., f32::max);
-            self.scroll = (self.scroll - y as f32 * 90.).clamp(0., max.max(0.));
-        }
+        let bottom = self.scroll_bottom();
+        let max = controls
+            .iter()
+            .filter(|c| c.scrollable && (!backgrounds || matches!(c.target, Target::Background(_))))
+            .map(|c| c.rect.y + c.rect.h + self.scroll - bottom)
+            .fold(0., f32::max);
+        let previous = self.scroll;
+        self.scroll = (self.scroll - y as f32 * 90.).clamp(0., max.max(0.));
         self.pointer = true;
         self.dirty = true;
-        favorites
-    }
-
-    pub fn scroll_favorites(&mut self, delta: f32) {
-        let count = self
-            .preferences
-            .favorites(&self.inventory.apps)
-            .iter()
-            .filter(|id| {
-                !self.preferences.hidden.contains(id)
-                    && self.inventory.apps.iter().any(|app| &app.id == *id)
-            })
-            .count();
-        let content = if count == 0 {
-            0.
-        } else {
-            (count - 1) as f32 * HOME_TILE_PITCH + HOME_TILE_WIDTH
-        };
-        let max = (content - (HOME_STRIP_RIGHT - HOME_STRIP_LEFT)).max(0.);
-        let next = (self.home_scroll + delta).clamp(0., max);
-        if next != self.home_scroll {
-            self.home_scroll = next;
-            self.dirty = true;
-        }
+        self.page == Page::Home && self.scroll != previous
     }
 
     pub fn set_inventory(&mut self, next: Inventory, warning: Option<String>) {
@@ -662,7 +818,7 @@ impl State {
                 .inventory
                 .inputs
                 .first()
-                .map_or(Target::Sidebar(WIDGETS_SECTION), |input| {
+                .map_or(Target::InputsToggle, |input| {
                     Target::InputMode(input.id.clone())
                 });
         }
@@ -702,43 +858,60 @@ impl State {
     }
 
     pub fn reconcile_focus(&mut self) {
-        if self.page == Page::Home {
-            self.scroll_favorites(0.);
-        }
         if let Target::App(id) = &self.focus
             && !self.apps().iter().any(|app| &app.id == id)
         {
             self.focus = self.first_content();
         }
         if let Target::Input(id) = &self.focus
-            && !self
-                .inventory
-                .inputs
-                .iter()
-                .any(|input| &input.id == id && self.preferences.input_visible(input))
+            && !self.home_inputs().iter().any(|input| &input.id == id)
+            && self.page == Page::Home
         {
             self.focus = self.first_content();
         }
     }
 
+    /// Where focus lands when a page opens: the first favourite (the grid's first card) on the
+    /// main screen, General in Settings.
     pub fn first_content(&self) -> Target {
         match self.page {
+            Page::Home if self.inventory_failed_empty() => Target::Retry,
             Page::Home => self
                 .apps()
-                .get(((self.home_scroll - 0.01).max(0.) / HOME_TILE_PITCH).ceil() as usize)
-                .map(|app| Target::App(app.id.clone()))
-                .unwrap_or(if self.error.is_some() {
-                    Target::Retry
-                } else {
-                    Target::Browse
-                }),
-            Page::Apps => self
-                .apps()
                 .first()
-                .map(|app| Target::App(app.id.clone()))
-                .unwrap_or(Target::Filter(1)),
+                .map_or(Target::SettingsIcon, |app| Target::App(app.id.clone())),
             Page::Settings => Target::Sidebar(0),
         }
+    }
+
+    /// The inventory failed before any app was shown: the grid offers Retry beneath it.
+    pub fn inventory_failed_empty(&self) -> bool {
+        self.error.is_some() && self.inventory.apps.is_empty()
+    }
+
+    /// Whether `target` is in the main screen's first card row (inputs when shown, else the
+    /// grid), where the top shelf stays in view.
+    fn in_first_row(&self, target: &Target) -> bool {
+        match target {
+            // Input glyphs sit in the top bar, above the cards.
+            Target::Input(_) => true,
+            Target::App(_) => self
+                .grid()
+                .iter()
+                .position(|item| item == target)
+                .is_some_and(|index| index < APPS_COLUMNS),
+            _ => true,
+        }
+    }
+
+    /// How far the current page can scroll, from its scrollable controls.
+    fn scroll_limit(&self, controls: &[Control]) -> f32 {
+        let bottom = self.scroll_bottom();
+        controls
+            .iter()
+            .filter(|c| c.scrollable)
+            .map(|c| c.rect.y + c.rect.h + self.scroll - bottom)
+            .fold(0., f32::max)
     }
 
     pub fn focus(&mut self, target: Target, controls: &[Control]) {
@@ -759,32 +932,49 @@ impl State {
     /// Pointer paths deliberately do not call this method.
     pub fn reveal_focus(&mut self, controls: &[Control]) -> bool {
         let previous = self.scroll;
-        let previous_home = self.home_scroll;
         if let Some(control) = controls.iter().find(|c| c.target == self.focus) {
-            if self.page == Page::Home && matches!(self.focus, Target::App(_)) {
-                if control.rect.x < HOME_STRIP_LEFT {
-                    self.home_scroll += control.rect.x - HOME_STRIP_LEFT;
-                } else if control.rect.x + control.rect.w > HOME_STRIP_RIGHT {
-                    self.home_scroll += control.rect.x + control.rect.w - HOME_STRIP_RIGHT;
-                }
-            }
-            if matches!(
-                self.focus,
-                Target::Nav(_)
-                    | Target::Filter(_)
-                    | Target::ClearFilter
-                    | Target::Search
-                    | Target::ClearSearch
-                    | Target::Sidebar(_)
-            ) {
+            if self.page == Page::Home {
+                // Up to three rows fit beneath the compact shelf, so the page stays put. With
+                // more, the grid scrolls only as far as the focused row needs (the shelf
+                // collapses as it does) and returns when the first row has focus again.
+                self.scroll = if self.in_first_row(&self.focus) || !control.scrollable {
+                    0.
+                } else {
+                    let mut scroll = self.scroll;
+                    let bottom = self.scroll_bottom();
+                    if control.rect.y + control.rect.h > bottom {
+                        scroll += control.rect.y + control.rect.h - bottom;
+                    }
+                    if control.rect.y < GRID_TOP_LIMIT {
+                        scroll -= GRID_TOP_LIMIT - control.rect.y;
+                    }
+                    // Scroll in whole rows, so the top visible row sits just below the clock
+                    // instead of half under it; the last step may leave room beneath.
+                    let first = controls
+                        .iter()
+                        .filter(|c| c.scrollable && is_grid_card(&c.target))
+                        .map(|c| c.rect.y + self.scroll)
+                        .fold(f32::MAX, f32::min);
+                    let align = |value: f32| {
+                        let base = first - GRID_TOP_LIMIT;
+                        if value <= 0. {
+                            0.
+                        } else {
+                            base + ((value - base) / crate::view::ROW_PITCH).ceil().max(0.)
+                                * crate::view::ROW_PITCH
+                        }
+                    };
+                    align(scroll)
+                        .min(align(self.scroll_limit(controls)))
+                        .max(0.)
+                };
+            } else if matches!(self.focus, Target::Sidebar(_)) {
                 self.scroll = 0.;
             } else if control.scrollable {
                 let top = if matches!(self.focus, Target::Background(_)) {
                     self.backgrounds_viewport().y + 8.
-                } else if self.page == Page::Apps {
-                    self.apps_viewport().y + 8.
                 } else {
-                    120.8
+                    crate::view::SETTINGS_TOP - 12.
                 };
                 if control.rect.y < top {
                     self.scroll = (self.scroll + control.rect.y - top).max(0.);
@@ -795,13 +985,10 @@ impl State {
                 }
             }
         }
-        if self.page == Page::Home {
-            self.scroll_favorites(0.);
-        }
-        if self.scroll != previous || self.home_scroll != previous_home {
+        if self.scroll != previous {
             self.dirty = true;
         }
-        self.scroll != previous || self.home_scroll != previous_home
+        self.scroll != previous
     }
 
     /// Hover and pointer-down must not move the control before pointer-up.
@@ -825,14 +1012,6 @@ impl State {
         }
         self.focus = target;
         self.dirty = true;
-    }
-
-    pub fn hidden_count(&self) -> usize {
-        self.inventory
-            .apps
-            .iter()
-            .filter(|app| self.preferences.hidden.contains(&app.id))
-            .count()
     }
 
     pub fn background_count(&self) -> usize {
@@ -989,7 +1168,6 @@ impl State {
         self.panel_started = None;
         self.pointer = false;
         self.focus = match self.subpage.take() {
-            Some(Subpage::AppNames) => Target::Setting(0),
             Some(Subpage::Greeting) => Target::Widget(0),
             Some(Subpage::Date) => Target::Widget(4),
             Some(Subpage::DateFormat) => {
@@ -1021,7 +1199,10 @@ impl State {
                 Target::WeatherTemperature
             }
             Some(Subpage::Language) => Target::Setting(4),
-            Some(Subpage::TextRendering) => Target::Setting(7),
+            Some(Subpage::HiddenApps) => Target::Setting(11),
+            Some(Subpage::Screensaver) => Target::Setting(12),
+            Some(Subpage::Appearance) => Target::Setting(14),
+            Some(Subpage::TextSize) => Target::Setting(15),
             None => Target::Sidebar(self.section),
         };
         self.scroll = 0.;
@@ -1072,50 +1253,12 @@ impl State {
         }
         if self.overlay.is_none() {
             if self.page == Page::Home
-                && let Target::App(id) = &self.focus
+                && let Some(next) = self.home_direction(direction)
             {
-                let apps = self.apps();
-                if let Some(index) = apps.iter().position(|app| &app.id == id) {
-                    match direction {
-                        Direction::Left | Direction::Right => {
-                            let next = if matches!(direction, Direction::Left) {
-                                index.saturating_sub(1)
-                            } else {
-                                (index + 1).min(apps.len() - 1)
-                            };
-                            let id = apps[next].id.clone();
-                            self.focus(Target::App(id), controls);
-                        }
-                        Direction::Up => self.focus(Target::Nav(0), controls),
-                        Direction::Down => {
-                            let x = controls
-                                .iter()
-                                .find(|control| control.target == self.focus)
-                                .map_or(960., |control| control.rect.center().0);
-                            let top = controls
-                                .iter()
-                                .filter(|control| matches!(control.target, Target::Input(_)))
-                                .map(|control| control.rect.y)
-                                .fold(f32::INFINITY, f32::min);
-                            let next = controls
-                                .iter()
-                                .filter(|control| {
-                                    matches!(control.target, Target::Input(_))
-                                        && (control.rect.y - top).abs() < 1.
-                                })
-                                .min_by(|a, b| {
-                                    (a.rect.center().0 - x)
-                                        .abs()
-                                        .total_cmp(&(b.rect.center().0 - x).abs())
-                                })
-                                .map(|control| control.target.clone());
-                            if let Some(next) = next {
-                                self.focus(next, controls);
-                            }
-                        }
-                    }
-                    return vec![];
+                if let Some(next) = next {
+                    self.focus(next, controls);
                 }
+                return vec![];
             }
             let setting_rows: Option<&[Target]> = match self.subpage {
                 Some(Subpage::Greeting) => Some(&[
@@ -1123,7 +1266,6 @@ impl State {
                     Target::GreetingName,
                     Target::GreetingNameClear,
                 ]),
-                Some(Subpage::AppNames) => Some(&[Target::AppNamesHome, Target::AppNamesApps]),
                 Some(Subpage::Date) => Some(&[Target::DateToggle, Target::DateFormat]),
                 Some(Subpage::Clock) => Some(&[Target::ClockFormat, Target::ClockTimeFormat]),
                 _ => None,
@@ -1135,7 +1277,7 @@ impl State {
                     Direction::Left => self.close_subpage(),
                     Direction::Up => self.focus(
                         if index == 0 {
-                            Target::Nav(2)
+                            self.focus.clone()
                         } else {
                             rows[index - 1].clone()
                         },
@@ -1161,13 +1303,13 @@ impl State {
             }
             if let Target::Choice(index) = self.focus {
                 let count = match self.subpage {
-                    Some(
-                        Subpage::ClockFormat
-                        | Subpage::TimeFormat
-                        | Subpage::Temperature
-                        | Subpage::TextRendering,
-                    ) => 2,
+                    Some(Subpage::ClockFormat | Subpage::TimeFormat | Subpage::Temperature) => 2,
                     Some(Subpage::Language) => Language::ALL.len(),
+                    // Without hidden apps the empty state holds focus.
+                    Some(Subpage::HiddenApps) => self.hidden_apps().len().max(1),
+                    Some(Subpage::Screensaver) => SCREENSAVER_MINUTES.len(),
+                    Some(Subpage::Appearance) => crate::model::Appearance::ALL.len(),
+                    Some(Subpage::TextSize) => 2,
                     Some(Subpage::DateFormat) => crate::model::DateFormat::ALL.len(),
                     _ => 3,
                 };
@@ -1175,7 +1317,7 @@ impl State {
                     Direction::Left => self.close_subpage(),
                     Direction::Up => self.focus(
                         if index == 0 {
-                            Target::Nav(2)
+                            self.focus.clone()
                         } else {
                             Target::Choice(index - 1)
                         },
@@ -1225,7 +1367,7 @@ impl State {
                     }
                     Direction::Up => self.focus(
                         if index == 0 {
-                            Target::Nav(2)
+                            self.focus.clone()
                         } else {
                             Target::Sidebar(index - 1)
                         },
@@ -1255,7 +1397,7 @@ impl State {
             }
             if matches!(
                 self.focus,
-                Target::Setting(0 | 1 | 4 | 7)
+                Target::Setting(1 | 4 | 11 | 12 | 14 | 15)
                     | Target::Widget(_)
                     | Target::InputMode(_)
                     | Target::WeatherLocation
@@ -1277,15 +1419,30 @@ impl State {
                     .first()
                     .is_some_and(|input| &input.id == id)
             {
-                self.focus(Target::Nav(2), controls);
+                self.focus(Target::InputsToggle, controls);
                 return vec![];
             }
-            if self.focus == Target::Setting(0) && matches!(direction, Direction::Up) {
-                self.focus(Target::Nav(2), controls);
+            if self.focus == Target::InputsToggle {
+                match direction {
+                    Direction::Left => self.close_subpage(),
+                    Direction::Down => {
+                        let next = self
+                            .inventory
+                            .inputs
+                            .first()
+                            .map_or(Target::Setting(3), |input| {
+                                Target::InputMode(input.id.clone())
+                            });
+                        self.focus(next, controls);
+                    }
+                    _ => {}
+                }
                 return vec![];
             }
-            if self.focus == Target::WeatherToggle && matches!(direction, Direction::Up) {
-                self.focus(Target::Nav(2), controls);
+            // The top rows of Settings lists have nothing above them.
+            if matches!(self.focus, Target::Setting(0) | Target::WeatherToggle)
+                && matches!(direction, Direction::Up)
+            {
                 return vec![];
             }
             if matches!(
@@ -1304,7 +1461,7 @@ impl State {
                             {
                                 Target::WeatherClear
                             } else {
-                                Target::Nav(2)
+                                self.focus.clone()
                             },
                             controls,
                         );
@@ -1345,60 +1502,6 @@ impl State {
                     _ => {}
                 }
                 return vec![];
-            }
-            if self.focus == Target::Search {
-                match direction {
-                    Direction::Left => {
-                        self.focus(
-                            Target::Filter(if self.hidden_count() > 0 { 5 } else { 4 }),
-                            controls,
-                        );
-                        return vec![];
-                    }
-                    Direction::Up => {
-                        self.focus(Target::Nav(1), controls);
-                        return vec![];
-                    }
-                    _ => {}
-                }
-            }
-            if let Target::Nav(index) = self.focus {
-                let next = match direction {
-                    Direction::Left if index > 0 => Some(index - 1),
-                    Direction::Right if index < 2 => Some(index + 1),
-                    _ => None,
-                };
-                if let Some(next) = next {
-                    self.open(next);
-                    return vec![];
-                }
-            }
-            if self.page == Page::Apps
-                && let Target::App(id) = &self.focus
-                && matches!(direction, Direction::Up | Direction::Down)
-            {
-                let apps = self.apps();
-                if let Some(index) = apps.iter().position(|app| &app.id == id) {
-                    // A preceding row may be above the visible scroll region.
-                    // Its grid index still defines the route; reveal_focus then
-                    // scrolls it into view, without letting the fixed nav steal Up.
-                    let next = match direction {
-                        Direction::Up if index < APPS_COLUMNS => Some(Target::Filter(1)),
-                        Direction::Up => Some(Target::App(apps[index - APPS_COLUMNS].id.clone())),
-                        Direction::Down
-                            if (index / APPS_COLUMNS + 1) * APPS_COLUMNS < apps.len() =>
-                        {
-                            Some(Target::App(
-                                apps[(index + APPS_COLUMNS).min(apps.len() - 1)].id.clone(),
-                            ))
-                        }
-                        _ => None,
-                    };
-                    if let Some(next) = next {
-                        self.focus(next, controls);
-                    }
-                    return vec![];
-                }
             }
             if let Target::Background(index) = self.focus {
                 match direction {
@@ -1441,7 +1544,7 @@ impl State {
             if self.focus == Target::UploadWallpaper {
                 match direction {
                     Direction::Down => self.focus(Target::Background(0), controls),
-                    Direction::Up => self.focus(Target::Nav(2), controls),
+                    Direction::Up => {}
                     Direction::Left => self.focus(Target::Sidebar(1), controls),
                     Direction::Right => self.focus(Target::WallpaperGradient, controls),
                 }
@@ -1451,7 +1554,7 @@ impl State {
                 match direction {
                     Direction::Right => self.focus(Target::WallpaperCycle, controls),
                     Direction::Left => self.focus(Target::UploadWallpaper, controls),
-                    Direction::Up => self.focus(Target::Nav(2), controls),
+                    Direction::Up => {}
                     Direction::Down => self.focus(
                         Target::Background(1.min(self.background_count().saturating_sub(1))),
                         controls,
@@ -1463,7 +1566,7 @@ impl State {
                 match direction {
                     Direction::Right => {}
                     Direction::Left => self.focus(Target::WallpaperGradient, controls),
-                    Direction::Up => self.focus(Target::Nav(2), controls),
+                    Direction::Up => {}
                     Direction::Down => self.focus(
                         Target::Background(2.min(self.background_count().saturating_sub(1))),
                         controls,
@@ -1471,20 +1574,9 @@ impl State {
                 }
                 return vec![];
             }
-            if matches!(self.focus, Target::Nav(_)) && matches!(direction, Direction::Down) {
-                if self.page == Page::Settings {
-                    self.subpage = None;
-                    self.section = 0;
-                }
-                self.focus(self.first_content(), controls);
-                return vec![];
-            }
             if self.page == Page::Settings
                 && matches!(direction, Direction::Left)
-                && !matches!(
-                    self.focus,
-                    Target::Nav(_) | Target::Sidebar(_) | Target::TvSettings
-                )
+                && !matches!(self.focus, Target::Sidebar(_))
             {
                 if let Target::Background(index) = self.focus {
                     if index % 3 != 0 { /* left follows gallery order */
@@ -1506,21 +1598,7 @@ impl State {
         let next = controls
             .iter()
             .filter(|candidate| candidate.target != self.focus)
-            .filter(|candidate| {
-                self.page != Page::Home
-                    || !matches!(candidate.target, Target::App(_))
-                    || (candidate.rect.x >= HOME_STRIP_LEFT - 0.1
-                        && candidate.rect.x + candidate.rect.w <= HOME_STRIP_RIGHT + 0.1)
-            })
             .filter_map(|candidate| {
-                // Header controls never steal an Up route from the active tab.
-                if self.overlay.is_none()
-                    && matches!(direction, Direction::Up)
-                    && candidate.rect.y < 150.
-                    && candidate.target != Target::Nav(self.page_index())
-                {
-                    return None;
-                }
                 let (cx, cy) = candidate.rect.center();
                 let (primary, cross, overlap) = match direction {
                     Direction::Up => (
@@ -1555,6 +1633,138 @@ impl State {
             self.focus(next, controls);
         }
         vec![]
+    }
+
+    /// Remote routing on the main screen, by index rather than geometry so offscreen rows
+    /// and the top shelf cannot steal it: the grid of apps has six columns;
+    /// input cards, when shown, are rows of six above it; the shelf's weather button is
+    /// above both. `None` leaves other targets to the generic routing; `Some(None)` consumes
+    /// the press without moving.
+    fn home_direction(&self, direction: Direction) -> Option<Option<Target>> {
+        let grid = self.grid();
+        // Inputs live in the top bar now, not in a block of cards above the grid.
+        let inputs: Vec<Target> = Vec::new();
+        let weather = (self.preferences.show_weather
+            && self.preferences.weather_location.is_none())
+        .then_some(Target::WeatherConfigure);
+        // The top bar's icons, right-aligned on the clock's line.
+        let bar = self.top_bar();
+        // The bar item above a card column: the right-hand columns line up with the icons.
+        let above = |column: usize| {
+            let from_right = APPS_COLUMNS - column;
+            bar.get(bar.len().saturating_sub(from_right)).cloned()
+        };
+        // Up from the top cards: the shelf's weather button above the left-hand columns, the
+        // icons above the right-hand ones (or everywhere without a weather button).
+        let up_from = |column: usize| {
+            if column < APPS_COLUMNS / 2 && weather.is_some() {
+                weather.clone()
+            } else {
+                above(column)
+            }
+        };
+        // Moving within one block of six-column rows; leaving it by its top or bottom edge.
+        let step = |items: &[Target], index: usize| -> Result<Option<Target>, bool> {
+            let column = index % APPS_COLUMNS;
+            match direction {
+                Direction::Left if column > 0 => Ok(Some(items[index - 1].clone())),
+                Direction::Right if column + 1 < APPS_COLUMNS && index + 1 < items.len() => {
+                    Ok(Some(items[index + 1].clone()))
+                }
+                Direction::Left | Direction::Right => Ok(None),
+                Direction::Up if index >= APPS_COLUMNS => {
+                    Ok(Some(items[index - APPS_COLUMNS].clone()))
+                }
+                Direction::Up => Err(true),
+                Direction::Down if (index / APPS_COLUMNS + 1) * APPS_COLUMNS < items.len() => Ok(
+                    Some(items[(index + APPS_COLUMNS).min(items.len() - 1)].clone()),
+                ),
+                Direction::Down => Err(false),
+            }
+        };
+        // Entering a block from above or below keeps the column where possible.
+        let enter = |items: &[Target], column: usize, from_above: bool| {
+            if items.is_empty() {
+                return None;
+            }
+            let row = if from_above {
+                0
+            } else {
+                (items.len() - 1) / APPS_COLUMNS
+            };
+            items
+                .get((row * APPS_COLUMNS + column).min(items.len() - 1))
+                .cloned()
+        };
+        // Down from the shelf or the bar enters the first block of cards.
+        let below = |column: usize| {
+            if inputs.is_empty() {
+                enter(&grid, column, true)
+                    .or_else(|| self.inventory_failed_empty().then_some(Target::Retry))
+            } else {
+                enter(&inputs, column, true)
+            }
+        };
+        if let Some(index) = grid.iter().position(|item| *item == self.focus) {
+            return Some(match step(&grid, index) {
+                Ok(next) => next,
+                Err(true) if !inputs.is_empty() => enter(&inputs, index % APPS_COLUMNS, false),
+                Err(true) => up_from(index % APPS_COLUMNS),
+                Err(false) => self.inventory_failed_empty().then_some(Target::Retry),
+            });
+        }
+        if let Some(index) = inputs.iter().position(|item| *item == self.focus) {
+            return Some(match step(&inputs, index) {
+                Ok(next) => next,
+                Err(true) => up_from(index % APPS_COLUMNS),
+                Err(false) => enter(&grid, index % APPS_COLUMNS, true),
+            });
+        }
+        if self.focus == Target::WeatherConfigure {
+            return Some(match direction {
+                Direction::Right => bar.first().cloned(),
+                Direction::Down => below(0),
+                _ => None,
+            });
+        }
+        if let Some(index) = bar.iter().position(|item| *item == self.focus) {
+            let column = (APPS_COLUMNS + index).saturating_sub(bar.len());
+            return Some(match direction {
+                Direction::Left if index > 0 => Some(bar[index - 1].clone()),
+                Direction::Left => weather.clone(),
+                Direction::Right => bar.get(index + 1).cloned(),
+                Direction::Down => below(column),
+                Direction::Up => None,
+            });
+        }
+        None
+    }
+
+    /// The main screen's top bar, left to right: the visible inputs when Show widget is on, then
+    /// the LG app store (when installed) and Settings.
+    pub fn top_bar(&self) -> Vec<Target> {
+        let store = self
+            .inventory
+            .apps
+            .iter()
+            .any(|app| app.id == STORE_ID)
+            .then_some(Target::StoreIcon);
+        self.home_inputs()
+            .iter()
+            .map(|input| Target::Input(input.id.clone()))
+            .chain(store)
+            .chain([Target::SettingsIcon])
+            .collect()
+    }
+
+    /// Long OK on an input glyph: its existing settings (show mode and name) in
+    /// Settings › Widgets › Inputs.
+    fn input_options(&mut self, id: String) {
+        self.open(Page::Settings);
+        self.section = WIDGETS_SECTION;
+        self.subpage = Some(Subpage::Inputs);
+        self.focus = Target::InputMode(id);
+        self.activate();
     }
 
     pub fn options(&mut self) {
@@ -1628,9 +1838,6 @@ impl State {
         self.preferences.favorites = Some(favorites);
         self.preferences.hidden.retain(|item| item != &id);
         self.inventory.apps.retain(|app| app.id != id);
-        if self.filter == 5 && self.hidden_count() == 0 {
-            self.filter = 0;
-        }
         if matches!(&self.overlay, Some(Overlay::Delete { id: current, .. } | Overlay::Options { id: current, .. }) if current == &id)
         {
             self.overlay = None;
@@ -1649,16 +1856,32 @@ impl State {
         vec![Effect::Save, Effect::Refresh]
     }
 
+    /// Holding OK on a pinned favourite reorders it (as on tvOS, where icons jiggle);
+    /// on any other app it opens the options popup.
     pub fn hold(&mut self) {
-        if self.page == Page::Home && self.overlay.is_none() {
-            if let Target::App(id) = &self.focus {
-                self.moving = Some(id.clone());
-                self.notice = None;
-                self.dirty = true;
-            }
-        } else {
-            self.options();
+        if self.page == Page::Home
+            && self.overlay.is_none()
+            && let Target::Input(id) = &self.focus
+        {
+            let id = id.clone();
+            self.input_options(id);
+            return;
         }
+        if self.page == Page::Home
+            && self.overlay.is_none()
+            && let Target::App(id) = &self.focus
+            && self
+                .preferences
+                .favorites(&self.inventory.apps)
+                .contains(id)
+        {
+            self.moving = Some(id.clone());
+            self.moving_since = Some(Instant::now());
+            self.notice = None;
+            self.dirty = true;
+            return;
+        }
+        self.options();
     }
 
     pub fn text(&mut self, text: &str) {
@@ -1692,15 +1915,7 @@ impl State {
                         .take(INPUT_NAME_LIMIT.saturating_sub(length)),
                 );
                 self.dirty = true;
-                return;
             }
-            self.query.extend(
-                text.chars()
-                    .filter(|c| !c.is_control())
-                    .take(120usize.saturating_sub(self.query.chars().count())),
-            );
-            self.scroll = 0.;
-            self.dirty = true;
         }
     }
 
@@ -1714,8 +1929,6 @@ impl State {
                 self.greeting_name_draft.pop();
             } else if self.keyboard_field == TextField::InputName {
                 self.input_name.pop();
-            } else {
-                self.query.pop();
             }
             self.dirty = true;
         }
@@ -1851,9 +2064,6 @@ impl State {
             self.greeting_name_draft = query;
         } else if self.keyboard_field == TextField::InputName {
             self.input_name = query;
-        } else {
-            self.query = query;
-            self.scroll = 0.;
         }
         self.dirty = true;
     }
@@ -1863,11 +2073,13 @@ impl State {
             TextField::Location => &self.weather.query,
             TextField::Name => &self.greeting_name_draft,
             TextField::InputName => &self.input_name,
-            TextField::Apps => &self.query,
         }
     }
     pub fn open_keyboard(&mut self, field: TextField) {
         self.keyboard_field = field;
+        // Suggestions follow what is typed now, not text already there when it opens.
+        self.suggested_query = self.weather.query.clone();
+        self.suggest_at = None;
         if field == TextField::Name {
             // SDL-webOS cannot pre-fill the system keyboard's text model.
             self.greeting_name_draft.clear();
@@ -1876,17 +2088,20 @@ impl State {
             // The TV keyboard starts empty, so a new name replaces the old one.
             self.input_name.clear();
         }
-        if cfg!(all(
-            feature = "webos",
-            target_os = "linux",
-            target_arch = "arm"
-        )) {
+        // The weather location uses Luma's own tvOS-style linear keyboard everywhere, so its
+        // suggestions can sit beneath the keys; other fields use the TV's system keyboard.
+        if field != TextField::Location
+            && cfg!(all(
+                feature = "webos",
+                target_os = "linux",
+                target_arch = "arm"
+            ))
+        {
             self.overlay = Some(Overlay::SystemKeyboard);
             self.focus = match field {
                 TextField::Location => Target::WeatherQuery,
                 TextField::Name => Target::GreetingName,
                 TextField::InputName => Target::InputRename,
-                TextField::Apps => Target::Search,
             };
             self.panel_started = None;
             self.dirty = true;
@@ -1904,9 +2119,6 @@ impl State {
         self.subpage = Some(Subpage::WeatherLocation);
         self.focus = Target::WeatherQuery;
         self.scroll = 0.;
-        if !self.preferences.reduced_motion {
-            self.panel_started = Some(Instant::now());
-        }
         self.dirty = true;
     }
     fn keyboard_return(&self) -> Target {
@@ -1914,7 +2126,6 @@ impl State {
             TextField::Location => Target::WeatherSearch,
             TextField::Name => Target::GreetingName,
             TextField::InputName => Target::InputRename,
-            TextField::Apps => Target::Search,
         }
     }
 
@@ -1934,15 +2145,16 @@ impl State {
             return vec![];
         }
         self.dirty = true;
-        if self.page != Page::Apps
-            && let Target::App(id) = &self.focus
+        if let Target::App(id) = &self.focus
             && let Some(tile) = self.preferences.custom_tile(id).cloned()
         {
             return self.send_tile(tile);
         }
         match self.focus.clone() {
-            Target::Nav(index) => self.open(index),
-            Target::Browse => self.open(1),
+            Target::SettingsIcon => self.open(Page::Settings),
+            Target::StoreIcon if !self.launching => {
+                return vec![Effect::Launch(STORE_ID.into())];
+            }
             Target::Retry => return vec![Effect::Reload],
             Target::DismissNotice => self.notice = None,
             Target::CloseDialog => return self.back(),
@@ -1958,8 +2170,6 @@ impl State {
                 self.focus = Target::CloseDialog;
                 self.pressed = None;
             }
-            Target::TvSettings => return vec![Effect::Launch("com.palm.app.settings".into())],
-            Target::App(_) if self.page == Page::Apps && !self.launching => self.options(),
             Target::App(id) | Target::Input(id) if !self.launching => {
                 return vec![Effect::Launch(id)];
             }
@@ -1975,25 +2185,8 @@ impl State {
                     return vec![Effect::Launch(id)];
                 }
             }
-            Target::Filter(index) => {
-                self.filter = if self.filter == index { 0 } else { index };
-                self.scroll = 0.;
-            }
-            Target::ClearFilter => {
-                self.filter = 0;
-                self.focus = Target::Filter(1);
-                self.scroll = 0.;
-            }
-            Target::ClearSearch => {
-                self.query.clear();
-                self.focus = Target::Search;
-                self.scroll = 0.;
-            }
-            Target::Search => {
-                self.open_keyboard(TextField::Apps);
-            }
             Target::WeatherConfigure => {
-                self.open(2);
+                self.open(Page::Settings);
                 self.section = WIDGETS_SECTION;
                 self.open_location();
                 self.open_keyboard(TextField::Location);
@@ -2009,11 +2202,12 @@ impl State {
                 self.focus = Target::Choice(usize::from(
                     self.preferences.temperature_unit == Unit::Fahrenheit,
                 ));
-                if !self.preferences.reduced_motion {
-                    self.panel_started = Some(Instant::now());
-                }
             }
             Target::WeatherQuery => self.open_keyboard(TextField::Location),
+            Target::InputsToggle => {
+                self.preferences.show_inputs = !self.preferences.show_inputs;
+                return vec![Effect::Save];
+            }
             Target::GreetingToggle => {
                 self.preferences.show_greeting = !self.preferences.show_greeting;
                 return vec![Effect::Save];
@@ -2026,22 +2220,11 @@ impl State {
                 self.subpage = Some(Subpage::DateFormat);
                 self.focus = Target::Choice(self.preferences.date_format.index());
                 self.scroll = 0.;
-                if !self.preferences.reduced_motion {
-                    self.panel_started = Some(Instant::now());
-                }
             }
             Target::GreetingName => self.open_keyboard(TextField::Name),
             Target::GreetingNameClear => {
                 self.preferences.greeting_name.clear();
                 self.focus = Target::GreetingName;
-                return vec![Effect::Save];
-            }
-            Target::AppNamesHome => {
-                self.preferences.show_home_names = !self.preferences.show_home_names;
-                return vec![Effect::Save];
-            }
-            Target::AppNamesApps => {
-                self.preferences.show_app_names = !self.preferences.show_app_names;
                 return vec![Effect::Save];
             }
             Target::ClockFormat | Target::ClockTimeFormat => {
@@ -2052,14 +2235,11 @@ impl State {
                     Subpage::TimeFormat
                 });
                 self.focus = Target::Choice(usize::from(if format {
-                    self.preferences.hour_24
+                    self.preferences.uses_24_hour()
                 } else {
                     self.preferences.show_seconds
                 }));
                 self.scroll = 0.;
-                if !self.preferences.reduced_motion {
-                    self.panel_started = Some(Instant::now());
-                }
             }
             Target::InputRename => self.open_keyboard(TextField::InputName),
             Target::Widget(index) => {
@@ -2068,23 +2248,14 @@ impl State {
                     1 => (Subpage::Weather, Target::WeatherToggle),
                     2 => (Subpage::Shortcuts, Target::TileEditor),
                     4 => (Subpage::Date, Target::DateToggle),
-                    3 => (
-                        Subpage::Inputs,
-                        self.inventory
-                            .inputs
-                            .first()
-                            .map(|input| Target::InputMode(input.id.clone()))
-                            .unwrap_or(Target::Setting(3)),
-                    ),
+                    // Like the other widgets, Inputs opens on its Show widget toggle.
+                    3 => (Subpage::Inputs, Target::InputsToggle),
                     _ => return vec![],
                 };
                 self.section = WIDGETS_SECTION;
                 self.subpage = Some(subpage);
                 self.focus = focus;
                 self.scroll = 0.;
-                if !self.preferences.reduced_motion {
-                    self.panel_started = Some(Instant::now());
-                }
             }
             Target::InstallUpdate => {
                 if !self.update_busy()
@@ -2152,6 +2323,11 @@ impl State {
             }
             Target::WeatherResult(index) => {
                 if let Some(place) = self.weather.results.get(index).cloned() {
+                    // A suggestion picked from the keyboard also closes it.
+                    if matches!(self.overlay, Some(Overlay::Keyboard)) {
+                        self.overlay = None;
+                        self.panel_started = None;
+                    }
                     self.preferences.weather_location = Some(place);
                     self.weather.invalidate_forecast();
                     self.weather.cancel_search();
@@ -2167,43 +2343,54 @@ impl State {
             }
             Target::Setting(index) => {
                 match index {
+                    // One grid now, so app names are a single toggle (focused card only).
                     0 => {
-                        self.subpage = Some(Subpage::AppNames);
-                        self.focus = Target::AppNamesHome;
-                        self.scroll = 0.;
-                        if !self.preferences.reduced_motion {
-                            self.panel_started = Some(Instant::now());
-                        }
-                        return vec![];
+                        self.preferences.show_app_names = !self.preferences.show_app_names;
+                        return vec![Effect::Save];
                     }
                     1 => {
                         self.subpage = Some(Subpage::Clock);
                         self.scroll = 0.;
-                        if !self.preferences.reduced_motion {
-                            self.panel_started = Some(Instant::now());
-                        }
                         self.focus = Target::ClockFormat;
                         return vec![];
                     }
                     2 => self.preferences.reduced_motion = !self.preferences.reduced_motion,
+                    10 => self.preferences.favorite_badges = !self.preferences.favorite_badges,
+                    12 => {
+                        self.subpage = Some(Subpage::Screensaver);
+                        self.scroll = 0.;
+                        self.focus = Target::Choice(
+                            SCREENSAVER_MINUTES
+                                .iter()
+                                .position(|m| *m == self.preferences.screensaver_minutes)
+                                .unwrap_or(3),
+                        );
+                        return vec![];
+                    }
+                    15 => {
+                        self.subpage = Some(Subpage::TextSize);
+                        self.scroll = 0.;
+                        self.focus = Target::Choice(usize::from(self.preferences.larger_text));
+                        return vec![];
+                    }
+                    14 => {
+                        self.subpage = Some(Subpage::Appearance);
+                        self.scroll = 0.;
+                        self.focus = Target::Choice(self.preferences.appearance.index());
+                        return vec![];
+                    }
+                    11 => {
+                        self.subpage = Some(Subpage::HiddenApps);
+                        self.scroll = 0.;
+                        self.focus = Target::Choice(0);
+                        return vec![];
+                    }
                     4 => {
                         self.subpage = Some(Subpage::Language);
                         self.focus = Target::Choice(self.preferences.language.index());
-                        if !self.preferences.reduced_motion {
-                            self.panel_started = Some(Instant::now());
-                        }
                         return vec![];
                     }
                     5 => return vec![Effect::Quit],
-                    7 => {
-                        self.subpage = Some(Subpage::TextRendering);
-                        self.focus = Target::Choice(self.preferences.text_rendering.index());
-                        self.scroll = 0.;
-                        if !self.preferences.reduced_motion {
-                            self.panel_started = Some(Instant::now());
-                        }
-                        return vec![];
-                    }
                     _ => return vec![Effect::Reload],
                 }
                 return vec![Effect::Save];
@@ -2245,6 +2432,19 @@ impl State {
                 self.back();
                 return vec![Effect::Save];
             }
+            Target::NightBackground => {
+                let Some(Overlay::BackgroundOptions { id, .. }) = self.overlay.clone() else {
+                    return vec![];
+                };
+                self.preferences.night_background =
+                    if self.preferences.night_background.as_deref() == Some(id.as_str()) {
+                        None
+                    } else {
+                        Some(id)
+                    };
+                self.back();
+                return vec![Effect::Save];
+            }
             Target::DeleteBackground => {
                 if let Some(Overlay::BackgroundOptions { id, restore }) = self.overlay.clone()
                     && self.can_delete_background(&id)
@@ -2265,9 +2465,6 @@ impl State {
                     .copied()
                     .unwrap_or_default();
                 self.subpage = Some(Subpage::Input(id));
-                if !self.preferences.reduced_motion {
-                    self.panel_started = Some(Instant::now());
-                }
                 self.focus = Target::Choice(match mode {
                     InputMode::On => 0,
                     InputMode::Off => 1,
@@ -2276,7 +2473,7 @@ impl State {
             }
             Target::Choice(index) => {
                 match self.subpage.clone() {
-                    Some(Subpage::ClockFormat) => self.preferences.hour_24 = index == 1,
+                    Some(Subpage::ClockFormat) => self.preferences.set_24_hour(index == 1),
                     Some(Subpage::TimeFormat) => self.preferences.show_seconds = index == 1,
                     Some(Subpage::DateFormat) => {
                         self.preferences.date_format = crate::model::DateFormat::ALL[index.min(3)];
@@ -2299,18 +2496,38 @@ impl State {
                             Language::ALL[index.min(Language::ALL.len() - 1)];
                         self.weather.cancel_search();
                     }
-                    Some(Subpage::TextRendering) => {
-                        let mode = TextRendering::ALL[index.min(TextRendering::ALL.len() - 1)];
-                        if mode != self.preferences.text_rendering {
-                            self.preferences.text_rendering = mode;
-                            self.notify(self.preferences.language.t("textRenderingRestart"));
-                        }
+                    Some(Subpage::TextSize) => self.preferences.larger_text = index == 1,
+                    Some(Subpage::Appearance) => {
+                        let modes = crate::model::Appearance::ALL;
+                        self.preferences.appearance = modes[index.min(modes.len() - 1)];
+                    }
+                    Some(Subpage::Screensaver) => {
+                        self.preferences.screensaver_minutes =
+                            SCREENSAVER_MINUTES[index.min(SCREENSAVER_MINUTES.len() - 1)];
+                    }
+                    Some(Subpage::HiddenApps) => {
+                        // Showing an app again keeps the list open on the next hidden app.
+                        let Some((id, title)) = self
+                            .hidden_apps()
+                            .get(index)
+                            .map(|app| (app.id.clone(), app.title.clone()))
+                        else {
+                            return vec![];
+                        };
+                        self.preferences.hidden.retain(|hidden| hidden != &id);
+                        let remaining = self.hidden_apps().len();
+                        self.focus = Target::Choice(index.min(remaining.saturating_sub(1)));
+                        self.notify(
+                            self.preferences
+                                .language
+                                .format("appRestored", &[("app", &title)]),
+                        );
+                        return vec![Effect::Save];
                     }
                     Some(
                         Subpage::WeatherLocation
                         | Subpage::Greeting
                         | Subpage::Date
-                        | Subpage::AppNames
                         | Subpage::Clock
                         | Subpage::Weather
                         | Subpage::Shortcuts
@@ -2389,9 +2606,6 @@ impl State {
                         );
                     }
                 }
-                if self.filter == 5 && self.hidden_count() == 0 {
-                    self.filter = 0;
-                }
                 self.focus = restore;
                 self.pointer = false;
                 if let Target::App(id) = &self.focus {
@@ -2441,7 +2655,6 @@ impl State {
                     TextField::Location => self.weather.edit(String::new()),
                     TextField::Name => self.greeting_name_draft.clear(),
                     TextField::InputName => self.input_name.clear(),
-                    TextField::Apps => self.query.clear(),
                 },
                 "Done" => {
                     self.overlay = None;
@@ -2515,26 +2728,17 @@ impl State {
             self.close_subpage();
             return vec![];
         }
-        if self.page == Page::Settings && !matches!(self.focus, Target::Nav(_)) {
+        if self.page == Page::Settings {
             if matches!(self.focus, Target::Sidebar(_)) {
-                self.focus = Target::Nav(2);
+                // Leaving Settings returns to its card in the grid.
+                self.open(Page::Home);
+                self.focus = Target::SettingsIcon;
             } else {
                 self.focus = Target::Sidebar(self.section);
             }
             self.scroll = 0.;
             return vec![];
         }
-        if self.page == Page::Apps && matches!(self.focus, Target::Search | Target::ClearSearch) {
-            self.query.clear();
-            self.focus = Target::Nav(1);
-            self.scroll = 0.;
-            return vec![];
-        }
-        if self.page != Page::Home {
-            self.open(0);
-            vec![]
-        } else {
-            self.open_recents()
-        }
+        self.open_recents()
     }
 }

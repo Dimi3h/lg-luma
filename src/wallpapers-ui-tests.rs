@@ -6,13 +6,14 @@ fn custom(index: u32) -> Wallpaper {
         id: format!("custom-{index:032x}"),
         directory: PathBuf::from(format!("/preview/wallpapers/custom-{index:032x}")),
         has_original: true,
+        blurred: [false; 2],
     }
 }
 
 #[test]
 fn upload_sits_left_of_rotation_and_both_remain_fixed_in_every_language() {
     let mut state = ready();
-    state.open(2);
+    state.open(crate::state::Page::Settings);
     state.section = 1;
     for language in crate::i18n::Language::ALL {
         state.preferences.language = language;
@@ -59,7 +60,7 @@ fn upload_sits_left_of_rotation_and_both_remain_fixed_in_every_language() {
 #[test]
 fn cycling_button_toggles_on_off_without_opening_a_page_or_moving_controls() {
     let mut state = ready();
-    state.open(2);
+    state.open(crate::state::Page::Settings);
     state.section = 1;
     state.focus = Target::UploadWallpaper;
     state.direction(Direction::Right, &controls(&state));
@@ -122,8 +123,9 @@ fn cycling_button_toggles_on_off_without_opening_a_page_or_moving_controls() {
             })
             .unwrap();
         assert!(style.align_right);
-        assert!((value.x - title.x - title.w - 24.).abs() < 0.001);
-        assert!((button.x + button.w - value.x - value.w - 24.2).abs() < 0.001);
+        assert!((value.x - title.x - title.w - 20.).abs() < 0.001);
+        // Focus in Settings is static (no grow); the value keeps its inset from the edge.
+        assert!((button.x + button.w - value.x - value.w - 28.).abs() < 0.001);
         for (old, new) in before.iter().zip(&enabled.controls) {
             assert_eq!(old.target, new.target);
             assert_eq!(
@@ -139,7 +141,7 @@ fn cycling_button_toggles_on_off_without_opening_a_page_or_moving_controls() {
 #[test]
 fn gradient_toggle_is_saved_stable_and_switches_bundled_and_uploaded_images() {
     let mut state = ready();
-    state.open(2);
+    state.open(crate::state::Page::Settings);
     state.section = 1;
     state.focus = Target::WallpaperGradient;
     state.scroll = 300.;
@@ -239,7 +241,7 @@ fn automatic_changes_preserve_manual_splash_across_saves_and_restart_and_manual_
     let mut restored = State::new(preferences);
     assert!(restored.cycle_wallpaper(200));
     assert_eq!(restored.preferences.splash_background(), "forest");
-    restored.open(2);
+    restored.open(crate::state::Page::Settings);
     restored.section = 1;
     restored.focus = Target::Background(0);
     restored.activate();
@@ -268,7 +270,7 @@ fn former_exclusions_are_ignored_and_only_the_on_off_state_is_saved() {
 #[test]
 fn upload_is_modal_and_close_restores_its_exact_parent() {
     let mut state = ready();
-    state.open(2);
+    state.open(crate::state::Page::Settings);
     state.section = 1;
     state.focus = Target::Background(0);
     state.direction(Direction::Up, &controls(&state));
@@ -293,7 +295,7 @@ fn upload_is_modal_and_close_restores_its_exact_parent() {
 #[test]
 fn upload_stays_active_without_desktop_focus_but_requires_tv_focus() {
     let mut state = ready();
-    state.open(2);
+    state.open(crate::state::Page::Settings);
     state.section = 1;
     state.focus = Target::UploadWallpaper;
     state.activate();
@@ -324,7 +326,7 @@ fn upload_stays_active_without_desktop_focus_but_requires_tv_focus() {
 #[test]
 fn upload_instructions_are_ordered_and_only_the_displayed_url_loses_its_slash() {
     let mut state = ready();
-    state.open(2);
+    state.open(crate::state::Page::Settings);
     state.section = 1;
     state.focus = Target::UploadWallpaper;
     state.activate();
@@ -372,7 +374,7 @@ fn upload_instructions_are_ordered_and_only_the_displayed_url_loses_its_slash() 
 #[test]
 fn upload_button_is_compact_and_rotation_is_right_aligned_in_every_language() {
     let mut state = ready();
-    state.open(2);
+    state.open(crate::state::Page::Settings);
     state.section = 1;
     for language in crate::i18n::Language::ALL {
         state.preferences.language = language;
@@ -404,14 +406,14 @@ fn upload_button_is_compact_and_rotation_is_right_aligned_in_every_language() {
                 _ => None,
             })
             .unwrap();
-        assert!((upload.x + upload.w - title.x - title.w - 24.2).abs() < 0.01);
+        assert!((upload.x + upload.w - title.x - title.w - 28.).abs() < 0.01);
     }
 }
 
 #[test]
-fn gallery_scrolls_behind_fixed_controls_without_clipping_or_fades() {
+fn gallery_scrolls_behind_fixed_controls_and_fades_beneath_the_title_line() {
     let mut state = ready();
-    state.open(2);
+    state.open(crate::state::Page::Settings);
     state.section = 1;
     state.set_wallpapers((1..=8).map(custom).collect());
     let before = controls(&state);
@@ -446,16 +448,24 @@ fn gallery_scrolls_behind_fixed_controls_without_clipping_or_fades() {
         .find(|c| c.target == Target::Background(3))
         .unwrap();
     assert_eq!(old.rect.y - new.rect.y, state.scroll);
-    assert!(!scrolled.draw.iter().any(|draw| matches!(
+    // No clipping; cards fade out just above the first row, beneath the title line.
+    assert!(
+        !scrolled
+            .draw
+            .iter()
+            .any(|draw| matches!(draw, Draw::Clip(Some(_))))
+    );
+    assert!(scrolled.draw.iter().any(|draw| matches!(
         draw,
-        Draw::Clip(Some(_)) | Draw::EdgeFade(Some(_)) | Draw::EdgeFadeX(Some(_))
+        Draw::EdgeFade(Some(fade)) if fade[1] <= crate::view::SETTINGS_TOP
     )));
     let last_card = scrolled
         .draw
         .iter()
         .rposition(|draw| {
             matches!(draw,
-                Draw::Image(_, rect, ..) if rect.w == 360. && rect.h == 202.5
+                Draw::Image(_, rect, ..) if rect.w == crate::view::GALLERY_WIDTH
+                    && rect.h == crate::view::GALLERY_HEIGHT
             )
         })
         .unwrap();
@@ -480,7 +490,7 @@ fn gallery_scrolls_behind_fixed_controls_without_clipping_or_fades() {
 #[test]
 fn scrolled_backgrounds_cannot_capture_upload_or_sidebar_pointer_hits() {
     let mut state = ready();
-    state.open(2);
+    state.open(crate::state::Page::Settings);
     state.section = 1;
     state.scroll = 150.;
     let gallery = controls(&state);
@@ -494,9 +504,10 @@ fn scrolled_backgrounds_cannot_capture_upload_or_sidebar_pointer_hits() {
         state.hit_test(&gallery, x, y),
         Some(Target::UploadWallpaper)
     );
-    assert_eq!(state.hit_test(&gallery, 1000., 200.), None);
+    // Between the title-line actions and the gallery viewport nothing is hit.
+    assert_eq!(state.hit_test(&gallery, 1000., 218.), None);
     assert_eq!(
-        state.hit_test(&gallery, 300., 280.),
+        state.hit_test(&gallery, 300., 360.),
         Some(Target::Sidebar(1))
     );
     assert_eq!(
@@ -508,7 +519,7 @@ fn scrolled_backgrounds_cannot_capture_upload_or_sidebar_pointer_hits() {
 #[test]
 fn remote_background_focus_stays_below_the_fixed_upload_action() {
     let mut state = ready();
-    state.open(2);
+    state.open(crate::state::Page::Settings);
     state.section = 1;
     state.set_wallpapers((1..=9).map(custom).collect());
     state.focus = Target::Background(2);
@@ -534,7 +545,7 @@ fn remote_background_focus_stays_below_the_fixed_upload_action() {
 #[test]
 fn custom_gallery_navigation_reveals_whole_cards_in_incomplete_rows() {
     let mut state = ready();
-    state.open(2);
+    state.open(crate::state::Page::Settings);
     state.section = 1;
     state.set_wallpapers(vec![custom(1), custom(2)]);
     state.focus = Target::Background(8);
@@ -562,7 +573,7 @@ fn custom_gallery_navigation_reveals_whole_cards_in_incomplete_rows() {
 #[test]
 fn upload_discovery_does_not_apply_and_custom_selection_uses_immutable_paths() {
     let mut state = ready();
-    state.open(2);
+    state.open(crate::state::Page::Settings);
     state.section = 1;
     let item = custom(1);
     state.set_wallpapers(vec![item.clone()]);
@@ -603,7 +614,7 @@ fn upload_discovery_does_not_apply_and_custom_selection_uses_immutable_paths() {
 #[test]
 fn catalog_updates_keep_the_focused_image_and_pointer_geometry_stationary() {
     let mut state = ready();
-    state.open(2);
+    state.open(crate::state::Page::Settings);
     state.section = 1;
     let item = custom(1);
     state.set_wallpapers(vec![item.clone()]);
@@ -626,9 +637,9 @@ fn catalog_updates_keep_the_focused_image_and_pointer_geometry_stationary() {
 }
 
 #[test]
-fn background_popup_is_modal_lifts_the_same_thumbnail_and_restores_its_parent() {
+fn background_popup_is_modal_keeps_the_same_thumbnail_and_restores_its_parent() {
     let mut state = ready();
-    state.open(2);
+    state.open(crate::state::Page::Settings);
     state.section = 1;
     state.focus = Target::Background(0);
     let before = controls(&state)
@@ -650,9 +661,19 @@ fn background_popup_is_modal_lifts_the_same_thumbnail_and_restores_its_parent() 
             .iter()
             .map(|c| c.target.clone())
             .collect::<Vec<_>>(),
-        vec![Target::UseBackground, Target::DeleteBackground]
+        vec![
+            Target::UseBackground,
+            Target::NightBackground,
+            Target::DeleteBackground
+        ]
     );
-    assert!(popup.draw.iter().any(|draw| matches!(draw, Draw::Image(_, rect, ..) if rect.x == before.x && rect.y == before.y && rect.w == before.w && rect.h == 202.5)));
+    // The popup keeps the same thumbnail in place, unscaled: cards no longer lift.
+    assert!(popup.draw.iter().any(
+        |draw| matches!(draw, Draw::Image(_, rect, ..)
+            if rect.x == before.x && rect.y == before.y && rect.w == before.w && rect.h == before.h)
+    ));
+    state.direction(Direction::Down, &popup.controls);
+    assert_eq!(state.focus, Target::NightBackground);
     state.direction(Direction::Down, &popup.controls);
     assert_eq!(state.focus, Target::DeleteBackground);
     state.activate();
@@ -671,7 +692,7 @@ fn background_popup_is_modal_lifts_the_same_thumbnail_and_restores_its_parent() 
 #[test]
 fn selected_background_has_no_delete_action_and_rejects_forced_confirmation() {
     let mut state = ready();
-    state.open(2);
+    state.open(crate::state::Page::Settings);
     state.section = 1;
     let selected = state.preferences.background.clone();
     let index = (0..state.background_count())
@@ -679,7 +700,8 @@ fn selected_background_has_no_delete_action_and_rejects_forced_confirmation() {
         .unwrap();
     state.focus = Target::Background(index);
     state.options();
-    assert_eq!(scene(&state).controls.len(), 1);
+    // Use and Use at night, but no Delete.
+    assert_eq!(scene(&state).controls.len(), 2);
     assert!(!state.can_delete_background(&selected));
     state.focus = Target::DeleteBackground;
     state.activate();
@@ -700,7 +722,7 @@ fn selected_background_has_no_delete_action_and_rejects_forced_confirmation() {
 #[test]
 fn every_unselected_bundled_background_can_be_removed_and_stays_removed_after_reload() {
     let mut state = ready();
-    state.open(2);
+    state.open(crate::state::Page::Settings);
     state.section = 1;
     for (id, _) in BACKGROUNDS {
         if *id == state.preferences.background {
@@ -731,7 +753,7 @@ fn every_unselected_bundled_background_can_be_removed_and_stays_removed_after_re
 #[test]
 fn uploaded_deletion_is_single_flight_handles_failures_and_keeps_unrelated_focus() {
     let mut state = ready();
-    state.open(2);
+    state.open(crate::state::Page::Settings);
     state.section = 1;
     let lake = custom(1);
     let mountain = custom(2);
@@ -775,7 +797,7 @@ fn uploaded_deletion_is_single_flight_handles_failures_and_keeps_unrelated_focus
 #[test]
 fn filtered_bundled_entries_do_not_misidentify_custom_thumbnails_or_popup_parents() {
     let mut state = ready();
-    state.open(2);
+    state.open(crate::state::Page::Settings);
     state.section = 1;
     state.preferences.deleted_backgrounds = BACKGROUNDS
         .iter()
@@ -803,7 +825,7 @@ fn filtered_bundled_entries_do_not_misidentify_custom_thumbnails_or_popup_parent
 #[test]
 fn removed_popup_entry_closes_safely_and_preference_sanitizing_protects_the_selection() {
     let mut state = ready();
-    state.open(2);
+    state.open(crate::state::Page::Settings);
     state.section = 1;
     state.set_wallpapers(vec![custom(1)]);
     state.focus = Target::Background(BACKGROUNDS.len());

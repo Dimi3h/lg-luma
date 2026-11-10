@@ -1,7 +1,6 @@
 uniform sampler2D u_texture;
 uniform float u_aa;
 uniform vec4 u_edge_fade;
-uniform vec4 u_edge_fade_x;
 uniform vec3 u_app_top;
 uniform vec3 u_app_bottom;
 uniform bool u_app;
@@ -10,16 +9,11 @@ varying PAINT_PRECISION vec4 v_color;
 varying PAINT_PRECISION vec4 v_shape;
 varying PAINT_PRECISION vec2 v_params;
 varying PAINT_PRECISION float v_logical_y;
-varying PAINT_PRECISION float v_logical_x;
 float edge_coverage() {
     float edge = 1.0;
     if (u_edge_fade.y > u_edge_fade.x)
         edge = smoothstep(u_edge_fade.x, u_edge_fade.y, v_logical_y) *
             (1.0 - smoothstep(u_edge_fade.z, u_edge_fade.w, v_logical_y));
-    if (u_edge_fade_x.y > u_edge_fade_x.x)
-        edge *= smoothstep(u_edge_fade_x.x, u_edge_fade_x.y, v_logical_x);
-    if (u_edge_fade_x.w > u_edge_fade_x.z)
-        edge *= 1.0 - smoothstep(u_edge_fade_x.z, u_edge_fade_x.w, v_logical_x);
     return edge;
 }
 void main() {
@@ -33,9 +27,17 @@ void main() {
     }
     float blur = max(-v_params.y, 0.0);
     vec2 half_size = v_shape.zw - vec2(blur);
-    float radius = min(v_params.x, min(half_size.x, half_size.y));
+    float shortest = min(half_size.x, half_size.y);
+    // Continuous (superellipse) corners as on tvOS: a p = 3 norm in the corner, normalised by
+    // the radius so mediump floats cannot overflow, over a slightly longer corner so it reads
+    // as the same size. Capsules and circles keep exact circular ends (p = 2).
+    bool capsule = v_params.x >= shortest - 0.5;
+    float radius = min(v_params.x * (capsule ? 1.0 : 1.2), shortest);
+    float power = capsule ? 2.0 : 3.0;
     vec2 q = abs(v_shape.xy) - half_size + vec2(radius);
-    float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - radius;
+    vec2 m = max(q, vec2(0.0)) / max(radius, 0.0001);
+    float corner = radius * pow(pow(m.x, power) + pow(m.y, power), 1.0 / power);
+    float d = corner + min(max(q.x, q.y), 0.0) - radius;
     // Box-filtered coverage of one drawable pixel (u_aa) centred on the edge: an edge on a
     // pixel boundary stays one crisp step, and a one-pixel border is fully opaque.
     float alpha = clamp(0.5 - d / u_aa, 0.0, 1.0);

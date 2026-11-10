@@ -3,7 +3,6 @@ use crate::weather::{Location, Unit};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 
-pub const CATEGORIES: [&str; 4] = ["Streaming", "Music", "Gaming", "Utilities"];
 pub const BACKGROUNDS: [(&str, &str); 9] = [
     ("slate", "Slate"),
     ("midnight", "Midnight"),
@@ -170,6 +169,46 @@ pub const CUSTOM_TILE_PREFIX: &str = "custom.";
 pub const TILE_LIMIT: usize = 64;
 pub const TILE_URL_LIMIT: usize = 512;
 
+/// Settings › General › Appearance. Automatic follows sunrise and sunset at the weather
+/// location (07:00 to 21:00 without one).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Appearance {
+    #[default]
+    Dark,
+    Light,
+    Automatic,
+}
+
+impl Appearance {
+    pub const ALL: [Self; 3] = [Self::Dark, Self::Light, Self::Automatic];
+
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|mode| *mode == self).unwrap()
+    }
+
+    pub fn label_key(self) -> &'static str {
+        match self {
+            Self::Dark => "appearanceDark",
+            Self::Light => "appearanceLight",
+            Self::Automatic => "appearanceAuto",
+        }
+    }
+}
+
+/// Unknown or malformed values load as Dark instead of failing the preference file.
+fn deserialize_appearance<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Appearance, D::Error> {
+    Ok(
+        match serde_json::Value::deserialize(deserializer)?.as_str() {
+            Some("light") => Appearance::Light,
+            Some("automatic") => Appearance::Automatic,
+            _ => Appearance::Dark,
+        },
+    )
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DateFormat {
@@ -201,10 +240,24 @@ impl DateFormat {
         }
     }
 
+    /// The date starting a line, in sentence case ("Maandag 9 november"); only tests use it
+    /// now that the screensaver shows the date as the main screen does.
+    #[cfg(test)]
     pub fn format(self, language: Language, now: time::OffsetDateTime) -> String {
+        self.format_at(language, now, true)
+    }
+
+    /// Within a line (after the clock) the localized date keeps the language's own casing:
+    /// "maandag 9 november" in Dutch, rather than the sentence case that starts a line.
+    pub fn format_inline(self, language: Language, now: time::OffsetDateTime) -> String {
+        self.format_at(language, now, false)
+    }
+
+    fn format_at(self, language: Language, now: time::OffsetDateTime, line_start: bool) -> String {
         let (year, month, day) = (now.year(), now.month() as u8, now.day());
         match self {
-            Self::Localized => language.date(now),
+            Self::Localized if line_start => language.date(now),
+            Self::Localized => language.date_inline(now),
             Self::DayMonthYear => format!("{day:02}.{month:02}.{year:04}"),
             Self::MonthDayYear => format!("{month:02}/{day:02}/{year:04}"),
             Self::YearMonthDay => format!("{year:04}-{month:02}-{day:02}"),
@@ -222,9 +275,27 @@ pub struct Preferences {
     /// Last manually chosen splash, independent of automatic rotation.
     pub splash_background: Option<String>,
     pub deleted_backgrounds: Vec<String>,
-    pub show_home_names: bool,
+    /// Titles beneath the focused grid card (tvOS); off hides them.
     pub show_app_names: bool,
+    /// Input cards above the apps on the main screen; inputs stay on the remote otherwise.
+    pub show_inputs: bool,
+    /// Heart badges on pinned favourites (tvOS has none, so off by default).
+    pub favorite_badges: bool,
+    /// Minutes without input before the screensaver starts while Luma is in front; 0 is Off.
+    pub screensaver_minutes: u32,
+    #[serde(deserialize_with = "deserialize_appearance")]
+    pub appearance: Appearance,
+    /// Settings › General › Text size: Larger (about 1.15×) for body text.
+    pub larger_text: bool,
+    /// A second wallpaper shown between sunset and sunrise (as Automatic appearance decides
+    /// night); `None` keeps one wallpaper all day.
+    pub night_background: Option<String>,
+    /// The 24-hour choice as earlier versions saved it: written with every preference file, so
+    /// only `true` is known to be deliberate. Read through `uses_24_hour`.
     pub hour_24: bool,
+    /// The clock format once chosen in Settings (12 or 24 hour). Unset, Dutch uses 24 hours.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clock_24: Option<bool>,
     pub reduced_motion: bool,
     pub show_seconds: bool,
     /// Optional name appended to the Home greeting ("Good evening, Ana."). Empty = plain greeting.
@@ -243,9 +314,6 @@ pub struct Preferences {
     pub temperature_unit: Unit,
     #[serde(deserialize_with = "crate::i18n::deserialize_language")]
     pub language: Language,
-    /// Applied at launch because MSAA is selected when SDL creates the GL window.
-    #[serde(deserialize_with = "crate::text_rendering::deserialize")]
-    pub text_rendering: crate::text_rendering::TextRendering,
     #[serde(deserialize_with = "crate::wallpaper_cycle::deserialize")]
     pub wallpaper_cycle: bool,
     pub wallpaper_gradient: bool,
@@ -262,9 +330,15 @@ impl Default for Preferences {
             background: "dunes".into(),
             splash_background: None,
             deleted_backgrounds: vec![],
-            show_home_names: false,
             show_app_names: true,
+            show_inputs: false,
+            favorite_badges: false,
+            screensaver_minutes: 10,
+            appearance: Appearance::Dark,
+            larger_text: false,
+            night_background: None,
             hour_24: false,
+            clock_24: None,
             reduced_motion: false,
             show_seconds: false,
             greeting_name: String::new(),
@@ -277,7 +351,6 @@ impl Default for Preferences {
             weather_location: None,
             temperature_unit: Unit::Celsius,
             language: Language::En,
-            text_rendering: crate::text_rendering::TextRendering::default(),
             wallpaper_cycle: false,
             wallpaper_gradient: true,
             wallpaper_changed: 0,
@@ -286,6 +359,19 @@ impl Default for Preferences {
 }
 
 impl Preferences {
+    /// Whether the clock shows 24 hours: the format chosen in Settings, else an earlier saved
+    /// 24-hour choice, else the language's habit (24 hours in Dutch, 12 in English).
+    pub fn uses_24_hour(&self) -> bool {
+        self.clock_24
+            .unwrap_or(self.hour_24 || self.language == Language::Nl)
+    }
+
+    /// A clock format chosen in Settings, kept regardless of the language.
+    pub fn set_24_hour(&mut self, value: bool) {
+        self.clock_24 = Some(value);
+        self.hour_24 = value;
+    }
+
     pub fn splash_background(&self) -> &str {
         self.splash_background
             .as_deref()
@@ -566,8 +652,10 @@ pub fn demo_inventory() -> Inventory {
             ("pooq", "Wavve"),
             ("com.cmb.rainbowtv", "Rainbow TV"),
             ("com.lgtvod.kr.app", "LG TV VOD"),
-            ("com.webos.app.igallery", "올레드 갤러리"),
-            ("com.webos.app.roomconnect", "룸투룸 셰어"),
+            ("com.webos.app.igallery", "OLED Gallery"),
+            // LG's app store: the main screen shows it as a top-bar icon, not a card.
+            ("com.webos.app.discovery", "Apps"),
+            ("com.webos.app.roomconnect", "Room to Room Share"),
         ]
         .into_iter()
         .map(|(id, title)| App::new(id, title))

@@ -89,6 +89,7 @@ fn signal_never_overrides_the_official_cable_state_or_auto_visibility() {
 #[test]
 fn live_signal_keeps_card_geometry_names_apps_and_preferences() {
     let mut state = ready();
+    state.preferences.show_inputs = true;
     let id = state.inventory.inputs[0].id.clone();
     state.preferences.set_input_name(&id, "Mac");
     state.focus = Target::Input(id.clone());
@@ -113,7 +114,7 @@ fn live_signal_keeps_card_geometry_names_apps_and_preferences() {
             .iter()
             .any(|d| matches!(d, Draw::Text(t, ..) if t.ends_with("HDMI 1 · No signal")))
     );
-    state.open(2);
+    state.open(crate::state::Page::Settings);
     state.section = WIDGETS_SECTION;
     state.subpage = Some(Subpage::Inputs);
     inputs[0].signal = Some(true);
@@ -137,6 +138,7 @@ fn live_signal_keeps_card_geometry_names_apps_and_preferences() {
 #[test]
 fn disconnect_reconciles_home_focus_and_preserves_visibility_overrides() {
     let mut state = ready();
+    state.preferences.show_inputs = true;
     let id = state.inventory.inputs[0].id.clone();
     state.focus = Target::Input(id.clone());
     let mut inputs = state.inventory.inputs.clone();
@@ -176,7 +178,7 @@ fn a_removed_port_restores_valid_input_settings_focus() {
     for detail in [false, true] {
         let mut state = ready();
         let id = state.inventory.inputs[0].id.clone();
-        state.open(2);
+        state.open(crate::state::Page::Settings);
         state.section = WIDGETS_SECTION;
         state.subpage = Some(if detail {
             Subpage::Input(id.clone())
@@ -195,7 +197,7 @@ fn a_removed_port_restores_valid_input_settings_focus() {
         assert_eq!(state.subpage, Some(Subpage::Inputs));
         assert_eq!(state.focus, Target::InputMode(next));
         state.set_inputs(vec![]);
-        assert_eq!(state.focus, Target::Sidebar(WIDGETS_SECTION));
+        assert_eq!(state.focus, Target::InputsToggle);
     }
 }
 
@@ -203,6 +205,9 @@ fn a_removed_port_restores_valid_input_settings_focus() {
 fn polling_only_runs_on_visible_focused_tv_input_screens_outside_interactions() {
     let mut state = ready();
     let active = |s: &crate::state::State| crate::input_refresh_active(s, true, true, true);
+    // The main screen polls only while it shows input cards.
+    assert!(!active(&state));
+    state.preferences.show_inputs = true;
     assert!(active(&state));
     assert!(!crate::input_refresh_active(&state, false, true, true));
     assert!(!crate::input_refresh_active(&state, true, false, true));
@@ -211,7 +216,7 @@ fn polling_only_runs_on_visible_focused_tv_input_screens_outside_interactions() 
     assert!(!active(&state));
     state.loading = false;
     state.overlay = Some(Overlay::Recents {
-        restore: Target::Nav(0),
+        restore: Target::SettingsIcon,
     });
     assert!(!active(&state));
     state.overlay = None;
@@ -224,9 +229,10 @@ fn polling_only_runs_on_visible_focused_tv_input_screens_outside_interactions() 
     state.pressed = Some(Target::Input(state.inventory.inputs[0].id.clone()));
     assert!(!active(&state));
     state.pressed = None;
-    state.open(1);
+    state.preferences.show_inputs = false;
     assert!(!active(&state));
-    state.open(2);
+    state.preferences.show_inputs = true;
+    state.open(crate::state::Page::Settings);
     assert!(!active(&state));
     state.subpage = Some(Subpage::Inputs);
     assert!(active(&state));
@@ -280,6 +286,7 @@ fn snapshots_wait_for_release_and_yield_to_a_newer_full_inventory() {
 #[test]
 fn a_disconnect_snapshot_cannot_move_the_pressed_card_before_release() {
     let mut state = ready();
+    state.preferences.show_inputs = true;
     let id = state.inventory.inputs[0].id.clone();
     state.pressed = Some(Target::Input(id.clone()));
     let mut inputs = state.inventory.inputs.clone();

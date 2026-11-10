@@ -121,6 +121,9 @@ pub fn format_temperature(celsius: f64, unit: Unit) -> String {
 
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Reading {
+    /// Today's sunrise and sunset at the location, in minutes after its local midnight.
+    #[serde(default)]
+    pub sun: Option<[u16; 2]>,
     pub temperature: f64,
     pub code: u8,
     pub is_day: bool,
@@ -141,6 +144,7 @@ pub fn parse_reading(value: &Value) -> Result<Reading, String> {
     let day = current["is_day"].as_f64().filter(|n| *n == 0. || *n == 1.);
     if let (Some(temperature), Some(code), Some(day)) = (temperature, code, day) {
         let reading = Reading {
+            sun: parse_sun(&value["daily"]),
             temperature,
             code: code as u8,
             is_day: day == 1.,
@@ -151,6 +155,21 @@ pub fn parse_reading(value: &Value) -> Result<Reading, String> {
     }
     Err("The weather service returned an unreadable reading.".into())
 }
+/// Minutes after midnight of an Open-Meteo local time such as "2026-10-21T07:12".
+fn local_minutes(value: &Value) -> Option<u16> {
+    let time = value.as_str()?.split_once('T')?.1;
+    let (hour, minute) = time.split_once(':')?;
+    let (hour, minute): (u16, u16) = (hour.parse().ok()?, minute.get(..2)?.parse().ok()?);
+    (hour < 24 && minute < 60).then_some(hour * 60 + minute)
+}
+
+/// Today's sunrise and sunset, when both are present and in order (polar days have neither).
+pub fn parse_sun(daily: &Value) -> Option<[u16; 2]> {
+    let sunrise = local_minutes(daily.get("sunrise")?.get(0)?)?;
+    let sunset = local_minutes(daily.get("sunset")?.get(0)?)?;
+    (sunrise < sunset).then_some([sunrise, sunset])
+}
+
 pub fn parse_locations(value: &Value) -> Result<Vec<Location>, String> {
     if !value.is_object()
         || value["error"] == true

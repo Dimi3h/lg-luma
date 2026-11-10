@@ -12,6 +12,7 @@ fn place() -> Location {
 }
 fn reading() -> Reading {
     Reading {
+        sun: None,
         temperature: 14.2,
         code: 2,
         is_day: true,

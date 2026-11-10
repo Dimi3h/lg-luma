@@ -1,19 +1,20 @@
-//! Overlapping landscape cards, painted back-to-front with a separate upward exit.
+//! The tvOS app switcher: one row of large landscape cards, the focused one centred and
+//! lifted, its neighbours smaller and dimmer at the sides, painted back-to-front with a
+//! separate upward exit.
 use super::*;
 use crate::recents::{Command, DismissalOutcome};
 
+const RECENT_WIDTH: f32 = 840.;
+/// Centre-to-centre distance between neighbouring cards.
+const RECENT_PITCH: f32 = 900.;
+
 fn card_rect(offset: f32) -> Rect {
     let depth = offset.abs();
-    let scale = 1. / (1. + 0.22 * depth);
-    let width = 900. * scale;
+    let scale = 1. / (1. + 0.2 * depth.min(3.));
+    let width = RECENT_WIDTH * scale;
     let height = width * 9. / 16.;
-    let x = 960. + offset.signum() * (400. * depth.min(1.) + 160. * (depth - 1.).max(0.));
-    Rect::new(
-        x - width / 2.,
-        540. + 18. * depth.min(3.) - height / 2.,
-        width,
-        height,
-    )
+    let x = 960. + offset * RECENT_PITCH;
+    Rect::new(x - width / 2., 540. - height / 2., width, height)
 }
 
 pub fn render(out: &mut Scene, state: &State, assets: &Assets) {
@@ -24,8 +25,8 @@ pub fn render(out: &mut Scene, state: &State, assets: &Assets) {
     out.draw.push(Draw::RoundedGradient(
         Rect::new(0., 0., 1920., 1080.),
         0.,
-        c(0x252c3a, 0.38),
-        c(0x0b0e15, 0.50),
+        c(0x252c3a, 0.18),
+        c(0x0b0e15, 0.42),
     ));
     if recent.entries.is_empty() && recent.dismissals.is_empty() {
         let message = if recent.error.is_some() {
@@ -51,7 +52,7 @@ pub fn render(out: &mut Scene, state: &State, assets: &Assets) {
             out.text(
                 language.t(message),
                 Rect::new(360., 526., 1200., 60.),
-                text(32., 500, -0.025),
+                TITLE3.weight(500),
                 WHITE,
                 true,
             );
@@ -104,9 +105,9 @@ pub fn render(out: &mut Scene, state: &State, assets: &Assets) {
             let start = out.draw.len();
             let target = Target::Recent(entry.app.id.clone());
             let focused = *focus == target;
-            let radius = 26. * rect.w / 900.;
+            let radius = 30. * rect.w / RECENT_WIDTH;
             let prominence = (1. - depth).clamp(0., 1.);
-            out.shadow(rect, radius, 48., 22., 0.28 + 0.27 * prominence);
+            out.lift_shadow(rect, radius, prominence);
             let app = state
                 .inventory
                 .apps
@@ -114,14 +115,17 @@ pub fn render(out: &mut Scene, state: &State, assets: &Assets) {
                 .find(|app| app.id == entry.app.id)
                 .unwrap_or(&entry.app);
             app_face(out, assets, app, rect, language, radius);
-            out.border(
-                rect,
-                radius,
-                if focused { 3. } else { 1. },
-                c(0xffffff, if focused { 0.85 } else { 0.16 }),
-            );
-            if focused {
-                out.border(rect.inset(-6.), radius + 6., 2., c(0xffffff, 0.10));
+            card_glass(out, rect, radius, if focused { prominence } else { 0. });
+            if focused && dismissal.is_none() && prominence > 0. {
+                let width = rect.w;
+                let (title, style) = assets.single_line(&app.title, CALLOUT.weight(600), width);
+                out.text(
+                    title,
+                    Rect::new(rect.x, rect.y + rect.h + 30., width, 38.),
+                    style,
+                    c(0xffffff, prominence),
+                    true,
+                );
             }
             // An exiting card is presentation-only, never a moving hit target.
             if dismissal.is_none() {
@@ -130,7 +134,7 @@ pub fn render(out: &mut Scene, state: &State, assets: &Assets) {
             if state.pressed.as_ref() == Some(&target) {
                 out.fade(start, 1., 0.83);
             }
-            out.fade(start, 1., 1. - 0.17 * depth.min(3.));
+            out.fade(start, 1., 1. - 0.3 * depth.min(2.));
         }
     }
 
@@ -138,20 +142,20 @@ pub fn render(out: &mut Scene, state: &State, assets: &Assets) {
         if !recent.entries.is_empty() {
             out.text(
                 language.t("recentError"),
-                Rect::new(420., 945., 1080., 34.),
-                text(19., 450, 0.),
+                Rect::new(420., 945., 1080., 32.),
+                CAPTION1,
                 c(0xf3ddbd, 1.),
                 true,
             );
         }
         let label = language.t("retry");
-        let width = assets.width(label, text(21., 550, -0.01)) + 74.;
+        let width = assets.width(label, BODY.weight(600)) + 90.;
         button(
             out,
             state,
             assets,
             Target::RecentRetry,
-            Rect::new(84., 858., width, 60.),
+            Rect::new(SAFE_X, 880., width, 68.),
             "refresh",
             label,
         );
@@ -160,8 +164,8 @@ pub fn render(out: &mut Scene, state: &State, assets: &Assets) {
     {
         out.text(
             language.t("opening"),
-            Rect::new(660., 945., 600., 30.),
-            text(18., 450, 0.),
+            Rect::new(560., 945., 800., 32.),
+            CAPTION1,
             c(0xffffff, 0.6),
             true,
         );
@@ -187,32 +191,31 @@ fn button(
 ) {
     let focused = *recent_focus(state) == target;
     let busy = state.recents.pending.is_some();
-    out.pill(rect, focused && !busy, false);
-    let color = if focused && !busy {
-        c(0x20232a, 1.)
+    let pressed = state.pressed.as_ref() == Some(&target);
+    let level = if focused && !busy && !pressed { 1. } else { 0. };
+    let drawn = out.button(rect, rect.h / 2., level, false, BUTTON_LIFT);
+    let color = if level > 0. {
+        ON_LIGHT
     } else {
         c(0xffffff, if busy { 0.30 } else { 0.8 })
     };
     out.icon(
         assets,
         icon,
-        Rect::new(rect.x + 20., rect.y + (rect.h - 22.) / 2., 22., 22.),
+        Rect::new(drawn.x + 26., drawn.y + (drawn.h - 26.) / 2., 26., 26.),
         color,
     );
     out.text(
         label,
         Rect::new(
-            rect.x + 54.,
-            rect.y + (rect.h - 27.) / 2.,
-            rect.w - 74.,
-            32.,
+            drawn.x + 64.,
+            drawn.y + (drawn.h - 36.) / 2.,
+            drawn.w - 90.,
+            36.,
         ),
-        text(21., 550, -0.01),
+        BODY.weight(600),
         color,
         false,
     );
-    if state.pressed.as_ref() == Some(&target) {
-        out.border(rect.inset(2.), rect.h / 2., 2., c(0xffffff, 0.4));
-    }
     out.control(target, rect, false);
 }

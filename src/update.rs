@@ -2,7 +2,7 @@ pub mod discovery {
     use serde::{Deserialize, Serialize};
     use std::{io::Read, sync::mpsc, thread, time::Duration};
 
-    const FEED: &str = "https://github.com/ecklf/lg-luma/releases/latest/download/repo.json";
+    const FEED: &str = "https://github.com/Dimi3h/lg-luma/releases/latest/download/repo.json";
     const LIMIT: usize = 256 * 1024;
 
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
@@ -67,12 +67,17 @@ pub mod discovery {
     }
 
     fn fetch(agent: &ureq::Agent, url: &str, current: &str) -> Result<Option<String>, String> {
-        let mut response = agent
+        let mut response = match agent
             .get(url)
             .header("Accept", "application/json")
             .header("User-Agent", "LumaNative")
             .call()
-            .map_err(|error| error.to_string())?;
+        {
+            Ok(response) => response,
+            // The fork publishes no feed until its first release: nothing newer, not a failure.
+            Err(ureq::Error::StatusCode(404)) => return Ok(None),
+            Err(error) => return Err(error.to_string()),
+        };
         let mut bytes = Vec::new();
         response
             .body_mut()
@@ -211,6 +216,11 @@ pub mod discovery {
             assert!(newer_version(&duplicates, "2.13.0").is_err());
         }
         #[test]
+        fn the_availability_check_reads_only_the_fork_feed() {
+            assert_eq!(FEED, super::super::FEED);
+            assert!(FEED.starts_with("https://github.com/Dimi3h/lg-luma/releases/"));
+        }
+        #[test]
         fn disabled_service_never_contacts_the_network() {
             let service = Service::new(false);
             assert!(service.receiver.try_recv().is_err());
@@ -228,6 +238,7 @@ pub mod discovery {
             use std::{io::Write, net::TcpListener};
             for (status, body, valid) in [
                 ("200 OK", feed("9.0.0"), true),
+                ("404 Not Found", vec![], true),
                 ("503 Unavailable", vec![], false),
                 ("200 OK", vec![b' '; LIMIT + 1], false),
                 ("200 OK", b"invalid".to_vec(), false),
@@ -250,10 +261,11 @@ pub mod discovery {
                     .proxy(None)
                     .build()
                     .new_agent();
-                assert_eq!(
-                    fetch(&agent, &format!("http://{address}/repo.json"), "2.13.0").is_ok(),
-                    valid
-                );
+                let result = fetch(&agent, &format!("http://{address}/repo.json"), "2.13.0");
+                assert_eq!(result.is_ok(), valid);
+                if status.starts_with("404") {
+                    assert_eq!(result, Ok(None));
+                }
                 worker.join().unwrap();
             }
         }
@@ -271,10 +283,10 @@ use std::{
     time::Instant,
 };
 
-pub const FEED: &str = "https://github.com/ecklf/lg-luma/releases/latest/download/repo.json";
+pub const FEED: &str = "https://github.com/Dimi3h/lg-luma/releases/latest/download/repo.json";
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 /// Only IPKs from this project's own release assets are installed.
-const RELEASES: &str = "https://github.com/ecklf/lg-luma/releases/download/";
+const RELEASES: &str = "https://github.com/Dimi3h/lg-luma/releases/download/";
 /// A fresh directory per attempt; never truncate a predictable path in shared /tmp.
 fn download_directory() -> Result<(String, PathBuf), String> {
     use ring::rand::SecureRandom;
@@ -586,7 +598,7 @@ mod tests {
     }
 
     const URL: &str =
-        "https://github.com/ecklf/lg-luma/releases/download/v9.0.0/com.ecklf.luma_9.0.0_arm.ipk";
+        "https://github.com/Dimi3h/lg-luma/releases/download/v9.0.0/com.ecklf.luma_9.0.0_arm.ipk";
 
     #[test]
     fn attempt_paths_are_private_unique_and_results_are_terminal_only_when_finished() {
@@ -655,6 +667,14 @@ mod tests {
     }
 
     #[test]
+    fn updates_come_only_from_the_fork_and_never_from_upstream() {
+        assert!(FEED.starts_with("https://github.com/Dimi3h/lg-luma/releases/"));
+        assert!(RELEASES.starts_with("https://github.com/Dimi3h/lg-luma/releases/"));
+        let upstream = "https://github.com/ecklf/lg-luma/releases/download/v9.0.0/com.ecklf.luma_9.0.0_arm.ipk";
+        assert!(parse_feed(&feed("9.0.0", upstream, &"a".repeat(64), 1000)).is_err());
+    }
+
+    #[test]
     fn only_luma_release_assets_with_a_checksum_are_accepted() {
         let sha = "a".repeat(64);
         let release = parse_feed(&feed("9.0.0", URL, &sha.to_uppercase(), 1000)).unwrap();
@@ -669,7 +689,7 @@ mod tests {
             ),
             feed(
                 "9.0.0",
-                "https://github.com/ecklf/lg-luma/releases/download/../x_arm.ipk",
+                "https://github.com/Dimi3h/lg-luma/releases/download/../x_arm.ipk",
                 &sha,
                 1000,
             ),

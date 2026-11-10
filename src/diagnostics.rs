@@ -82,6 +82,13 @@ fn summarize(samples: &[f64]) -> Option<Timing> {
     })
 }
 
+/// Writes the startup facts (text mode, MSAA samples obtained, drawable, GL strings) as JSON,
+/// replacing the previous file. Best effort: a failure is only logged.
+pub fn write_startup(path: &std::path::Path, facts: &serde_json::Value) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(facts).map_err(|error| error.to_string())?;
+    std::fs::write(path, text + "\n").map_err(|error| format!("{}: {error}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

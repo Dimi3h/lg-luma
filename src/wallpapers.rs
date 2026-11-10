@@ -26,6 +26,10 @@ const SESSION_TIME: Duration = Duration::from_secs(600);
 const SESSION_REQUEST_LIMIT: usize = 64;
 const REQUEST_TIME: Duration = Duration::from_secs(20);
 const STOP: u64 = u64::MAX;
+/// Blurred copies of `wallpaper.jpg` and `original.jpg` for glass panels.
+const GLASS_FILES: [&str; 2] = ["wallpaper-blur.jpg", "original-blur.jpg"];
+/// Glass copies are small: the blur hides the detail and the GPU's bilinear filter upscales them.
+const GLASS_SIZE: (u32, u32) = (480, 270);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Wallpaper {
@@ -34,6 +38,10 @@ pub struct Wallpaper {
     pub directory: PathBuf,
     #[serde(skip)]
     pub has_original: bool,
+    /// Whether the blurred glass copies of the shaded and unshaded image exist. Uploads from
+    /// before Liquid Glass lack them; their panels fall back to a plain translucent fill.
+    #[serde(skip)]
+    pub blurred: [bool; 2],
 }
 
 impl Wallpaper {
@@ -53,6 +61,15 @@ impl Wallpaper {
             .join("wallpaper.jpg")
             .to_string_lossy()
             .into_owned()
+    }
+    /// The blurred copy glass panels sample, for the shaded or unshaded image.
+    pub fn blurred(&self, shaded: bool) -> Option<String> {
+        let (exists, file) = if shaded || !self.has_original {
+            (self.blurred[0], GLASS_FILES[0])
+        } else {
+            (self.blurred[1], GLASS_FILES[1])
+        };
+        exists.then(|| self.directory.join(file).to_string_lossy().into_owned())
     }
     pub fn thumbnail(&self) -> String {
         self.directory
@@ -207,6 +224,10 @@ fn catalog(directory: &Path) -> Vec<Wallpaper> {
         }
         item.has_original = fs::symlink_metadata(path.join("original.jpg"))
             .is_ok_and(|m| m.is_file() && m.len() > 0 && m.len() <= MAX_BODY as u64);
+        item.blurred = GLASS_FILES.map(|file| {
+            fs::symlink_metadata(path.join(file))
+                .is_ok_and(|m| m.is_file() && m.len() > 0 && m.len() <= MAX_BODY as u64)
+        });
         item.directory = path;
         result.push(item);
         if result.len() == MAX_WALLPAPERS {
@@ -356,6 +377,27 @@ fn shade(image: &mut image::RgbImage) {
     }
 }
 
+/// A small, blurred copy for glass panels with the glass tint baked in, matching
+/// `tools/assets.mjs`: 30% more saturation, slightly lower contrast and about 10% white.
+fn glass(image: &image::RgbImage) -> image::RgbImage {
+    let small = image::imageops::resize(
+        image,
+        GLASS_SIZE.0,
+        GLASS_SIZE.1,
+        image::imageops::FilterType::Triangle,
+    );
+    let mut blurred = image::imageops::blur(&small, 10.);
+    for pixel in blurred.pixels_mut() {
+        let [r, g, b] = pixel.0.map(f32::from);
+        let gray = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        pixel.0 = [r, g, b].map(|channel| {
+            let saturated = gray + (channel - gray) * 1.3;
+            (saturated * 0.88 + 24.).round().clamp(0., 255.) as u8
+        });
+    }
+    blurred
+}
+
 fn jpeg(image: &image::RgbImage, quality: u8) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, quality)
@@ -370,9 +412,11 @@ fn store(directory: &Path, bytes: &[u8], valid: impl Fn() -> bool) -> Result<Wal
     }
     let mut image = decode(bytes)?;
     let original = jpeg(&image, 94)?;
+    let original_glass = jpeg(&glass(&image), 85)?;
     let thumbnail =
         image::imageops::resize(&image, 480, 270, image::imageops::FilterType::Triangle);
     shade(&mut image);
+    let shaded_glass = jpeg(&glass(&image), 85)?;
     let image = jpeg(&image, 94)?;
     let thumbnail = jpeg(&thumbnail, 82)?;
     if !valid() {
@@ -395,10 +439,13 @@ fn store(directory: &Path, bytes: &[u8], valid: impl Fn() -> bool) -> Result<Wal
         id: id.clone(),
         directory: directory.join(&id),
         has_original: true,
+        blurred: [true; 2],
     };
     let result = (|| {
         write_new(&staging.join("wallpaper.jpg"), &image)?;
         write_new(&staging.join("original.jpg"), &original)?;
+        write_new(&staging.join(GLASS_FILES[0]), &shaded_glass)?;
+        write_new(&staging.join(GLASS_FILES[1]), &original_glass)?;
         write_new(&staging.join("thumbnail.jpg"), &thumbnail)?;
         write_new(
             &staging.join("metadata.json"),
@@ -414,6 +461,8 @@ fn store(directory: &Path, bytes: &[u8], valid: impl Fn() -> bool) -> Result<Wal
         for file in [
             "wallpaper.jpg",
             "original.jpg",
+            GLASS_FILES[0],
+            GLASS_FILES[1],
             "thumbnail.jpg",
             "metadata.json",
         ] {

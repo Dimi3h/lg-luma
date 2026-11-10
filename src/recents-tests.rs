@@ -209,7 +209,7 @@ fn back_dismissal_consumes_repeats_native_exit_and_release_without_quitting() {
         None
     );
     assert_eq!(state.page, Page::Home);
-    assert_eq!(state.focus, Target::Nav(0));
+    assert_eq!(state.focus, Target::SettingsIcon);
 }
 
 #[test]
@@ -303,18 +303,12 @@ fn a_short_back_on_home_opens_recents_and_the_next_press_restores_the_app() {
 }
 
 #[test]
-fn home_header_has_only_navigation_and_tv_settings() {
+fn the_main_screen_header_is_only_the_clock() {
+    // tvOS has no tab bar on its Home Screen: above the shelf only the top-bar icons (Apps
+    // and Settings) are controls.
     let state = ready();
-    let header: Vec<_> = controls(&state)
-        .into_iter()
-        .filter(|control| control.rect.y < 120.)
-        .collect();
-    assert_eq!(header.len(), 4);
-    assert!(
-        header
-            .iter()
-            .all(|control| matches!(control.target, Target::Nav(_) | Target::TvSettings))
-    );
+    assert!(controls(&state).iter().all(|control| control.rect.y >= 120.
+        || matches!(control.target, Target::StoreIcon | Target::SettingsIcon)));
 }
 
 #[test]
@@ -333,10 +327,11 @@ fn recents_has_only_cards_without_action_buttons_or_footer() {
     );
     assert!(scene.draw.iter().all(|draw| !matches!(draw,
         Draw::Text(value, ..) if value == "1 / 8" || value.contains("Close app") || value.contains("OK  Open"))));
-    assert!(
-        scene.draw.iter().all(|draw| !matches!(draw,
-        Draw::Text(value, ..) if value == "Netflix" || value == "YouTube" || value == "Close all"))
-    );
+    // Like the tvOS app switcher, only the focused card is titled.
+    assert!(scene.draw.iter().any(|draw| matches!(draw,
+        Draw::Text(value, ..) if value == "Netflix")));
+    assert!(scene.draw.iter().all(|draw| !matches!(draw,
+        Draw::Text(value, ..) if value == "YouTube" || value == "Close all")));
     assert!(
         scene
             .controls
@@ -366,7 +361,7 @@ fn youtube_recents_uses_the_apps_vector_and_the_same_relative_logo_geometry() {
     };
     let mut state = ready();
     state.preferences.reduced_motion = true;
-    state.open(1);
+    state.open(crate::state::Page::Home);
     let apps = scene(&state);
     let app_face = bounds(&apps, "surfaces/youtube.png");
     let app_logo = bounds(&apps, "logos/youtube.lvec");
@@ -387,7 +382,7 @@ fn youtube_recents_uses_the_apps_vector_and_the_same_relative_logo_geometry() {
 #[test]
 fn recents_is_modal_and_restores_the_exact_settings_parent() {
     let mut state = ready();
-    state.open(2);
+    state.open(crate::state::Page::Settings);
     state.subpage = Some(crate::state::Subpage::Clock);
     state.focus = Target::ClockFormat;
     assert_eq!(
@@ -498,7 +493,7 @@ fn failed_actions_keep_history_and_stale_replies_cannot_reopen_or_replace_a_sess
     let generation = state.recents.generation;
     state.recent_response(generation, Command::Launch("netflix".into()), Ok(None));
     assert!(!state.recents_open());
-    assert_eq!(state.focus, Target::Nav(0));
+    assert_eq!(state.focus, Target::SettingsIcon);
 }
 
 #[test]
@@ -545,7 +540,7 @@ fn recents_pointer_focus_never_moves_hit_regions_and_reduced_motion_snaps() {
 fn recents_crossfade_reverses_without_jumping_and_restores_parent_input_immediately() {
     use crate::renderer::Draw;
     let mut state = ready();
-    state.open(2);
+    state.open(crate::state::Page::Settings);
     state.subpage = Some(crate::state::Subpage::Clock);
     state.focus = Target::ClockFormat;
     let parent = controls(&state);
@@ -739,7 +734,7 @@ fn netflix_logo(state: &State) -> crate::state::Rect {
 }
 
 #[test]
-fn stacked_cards_hit_the_front_card_in_overlaps_and_rear_cards_only_where_exposed() {
+fn row_cards_hit_the_focused_card_and_smaller_neighbours_beside_it() {
     let mut state = ready();
     state.preferences.reduced_motion = true;
     state.open_recents();
@@ -747,7 +742,8 @@ fn stacked_cards_hit_the_front_card_in_overlaps_and_rear_cards_only_where_expose
     let front = recent_bounds(&state, "netflix");
     let rear = recent_bounds(&state, "youtube.leanback.v4");
     assert!(rear.w < front.w && rear.h < front.h);
-    assert!(rear.x < front.x + front.w);
+    // One row without overlap: the neighbour starts after the focused card.
+    assert!(rear.x > front.x + front.w);
     let controls = controls(&state);
     assert_eq!(
         state.hit_test(&controls, 1200., 540.),
@@ -792,13 +788,13 @@ fn closing_lifts_the_card_and_fills_its_slot_without_a_refresh_jump() {
     advance_recents(&mut state, 80);
     let entering = recent_bounds(&state, "youtube.leanback.v4");
     assert!(entering.x < before_next.x);
-    assert!(entering.w > before_next.w && entering.w < 900.);
+    assert!(entering.w > before_next.w && entering.w < 840.);
     for _ in 0..50 {
         advance_recents(&mut state, 16);
     }
     let settled = recent_bounds(&state, "youtube.leanback.v4");
     assert_eq!(settled.center(), (960., 540.));
-    assert_eq!(settled.w, 900.);
+    assert_eq!(settled.w, 840.);
     assert!(state.recents.dismissals.is_empty());
     assert!(!state.animating());
 }

@@ -6,6 +6,9 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import sharp from 'sharp';
 
+// Desktop runs stay hidden on macOS so they never take the foreground (see --headless).
+if (process.platform === 'darwin') process.env.LUMA_HEADLESS ??= '1';
+
 const root = path.resolve(import.meta.dirname, '..');
 const out = path.join(root, '.build');
 await fs.mkdir(out, { recursive: true });
@@ -28,7 +31,7 @@ try {
     '--preferences',
     preferences,
     '--script',
-    'apps',
+    'home',
     '--frames',
     '18',
     '--dump-state',
@@ -43,11 +46,16 @@ try {
   for (const [index, logo] of logos.entries()) {
     const app = inventory.find((app) => app.brand === logo);
     assert.ok(app, `Desktop demo is missing ${logo}`);
+    // Pinned as the only favourite, the app is the grid's first card and has focus.
+    await fs.writeFile(
+      preferences,
+      JSON.stringify({ reduced_motion: true, show_weather: false, favorites: [app.id] }),
+    );
     run(binary, [
       '--preferences',
       preferences,
       '--script',
-      `apps,type:${app.title},back`,
+      'home',
       '--frames',
       '18',
       '--screenshot',
@@ -59,12 +67,14 @@ try {
     ]);
     const state = JSON.parse(await fs.readFile(dump, 'utf8'));
     const report = JSON.parse(await fs.readFile(diagnostics, 'utf8'));
-    assert.ok(state.apps.includes(app.id), `${logo} must be searchable in the demo`);
+    assert.equal(state.apps[0], app.id, `${logo} must lead the grid as the only favourite`);
+    assert.deepEqual(state.focus, { App: app.id });
     assert.equal(report.capture.missing_images, 0, `Missing artwork for ${logo}`);
     assert.equal(report.capture.glyph_failures, 0, `Invalid caption for ${logo}`);
     assert.ok(report.capture.vector_meshes > 0);
     const input = await sharp(screenshot)
-      .extract({ left: 78, top: 264, width: 282, height: 238 })
+      // The first card: x 80, y 396 (three rows end at the bottom margin), with lift margin.
+      .extract({ left: 69, top: 385, width: 282, height: 238 })
       .png()
       .toBuffer();
     cards.push({ input, left: (index % 6) * 282, top: Math.floor(index / 6) * 238 });
