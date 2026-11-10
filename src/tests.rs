@@ -4101,3 +4101,36 @@ fn every_settings_list_keeps_its_last_row_inside_the_safe_area_and_fades_at_the_
     assert!(scene(&state).draw.iter().any(|draw| matches!(draw,
         Draw::EdgeFade(Some(fade)) if fade[3] == SETTINGS_SAFE_BOTTOM && fade[2] < fade[3])));
 }
+
+#[test]
+fn notices_are_a_small_pill_centred_above_the_bottom_safe_area() {
+    use crate::renderer::Draw;
+    let mut state = ready();
+    state.preferences.reduced_motion = true;
+    state.notify("Netflix added to favorites.");
+    let rendered = scene(&state);
+    let pill = rendered
+        .controls
+        .iter()
+        .find(|c| c.target == Target::DismissNotice)
+        .unwrap()
+        .rect;
+    assert!((pill.x + pill.w / 2. - 960.).abs() < 0.5, "Centred");
+    assert_eq!(pill.y + pill.h, 1020., "Its bottom on the safe-area line");
+    assert!(pill.h <= 56., "Compact: {}", pill.h);
+    assert!(rendered.draw.iter().any(|draw| matches!(draw,
+        Draw::Text(text, _, style, ..) if text == "Netflix added to favorites" && style.size == 25.)));
+    // A new notice replaces the current one.
+    state.notify("Weather unavailable");
+    let rendered = scene(&state);
+    assert_eq!(
+        rendered
+            .controls
+            .iter()
+            .filter(|c| c.target == Target::DismissNotice)
+            .count(),
+        1
+    );
+    assert!(!rendered.draw.iter().any(|draw| matches!(draw,
+        Draw::Text(text, ..) if text.starts_with("Netflix added"))));
+}

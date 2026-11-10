@@ -486,6 +486,10 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   radial glint (`Draw::Glow`, one textured pass masked to the card) follows the tilt. Only the
   focused card draws it, only while it is tilted; the tilt settles exactly, so a still pointer
   and released keys stop redrawing. Hit regions never move.
+- **Notices**: a compact glass pill in Caption 1, centred with its bottom on the safe-area line
+  (y 1020). It fades in and rises 10 px (240 ms; neither under Reduced motion), dismisses itself
+  as before, and a new notice replaces the current one. It may cover part of the bottom card row
+  while shown.
 - **App artwork** (Settings › Widgets, default On): while an app in the first row has focus, its
   artwork washes softly behind the top shelf, dimmed and fading out above the grid, and crossfades
   (350 ms) between apps; Reduced motion swaps instantly. The artwork worker reads the manifest's

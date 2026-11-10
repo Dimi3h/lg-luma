@@ -4662,15 +4662,19 @@ fn keyboard(out: &mut Scene, state: &State, assets: &Assets) {
     }
 }
 
-/// A glass banner at the top centre, level with the clock, that slides down as it appears.
+/// Notices as tvOS shows them: a compact glass pill in Caption 1, centred just above the bottom
+/// safe-area line. It fades in and rises a few pixels (no slide under Reduced motion); a new
+/// notice replaces the current one, and it dismisses itself as before.
+const NOTICE_BOTTOM: f32 = 1080. - 60.;
+
 fn toast(out: &mut Scene, state: &State, assets: &Assets, notice: &str) {
     let start = out.draw.len();
     let notice = notice.trim_end_matches(['.', '。']);
-    let style = BODY.weight(600);
-    let width = (assets.width(notice, style).ceil() + 72.).clamp(72., 1760.);
+    let style = CAPTION1.weight(500);
+    let width = (assets.width(notice, style).ceil() + 56.).clamp(56., 1100.);
     let text_height =
-        assets.lines(notice, style, width - 64.) as f32 * style.size * style.line_height;
-    let height = 32. + text_height;
+        assets.lines(notice, style, width - 48.) as f32 * style.size * style.line_height;
+    let height = 20. + text_height;
     let appear = if state.preferences.reduced_motion {
         1.
     } else {
@@ -4679,26 +4683,21 @@ fn toast(out: &mut Scene, state: &State, assets: &Assets, notice: &str) {
             1. - (1. - t).powi(3)
         })
     };
-    let rect = Rect::new(
-        960. - width / 2.,
-        HEADER.y - 28. * (1. - appear),
-        width,
-        height,
-    );
-    let radius = (height / 2.).min(30.);
+    let settled = Rect::new(960. - width / 2., NOTICE_BOTTOM - height, width, height);
+    let rect = Rect::new(settled.x, settled.y + 10. * (1. - appear), width, height);
+    let radius = height.min(52.) / 2.;
     let target = Target::DismissNotice;
     let level = state.focus_level(&target);
     let drawn = out.button(rect, radius, level, false, BUTTON_LIFT / 2.);
-    // The slide is drawing only: the hit region is the settled banner from the start.
-    let settled = Rect::new(rect.x, HEADER.y, width, height);
-    out.shadow(drawn, radius, 30., 10., 0.25 * (1. - level));
+    out.shadow(drawn, radius, 24., 8., 0.18 * (1. - level));
     out.text(
         notice,
-        Rect::new(drawn.x + 32., drawn.y + 16., drawn.w - 64., text_height),
+        Rect::new(drawn.x + 24., drawn.y + 10., drawn.w - 48., text_height),
         style,
-        mix_color(WHITE, ON_LIGHT, level),
+        mix_color(c(0xffffff, 0.92), ON_LIGHT, level),
         true,
     );
+    // The motion is drawing only: the hit region is the settled pill from the start.
     if state.overlay.is_none() {
         out.control(target, settled, false);
     }
