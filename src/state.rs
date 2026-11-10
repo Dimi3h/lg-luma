@@ -26,6 +26,24 @@ pub const BACKGROUND_FADE: f32 = 0.4;
 /// The clock line; scrolled content is not hit-testable above it.
 pub const MAIN_TOP: f32 = 120.;
 pub const CYCLE_FADE: f32 = 1.6;
+/// The screensaver's clock fades out over this long before each jump and in over this long
+/// after it (just opacity, eased in and out; no fade under Reduced motion).
+pub const SCREENSAVER_FADE: Duration = Duration::from_millis(350);
+
+/// The screensaver clock's opacity `elapsed` after it started: eased in over `SCREENSAVER_FADE`
+/// after each jump, eased out over the same before the next, and 1 in between (always 1 under
+/// Reduced motion, where the clock just jumps). Never above 1: the text keeps its resting grey.
+pub fn screensaver_opacity(elapsed: Duration, reduced: bool) -> f32 {
+    if reduced {
+        return 1.;
+    }
+    let step = SCREENSAVER_STEP.as_secs_f32();
+    let fade = SCREENSAVER_FADE.as_secs_f32();
+    let t = elapsed.as_secs_f32() % step;
+    let x = (t / fade).min((step - t) / fade).clamp(0., 1.);
+    x * x * (3. - 2. * x)
+}
+
 /// The screensaver's clock jumps to a new position this often (OLED burn-in).
 pub const SCREENSAVER_STEP: Duration = Duration::from_secs(5);
 /// Screensaver choices in minutes (0 is Off).
@@ -271,6 +289,8 @@ pub struct State {
     /// position step last drawn (the clock jumps every `SCREENSAVER_STEP`).
     pub screensaver: Option<(Instant, u64)>,
     pub screensaver_step: u64,
+    /// Whether the last tick saw the clock mid-fade, so the frame that ends a fade is drawn.
+    screensaver_fading: bool,
 }
 
 impl State {
@@ -317,6 +337,7 @@ impl State {
             last_input: Instant::now(),
             screensaver: None,
             screensaver_step: 0,
+            screensaver_fading: false,
         }
     }
 
@@ -404,6 +425,31 @@ impl State {
             let step = started.elapsed().as_millis() / SCREENSAVER_STEP.as_millis();
             (seed, step as u64)
         })
+    }
+
+    /// The screensaver clock's current opacity (1 when it is not fading or not running).
+    pub fn screensaver_alpha(&self) -> f32 {
+        self.screensaver.map_or(1., |(started, _)| {
+            screensaver_opacity(started.elapsed(), self.preferences.reduced_motion)
+        })
+    }
+
+    /// Whether the clock is fading out or in around a jump: frames are drawn only then (and at
+    /// a new minute), so the rest of the time stays idle.
+    fn screensaver_fading(&self) -> bool {
+        self.screensaver.is_some() && self.screensaver_alpha() < 1.
+    }
+
+    /// How long until the clock's next fade-out begins, so the loop wakes in time for it.
+    pub fn screensaver_wake(&self) -> Option<Duration> {
+        let (started, _) = self.screensaver?;
+        if self.preferences.reduced_motion {
+            return None;
+        }
+        let step = SCREENSAVER_STEP.as_millis();
+        let into = started.elapsed().as_millis() % step;
+        let fade_out = step - SCREENSAVER_FADE.as_millis();
+        Some(Duration::from_millis(fade_out.saturating_sub(into) as u64))
     }
 
     /// Any key or pointer movement ends the screensaver (and only does that).
@@ -555,6 +601,12 @@ impl State {
             self.screensaver_step = step;
             self.dirty = true;
         }
+        // Each frame of a fade, and the one that ends it at full opacity.
+        let fading = self.screensaver_fading();
+        if fading || self.screensaver_fading {
+            self.dirty = true;
+        }
+        self.screensaver_fading = fading;
         let mut motion = std::mem::take(&mut self.motion);
         self.dirty |= motion.advance(&self.motion_inputs(), Instant::now());
         self.motion = motion;
@@ -600,6 +652,7 @@ impl State {
             || self.previous_background.is_some()
             || self.motion.animating()
             || (self.moving.is_some() && !self.preferences.reduced_motion)
+            || self.screensaver_fading()
             || (!self.preferences.reduced_motion
                 && self
                     .notice

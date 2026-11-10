@@ -3577,7 +3577,10 @@ fn screensaver_is_a_jumping_clock_on_black_and_any_input_ends_it() {
     assert!(time_color[0] > 0.6 && time_color[0] < 0.8 && time_color[0] == time_color[2]);
     assert!(date_color[0] < time_color[0]);
     assert!(texts[1].1.y > texts[0].1.y);
-    // Nothing animates between jumps: no continuous redraw.
+    // It fades in at first; between fades nothing animates (no continuous redraw).
+    assert!(state.animating());
+    let (_, seed) = state.screensaver.unwrap();
+    state.screensaver = Some((Instant::now() - Duration::from_millis(2000), seed));
     assert!(!state.animating());
     // Every position keeps the whole block inside the safe area, and it moves over time.
     let assets = view::Assets {
@@ -4432,5 +4435,75 @@ fn overlays_are_complete_in_their_first_frame_and_the_hold_preview_changes_nothi
     assert!(state.overlay.is_none());
     let (first, settled) = first_and_settled(&mut state);
     assert!(same(&first, &settled), "closing fades");
+    assert!(!state.animating());
+}
+
+#[test]
+fn the_screensaver_clock_fades_out_and_in_around_each_jump_and_never_brightens() {
+    use crate::renderer::Draw;
+    use crate::state::{SCREENSAVER_FADE, SCREENSAVER_STEP, screensaver_opacity};
+    use std::time::{Duration, Instant};
+    let at = |ms: u64| screensaver_opacity(Duration::from_millis(ms), false);
+    let step = SCREENSAVER_STEP.as_millis() as u64;
+    let fade = SCREENSAVER_FADE.as_millis() as u64;
+    assert!((300..=400).contains(&fade), "a subtle 300–400 ms fade");
+    // Fully shown between fades; out before the jump, in after it; eased at both ends.
+    assert_eq!(at(fade), 1.);
+    assert_eq!(at(step / 2), 1.);
+    assert_eq!(at(step - fade), 1.);
+    assert_eq!(at(step), 0.);
+    assert!((at(step + fade / 2) - 0.5).abs() < 0.01);
+    assert!(at(step + fade / 10) < 0.1, "ease-in: slow at the start");
+    assert!(
+        at(step + fade - fade / 10) > 0.9,
+        "ease-out: slow at the end"
+    );
+    let mut previous = 0.;
+    for ms in (step..=step + fade).step_by(10) {
+        let alpha = at(ms);
+        assert!(alpha >= previous && alpha <= 1., "{ms} ms: {alpha}");
+        previous = alpha;
+        // Fading out is the mirror image of fading in.
+        assert!((at(2 * step - (ms - step)) - alpha).abs() < 1e-4);
+    }
+    // Reduced motion: the instant jump, never faded.
+    for ms in [0, fade / 2, step - 1, step] {
+        assert_eq!(screensaver_opacity(Duration::from_millis(ms), true), 1.);
+    }
+    // In the scene: only the text's opacity changes, never above its resting grey, on black.
+    let mut state = ready();
+    state.start_screensaver();
+    let (_, seed) = state.screensaver.unwrap();
+    let colors = |state: &State| -> Vec<[f32; 4]> {
+        let draws = scene(state).draw;
+        assert!(matches!(&draws[0], Draw::Shape(_, _, _, color) if *color == [0., 0., 0., 1.]));
+        draws
+            .iter()
+            .filter_map(|draw| match draw {
+                Draw::Text(_, _, _, color, _) => Some(*color),
+                _ => None,
+            })
+            .collect()
+    };
+    state.screensaver = Some((Instant::now() - Duration::from_millis(step / 2), seed));
+    let resting = colors(&state);
+    assert_eq!(resting.len(), 2);
+    for ms in [step - fade / 2, step + fade / 4, step + fade / 2] {
+        state.screensaver = Some((Instant::now() - Duration::from_millis(ms), seed));
+        let alpha = state.screensaver_alpha();
+        assert!(alpha > 0. && alpha < 1.);
+        for (color, rest) in colors(&state).iter().zip(&resting) {
+            assert_eq!(color[..3], rest[..3], "same grey");
+            assert!(color[3] <= rest[3] + 1e-6 && (color[3] - rest[3] * alpha).abs() < 0.02);
+        }
+        assert!(state.animating(), "frames are drawn while it fades");
+    }
+    // Between fades the loop sleeps until the next fade-out begins.
+    state.screensaver = Some((Instant::now() - Duration::from_millis(1000), seed));
+    assert!(!state.animating());
+    let wake = state.screensaver_wake().unwrap();
+    assert!(wake <= SCREENSAVER_STEP - SCREENSAVER_FADE - Duration::from_millis(990));
+    state.preferences.reduced_motion = true;
+    assert_eq!(state.screensaver_wake(), None);
     assert!(!state.animating());
 }
