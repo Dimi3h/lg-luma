@@ -3525,49 +3525,100 @@ fn the_top_bar_has_no_control_center_and_inputs_still_switch_from_it() {
 }
 
 #[test]
-fn screensaver_defaults_to_ten_minutes_replaces_the_scene_and_any_input_ends_it() {
+fn screensaver_is_a_jumping_clock_on_black_and_any_input_ends_it() {
     use crate::renderer::Draw;
     use crate::state::Subpage;
-    let old: Preferences = serde_json::from_value(json!({"favorites": ["netflix"]})).unwrap();
+    use std::time::{Duration, Instant};
+    // Files saved with the removed Screensaver clock toggle still load and drop it.
+    let old: Preferences =
+        serde_json::from_value(json!({"favorites": ["netflix"], "screensaver_clock": false}))
+            .unwrap();
     assert_eq!(old.screensaver_minutes, 10);
-    assert!(old.screensaver_clock);
-    let mut state = ready();
-    assert_eq!(
-        state.screensaver_after(),
-        Some(std::time::Duration::from_secs(600))
+    assert!(
+        !serde_json::to_value(&old)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("screensaver_clock")
     );
+    let mut state = ready();
+    state.preferences.language = crate::i18n::Language::Nl;
+    assert_eq!(state.screensaver_after(), Some(Duration::from_secs(600)));
     state.start_screensaver();
     let rendered = scene(&state);
     assert!(
         rendered.controls.is_empty(),
         "Nothing behind it is reachable"
     );
-    // Ken Burns: the picture is larger than the screen and moves; the clock shows.
-    assert!(rendered.draw.iter().any(|draw| matches!(draw,
-        Draw::Image(path, rect, ..) if path.contains("wallpapers/") && rect.w > 1920.)));
-    let clock = state.preferences.language.clock(
-        time::OffsetDateTime::UNIX_EPOCH,
-        state.preferences.uses_24_hour(),
-        false,
+    // Pure black and the two lines of text, nothing else: no wallpaper, no glass, no icons.
+    assert!(matches!(&rendered.draw[0],
+        Draw::Shape(rect, 0., 0., color) if rect.w >= 1920. && rect.h >= 1080. && *color == [0., 0., 0., 1.]));
+    let texts: Vec<_> = rendered
+        .draw
+        .iter()
+        .filter_map(|draw| match draw {
+            Draw::Text(text, rect, style, color, _) => Some((text.clone(), *rect, *style, *color)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rendered.draw.len(), 1 + texts.len());
+    assert_eq!(texts.len(), 2);
+    // The clock and date formats from Settings: Dutch has a 24-hour clock and a lowercase date.
+    let now = time::OffsetDateTime::UNIX_EPOCH;
+    let language = state.preferences.language;
+    assert_eq!(texts[0].0, language.clock(now, true, false));
+    assert_eq!(
+        texts[1].0,
+        state.preferences.date_format.format_inline(language, now)
     );
-    assert!(
-        rendered
-            .draw
-            .iter()
-            .any(|draw| matches!(draw, Draw::Text(label, ..) if *label == clock))
-    );
-    assert!(state.animating());
-    // Reduced motion: still pictures, no continuous redraw.
-    state.preferences.reduced_motion = true;
-    state.preferences.screensaver_clock = false;
-    let still = scene(&state);
-    assert!(still.draw.iter().any(|draw| matches!(draw,
-        Draw::Image(_, rect, ..) if rect.w == 1920. && rect.h == 1080.)));
-    assert!(!still.draw.iter().any(|draw| matches!(draw, Draw::Text(..))));
+    assert_eq!(texts[1].0, texts[1].0.to_lowercase());
+    // Light grey time at Title 1 scale; the date smaller and dimmer, beneath it.
+    let (time_style, time_color) = (texts[0].2, texts[0].3);
+    let (date_style, date_color) = (texts[1].2, texts[1].3);
+    assert_eq!(time_style.size, 76.);
+    assert!(date_style.size < time_style.size);
+    assert!(time_color[0] > 0.6 && time_color[0] < 0.8 && time_color[0] == time_color[2]);
+    assert!(date_color[0] < time_color[0]);
+    assert!(texts[1].1.y > texts[0].1.y);
+    // Nothing animates between jumps: no continuous redraw.
     assert!(!state.animating());
+    // Every position keeps the whole block inside the safe area, and it moves over time.
+    let assets = view::Assets {
+        root: PathBuf::new(),
+        version: "test".into(),
+        metrics: BTreeMap::new(),
+        artwork: crate::app_artwork::Service::new(false),
+    };
+    let time = language.clock(now, true, false);
+    let date = state.preferences.date_format.format_inline(language, now);
+    let mut places = std::collections::HashSet::new();
+    for seed in [1u64, 42, u64::MAX] {
+        for step in 0..200 {
+            let block = view::screensaver_block(&assets, &time, &date, seed, step);
+            assert!(block.x >= view::SAFE_X && block.x + block.w <= 1920. - view::SAFE_X);
+            assert!(block.y >= 60. && block.y + block.h <= 1020.);
+            places.insert((block.x as i32, block.y as i32));
+        }
+    }
+    assert!(places.len() > 500, "{} distinct places", places.len());
+    // A jump every five seconds: the loop's tick marks the frame dirty only then.
+    assert_eq!(state.screensaver_position_step().unwrap().1, 0);
+    state.tick();
+    assert_eq!(state.screensaver_step, 0);
+    let (_, seed) = state.screensaver.unwrap();
+    state.screensaver = Some((Instant::now() - Duration::from_millis(5100), seed));
+    state.dirty = false;
+    state.tick();
+    assert!(state.dirty, "jumped");
+    assert_eq!(state.screensaver_step, 1);
+    let moved = scene(&state);
+    assert!(!matches!((&moved.draw[1], &rendered.draw[1]),
+        (Draw::Text(_, a, ..), Draw::Text(_, b, ..)) if a.x == b.x && a.y == b.y));
+    // Any input only ends it.
     assert!(state.stop_screensaver());
     assert!(!state.stop_screensaver());
     assert!(!scene(&state).controls.is_empty());
+    state.preferences.language = crate::i18n::Language::En;
     // Settings › General › Screensaver: Off disables the timer.
     state.open(Page::Settings);
     state.focus = Target::Setting(12);
@@ -3595,9 +3646,12 @@ fn screensaver_defaults_to_ten_minutes_replaces_the_scene_and_any_input_ends_it(
     assert_eq!(state.preferences.screensaver_minutes, 0);
     assert_eq!(state.screensaver_after(), None);
     assert_eq!(state.focus, Target::Setting(12));
-    state.focus = Target::Setting(13);
-    assert_eq!(state.activate(), vec![Effect::Save]);
-    assert!(state.preferences.screensaver_clock);
+    // The Screensaver clock row is gone: the clock is the screensaver.
+    assert!(
+        !controls(&state)
+            .iter()
+            .any(|c| c.target == Target::Setting(13))
+    );
 }
 
 #[test]

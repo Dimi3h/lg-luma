@@ -26,6 +26,8 @@ pub const BACKGROUND_FADE: f32 = 0.4;
 /// The clock line; scrolled content is not hit-testable above it.
 pub const MAIN_TOP: f32 = 120.;
 pub const CYCLE_FADE: f32 = 1.6;
+/// The screensaver's clock jumps to a new position this often (OLED burn-in).
+pub const SCREENSAVER_STEP: Duration = Duration::from_secs(5);
 /// Screensaver choices in minutes (0 is Off).
 pub const SCREENSAVER_MINUTES: [u32; 6] = [0, 1, 5, 10, 15, 30];
 
@@ -266,8 +268,10 @@ pub struct State {
     pub suggest_at: Option<Instant>,
     /// The last remote key, pointer movement or text input, for the screensaver's idle timer.
     pub last_input: Instant,
-    /// The running screensaver: when it started and the wallpaper it started with.
-    pub screensaver: Option<(Instant, usize)>,
+    /// The running screensaver: when it started, the seed of its clock positions, and the
+    /// position step last drawn (the clock jumps every `SCREENSAVER_STEP`).
+    pub screensaver: Option<(Instant, u64)>,
+    pub screensaver_step: u64,
 }
 
 impl State {
@@ -314,6 +318,7 @@ impl State {
             suggest_at: None,
             last_input: Instant::now(),
             screensaver: None,
+            screensaver_step: 0,
         }
     }
 
@@ -383,17 +388,24 @@ impl State {
         (minutes > 0).then(|| Duration::from_secs(minutes as u64 * 60))
     }
 
-    /// Starts the screensaver on the current wallpaper (the idle timer ran out).
+    /// Starts the clock screensaver (the idle timer ran out), at a random first position.
     pub fn start_screensaver(&mut self) {
         if self.screensaver.is_none() {
-            let current = (0..self.background_count())
-                .position(|index| {
-                    self.background_id(index) == Some(self.preferences.background.as_str())
-                })
-                .unwrap_or(0);
-            self.screensaver = Some((Instant::now(), current));
+            let seed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| since.as_nanos() as u64);
+            self.screensaver = Some((Instant::now(), seed));
+            self.screensaver_step = 0;
             self.dirty = true;
         }
+    }
+
+    /// Which position the screensaver's clock is at: a new one every `SCREENSAVER_STEP`.
+    pub fn screensaver_position_step(&self) -> Option<(u64, u64)> {
+        self.screensaver.map(|(started, seed)| {
+            let step = started.elapsed().as_millis() / SCREENSAVER_STEP.as_millis();
+            (seed, step as u64)
+        })
     }
 
     /// Any key or pointer movement ends the screensaver (and only does that).
@@ -535,6 +547,13 @@ impl State {
     }
 
     pub fn tick(&mut self) {
+        // The screensaver draws nothing that moves between jumps; redraw only at a jump.
+        if let Some((_, step)) = self.screensaver_position_step()
+            && step != self.screensaver_step
+        {
+            self.screensaver_step = step;
+            self.dirty = true;
+        }
         let mut motion = std::mem::take(&mut self.motion);
         self.dirty |= motion.advance(&self.motion_inputs(), Instant::now());
         self.motion = motion;
@@ -588,7 +607,6 @@ impl State {
             || self.previous_background.is_some()
             || self.panel_started.is_some()
             || self.motion.animating()
-            || (self.screensaver.is_some() && !self.preferences.reduced_motion)
             || (self.moving.is_some() && !self.preferences.reduced_motion)
             || (!self.preferences.reduced_motion
                 && self
@@ -2349,7 +2367,6 @@ impl State {
                         );
                         return vec![];
                     }
-                    13 => self.preferences.screensaver_clock = !self.preferences.screensaver_clock,
                     15 => {
                         self.subpage = Some(Subpage::TextSize);
                         self.scroll = 0.;

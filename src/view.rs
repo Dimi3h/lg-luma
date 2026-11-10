@@ -724,8 +724,8 @@ pub fn scene(state: &State, assets: &Assets, now: OffsetDateTime) -> Scene {
             1.
         })
     });
-    if let Some((started, first)) = state.screensaver {
-        return screensaver(state, assets, now, started, first);
+    if let Some((seed, step)) = state.screensaver_position_step() {
+        return screensaver(state, assets, now, seed, step);
     }
     let mut out = Scene::new();
     out.static_focus = state.page == Page::Settings;
@@ -1021,80 +1021,75 @@ fn header(out: &mut Scene, state: &State, now: OffsetDateTime) {
     );
 }
 
-/// Seconds each wallpaper shows in the screensaver, and the crossfade at its end.
-const SCREENSAVER_SLIDE: f32 = 14.;
-const SCREENSAVER_FADE: f32 = 2.;
+/// The screensaver's time: Title 1 scale in a light grey, and the date beneath, smaller and
+/// dimmer, on pure black.
+const SCREENSAVER_TIME: TextStyle = TextStyle::new(76.).weight(500).tracking(-0.02);
+/// #bebebe and #7c7c7c.
+const SCREENSAVER_TIME_COLOR: Color = [190. / 255., 190. / 255., 190. / 255., 1.];
+const SCREENSAVER_DATE_COLOR: Color = [124. / 255., 124. / 255., 124. / 255., 1.];
+const SCREENSAVER_TIME_H: f32 = 92.;
+const SCREENSAVER_DATE_H: f32 = 40.;
 
-/// The screensaver replaces the whole interface: a slow Ken Burns (zoom and pan) over the
-/// bundled and uploaded wallpapers, crossfading between them, with the time and date when
-/// enabled. Under Reduced motion the pictures stand still and change without a fade. No video.
-fn screensaver(
-    state: &State,
-    assets: &Assets,
-    now: OffsetDateTime,
-    started: std::time::Instant,
-    first: usize,
-) -> Scene {
+/// The screensaver replaces the whole interface with a minimal digital clock on pure black
+/// (the OLED's pixels off): the time and the date beneath it, in the clock and date formats
+/// from Settings. The block jumps to a new random place inside the safe area every
+/// `SCREENSAVER_STEP` against burn-in; nothing else is drawn and nothing animates in between.
+fn screensaver(state: &State, assets: &Assets, now: OffsetDateTime, seed: u64, step: u64) -> Scene {
     let mut out = Scene::new();
-    let count = state.background_count().max(1);
-    let elapsed = started.elapsed().as_secs_f32();
-    let slide = (elapsed / SCREENSAVER_SLIDE) as usize;
-    let progress = (elapsed % SCREENSAVER_SLIDE) / SCREENSAVER_SLIDE;
-    let reduced = state.preferences.reduced_motion;
-    let picture = |index: usize| {
-        let id = state
-            .background_id((first + index) % count)
-            .unwrap_or(&state.preferences.background)
-            .to_owned();
-        assets.background(state, &id)
-    };
-    // Zoom from 4% to 12% and pan, alternating direction per picture.
-    let frame = |index: usize, t: f32| {
-        if reduced {
-            return Rect::new(0., 0., 1920., 1080.);
-        }
-        let scale = 1.04 + 0.08 * t;
-        let direction = if index.is_multiple_of(2) { 1. } else { -1. };
-        let (w, h) = (1920. * scale, 1080. * scale);
-        Rect::new(
-            (1920. - w) / 2. + direction * (t - 0.5) * 60.,
-            (1080. - h) / 2. + (t - 0.5) * 24.,
-            w,
-            h,
-        )
-    };
     out.shape(Rect::new(0., 0., 1920., 1080.), 0., c(0x000000, 1.));
-    out.image(picture(slide), frame(slide, progress), 0., false);
-    let fade_from = 1. - SCREENSAVER_FADE / SCREENSAVER_SLIDE;
-    if !reduced && progress > fade_from {
-        let alpha = (progress - fade_from) / (1. - fade_from);
-        out.draw.push(Draw::TintedImage(
-            picture(slide + 1),
-            frame(slide + 1, 0.),
-            0.,
-            false,
-            [1., 1., 1., alpha],
-        ));
-    }
-    if state.preferences.screensaver_clock {
-        let language = state.preferences.language;
-        let clock = language.clock(now, state.preferences.uses_24_hour(), false);
-        out.text(
-            clock,
-            Rect::new(SAFE_X, 1080. - 60. - 140., 1200., 82.),
-            TextStyle::new(76.).weight(650).tracking(-0.02),
-            c(0xffffff, 0.92),
-            false,
-        );
-        out.text(
-            state.preferences.date_format.format(language, now),
-            Rect::new(SAFE_X, 1080. - 60. - 52., 1200., 40.),
-            CALLOUT,
-            c(0xffffff, 0.78),
-            false,
-        );
-    }
+    let language = state.preferences.language;
+    let time = language.clock(now, state.preferences.uses_24_hour(), false);
+    let date = state.preferences.date_format.format_inline(language, now);
+    let block = screensaver_block(assets, &time, &date, seed, step);
+    out.text(
+        time,
+        Rect::new(block.x, block.y, block.w, SCREENSAVER_TIME_H),
+        SCREENSAVER_TIME,
+        SCREENSAVER_TIME_COLOR,
+        false,
+    );
+    out.text(
+        date,
+        Rect::new(
+            block.x,
+            block.y + SCREENSAVER_TIME_H,
+            block.w,
+            SCREENSAVER_DATE_H,
+        ),
+        CALLOUT,
+        SCREENSAVER_DATE_COLOR,
+        false,
+    );
     out
+}
+
+/// The screensaver clock's block at position `step`: as wide as its longer line, placed at a
+/// pseudo-random point (from `seed` and `step`) that keeps it whole inside the safe area.
+pub fn screensaver_block(assets: &Assets, time: &str, date: &str, seed: u64, step: u64) -> Rect {
+    let w = assets
+        .width(time, SCREENSAVER_TIME)
+        .max(assets.width(date, CALLOUT))
+        .ceil()
+        + 4.;
+    let h = SCREENSAVER_TIME_H + SCREENSAVER_DATE_H;
+    // SplitMix64: two well-mixed fractions per step.
+    let mix = |mut z: u64| {
+        z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    };
+    let a = mix(seed ^ step.wrapping_mul(0xd1b5_4a32_d192_ed03));
+    let b = mix(a);
+    let fraction = |value: u64| (value >> 11) as f32 / (1u64 << 53) as f32;
+    let (left, top) = (SAFE_X, 60.);
+    let (right, bottom) = (1920. - SAFE_X - w, 1080. - 60. - h);
+    Rect::new(
+        (left + fraction(a) * (right - left).max(0.)).round(),
+        (top + fraction(b) * (bottom - top).max(0.)).round(),
+        w,
+        h,
+    )
 }
 
 /// "Off" or "10 min".
@@ -2941,17 +2936,6 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                     "weather-moon",
                     Some(screensaver.as_str()),
                     true,
-                ),
-                (
-                    13,
-                    "screensaverClock",
-                    "clock",
-                    Some(if state.preferences.screensaver_clock {
-                        language.t("stateOn")
-                    } else {
-                        language.t("stateOff")
-                    }),
-                    false,
                 ),
             ]
             .into_iter()

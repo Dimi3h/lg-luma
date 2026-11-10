@@ -240,6 +240,9 @@ impl DateFormat {
         }
     }
 
+    /// The date starting a line, in sentence case ("Maandag 9 november"); only tests use it
+    /// now that the screensaver shows the date as the main screen does.
+    #[cfg(test)]
     pub fn format(self, language: Language, now: time::OffsetDateTime) -> String {
         self.format_at(language, now, true)
     }
@@ -280,8 +283,6 @@ pub struct Preferences {
     pub favorite_badges: bool,
     /// Minutes without input before the screensaver starts while Luma is in front; 0 is Off.
     pub screensaver_minutes: u32,
-    /// The time and date over the screensaver.
-    pub screensaver_clock: bool,
     #[serde(deserialize_with = "deserialize_appearance")]
     pub appearance: Appearance,
     /// Settings › General › Text size: Larger (about 1.15×) for body text.
@@ -333,7 +334,6 @@ impl Default for Preferences {
             show_inputs: false,
             favorite_badges: false,
             screensaver_minutes: 10,
-            screensaver_clock: true,
             appearance: Appearance::Dark,
             larger_text: false,
             night_background: None,

@@ -84,7 +84,7 @@ scripts and `tools/screenshots.mjs` set it on macOS, so a local run never takes 
 ### Documentation screenshots
 
 `pnpm screenshots` generates `docs/home.png`, `docs/apps.png`, `docs/settings.png`,
-and `docs/inputs.png`, linked by the README. It builds the desktop executable without the TV feature,
+`docs/inputs.png` and `docs/screensaver.png`, linked by the README. It builds the desktop executable without the TV feature,
 uses isolated temporary preferences, sample inventory and a fixed date/time, and captures actual
 1920×1080 OpenGL framebuffers. Weather is unconfigured, so no real weather APIs are contacted.
 It does not execute the test suites. A desktop display is required; on headless Linux use
@@ -147,8 +147,8 @@ from Clock restores its General row. With seconds shown, the header clock redraw
 instead of once per minute. Existing saved hour and seconds preferences are retained.
 Until a format is chosen there (stored as `clock_24`), Dutch uses 24 hours and English 12; an
 earlier saved `hour_24: true` still counts as a choice. On the main screen the localized date
-follows the clock inside the line, so Dutch keeps its lowercase ("maandag 9 november"); where a
-date starts a line (the screensaver) it is in sentence case.
+follows the clock inside the line, so Dutch keeps its lowercase ("maandag 9 november"), and the
+screensaver shows it the same way.
 General has an **App names** row that toggles On/Off directly (stored in `show_app_names`, default
 On). As on tvOS, On shows the title beneath the focused grid card only, fading in with the focus
 lift; Off never shows titles. The former separate Home (`show_home_names`) preference is ignored
@@ -530,15 +530,18 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   sunset at the weather location, which the forecast now requests (`daily=sunrise,sunset`,
   `forecast_days=1`, cached with the reading), and between 07:00 and 21:00 without a location or
   forecast. The scrim is one more full-screen layer while Light applies.
-- **Screensaver** (Settings › General › Screensaver: Off, 1, 5, 10 (default), 15 or 30 minutes;
-  **Screensaver clock**, default On): after that long without a remote key, pointer movement or
-  text input while Luma is visible and in front, the screen shows a slow Ken Burns (zoom from 4%
-  to 12% and a gentle pan, 14 s per picture with a 2 s crossfade) over the bundled and uploaded
-  wallpapers, starting with the current one, with the time and date bottom left. It replaces the
-  whole scene, so nothing behind it is drawn or reachable. Any key or pointer movement only ends
-  it. Hidden or unfocused, the timer does not run, and returning to Luma restarts it. Under
-  Reduced motion the pictures stand still and change without a fade, and frames are not redrawn
-  continuously. There is no video. Scripts can start it with the `screensaver` action.
+- **Screensaver** (Settings › General › Screensaver: Off, 1, 5, 10 (default), 15 or 30 minutes):
+  after that long without a remote key, pointer movement or text input while Luma is visible and
+  in front, the screen turns pure black (#000000, so an OLED's pixels are off) with a minimal
+  digital clock: the time in Inter at Title 1 scale (76 px) in light grey (#bebebe) and the date
+  beneath it in Callout in a dimmer grey (#7c7c7c), in the clock and date formats from Settings
+  (24-hour and a lowercase date in Dutch). Nothing else is drawn. Against burn-in the block jumps
+  every 5 s (`SCREENSAVER_STEP`) to a new pseudo-random place that keeps it whole inside the
+  80 × 60 safe area; there is no sliding or fading, and frames are drawn only at a jump or when
+  the minute changes. It replaces the whole scene, so nothing behind it is reachable; any key or
+  pointer movement only ends it. Hidden or unfocused, the timer does not run, and returning to
+  Luma restarts it. The former Screensaver clock toggle and the wallpaper slideshow are gone.
+  Scripts can start it with the `screensaver` action.
 - **Favorite badges** (Settings › General, default Off): a heart on pinned favourites. tvOS has no
   badges; the favourites block is first in the grid either way.
 - The focus highlight, glass and the second optical size are unverified on TV hardware.

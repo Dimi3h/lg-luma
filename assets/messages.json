@@ -963,10 +963,6 @@
     "en": "Screensaver",
     "nl": "Schermbeveiliging"
   },
-  "screensaverClock": {
-    "en": "Screensaver clock",
-    "nl": "Klok op schermbeveiliging"
-  },
   "minutes": {
     "en": "{count} min",
     "nl": "{count} min"
