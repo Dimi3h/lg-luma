@@ -1082,7 +1082,7 @@ fn run() -> Result<(), String> {
             && state.overlay.is_none()
             && state.moving.is_none()
             && state.deleting_wallpaper.is_none()
-            && !state.animating()
+            && !state.animating_besides_wash()
             && (startup_cycle
                 || wallpaper_cycle::due(
                     state.preferences.wallpaper_cycle,

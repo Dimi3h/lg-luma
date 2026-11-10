@@ -702,9 +702,7 @@ fn reset_discards_prefetch_backlog_and_queued_requests() {
 }
 
 #[test]
-fn a_wash_prefers_the_background_image_and_is_tiny_and_opaque() {
-    // Reads are simulated, under an installed-app root as on the TV.
-    let directory = PathBuf::from("/media/developer/apps/usr/palm/applications/sample");
+fn a_wash_uses_only_wide_artwork_desaturated_and_never_icons() {
     let png = |color: [u8; 4], width, height| {
         let mut bytes = Vec::new();
         image::RgbaImage::from_pixel(width, height, image::Rgba(color))
@@ -715,35 +713,53 @@ fn a_wash_prefers_the_background_image_and_is_tiny_and_opaque() {
             .unwrap();
         bytes
     };
-    let files: std::collections::HashMap<PathBuf, Vec<u8>> = [
-        (
-            directory.join("appinfo.json"),
-            serde_json::to_vec(&json!({
-                "id": "sample", "icon": "icon.png", "bgImage": "background.png"
-            }))
-            .unwrap(),
-        ),
-        (directory.join("icon.png"), png([0, 0, 255, 0], 80, 80)),
-        (
-            directory.join("background.png"),
-            png([200, 40, 10, 255], 640, 480),
-        ),
-    ]
-    .into_iter()
-    .collect();
-    let read = |path: &Path, limit: usize| files.get(path).filter(|b| b.len() <= limit).cloned();
+    // Reads are simulated, under an installed-app root as on the TV.
+    let directory = PathBuf::from("/media/developer/apps/usr/palm/applications/sample");
+    let manifest = |extra: serde_json::Value| {
+        let mut value = json!({"id": "sample", "icon": "icon.png"});
+        value
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::to_vec(&value).unwrap()
+    };
+    let files = |manifest: Vec<u8>| -> std::collections::HashMap<PathBuf, Vec<u8>> {
+        [
+            (directory.join("appinfo.json"), manifest),
+            (directory.join("icon.png"), png([120, 40, 200, 255], 80, 80)),
+            (
+                directory.join("banner.png"),
+                png([200, 40, 10, 255], 1280, 720),
+            ),
+            (
+                directory.join("square.png"),
+                png([200, 40, 10, 255], 400, 400),
+            ),
+        ]
+        .into_iter()
+        .collect()
+    };
     let source = Source::new("sample", &json!({"folderPath": directory}));
+    // A wide bgImage makes a tiny, opaque, strongly desaturated wash.
+    let with_banner = files(manifest(json!({"bgImage": "banner.png"})));
+    let read =
+        |path: &Path, limit: usize| with_banner.get(path).filter(|b| b.len() <= limit).cloned();
     let wash = load_local(&source.wash(), read).unwrap();
     assert!(wash.wash);
     assert_eq!(wash.pixels.dimensions(), (WASH_SIZE[0], WASH_SIZE[1]));
-    assert!(wash.pixels.pixels().all(|pixel| pixel[3] == 255));
-    assert!(
-        wash.pixels.get_pixel(10, 10)[0] > 150,
-        "The background image, not the icon"
-    );
+    let pixel = wash.pixels.get_pixel(10, 10);
+    assert_eq!(pixel[3], 255);
+    // Red 200 against blue 10 keeps only about 30% of its difference.
+    assert!((pixel[0] as f32 - pixel[2] as f32) <= 190. * WASH_SATURATION + 2.);
     // The icon request for the same app is unaffected.
     assert!(!load_local(&source, read).unwrap().wash);
-    // A transparent icon alone still makes an opaque wash.
-    let icon_only = decode_wash(&png([0, 0, 255, 0], 80, 80)).unwrap();
-    assert!(icon_only.pixels.pixels().all(|pixel| pixel[3] == 255));
+    // Without wide artwork there is no wash: never the icon, never a square image.
+    let icon_only = files(manifest(json!({})));
+    let read =
+        |path: &Path, limit: usize| icon_only.get(path).filter(|b| b.len() <= limit).cloned();
+    assert!(load_local(&source.wash(), read).is_none());
+    let square = files(manifest(json!({"splashBackground": "square.png"})));
+    let read = |path: &Path, limit: usize| square.get(path).filter(|b| b.len() <= limit).cloned();
+    assert!(load_local(&source.wash(), read).is_none());
+    assert!(decode_wash(&png([0, 0, 255, 255], 80, 80)).is_none());
 }

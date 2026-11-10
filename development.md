@@ -493,15 +493,17 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   (y 1020). It fades in and rises 10 px (240 ms; neither under Reduced motion), dismisses itself
   as before, and a new notice replaces the current one. It may cover part of the bottom card row
   while shown.
-- **App artwork** (Settings › Widgets, default On): while an app in the first row has focus, its
-  artwork washes softly behind the top shelf, dimmed and fading out above the grid, and crossfades
-  (350 ms) between apps; Reduced motion swaps instantly. The artwork worker reads the manifest's
-  `bgImage`, then `splashBackground`, then the app's icons (up to 4 MiB for a background, the icon
-  limit otherwise; through `luma-helper read-app-icon` with `"wash": true` in jailed installs),
-  decodes it there and reduces it to a 48 × 27 opaque, blurred image. The SDL thread uploads that
-  tiny texture and stretches it, so linear filtering blurs it further; it costs one textured pass
-  over the shelf only while a first-row app has focus. Curated brands without installed artwork use
-  their card surface; desktop previews show those.
+- **App artwork** (Settings › Widgets, default On): once focus has rested 250 ms on an app in the
+  first row, that app's own wide artwork shows faintly behind the top shelf and crossfades over
+  400 ms (Reduced motion swaps instantly); leaving the row removes it at once, and scrolling
+  along a row never flashes. Only real banner art counts: the manifest's `bgImage` or
+  `splashBackground` (up to 4 MiB; through `luma-helper read-app-icon` with `"wash": true` in
+  jailed installs) with a landscape aspect of at least 1.3:1. Icons, square images and card
+  colours are never used, so apps with only an icon show nothing. The artwork worker reduces the
+  image to 48 × 27, blurs it and keeps 30% of its colour; the SDL thread stretches it at 22%
+  opacity with a soft falloff above the grid, one textured pass over the shelf while shown.
+  Desktop demo apps have no installed artwork, so previews show no wash. An earlier version
+  stretched icons and flat card colours, which read as a coloured blur on a TV.
 - **Control Center**: its icon in the top bar (OK or a click; Back returns focus to it) opens a
   glass panel that slides in from the right (250 ms; none under Reduced motion). Rows: **Sleep** (asks for a second OK, then
   `luna://com.webos.service.tvpower/power/turnOff` with `{"reason":"remoteKey"}`), **Volume**

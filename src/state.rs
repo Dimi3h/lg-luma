@@ -30,7 +30,9 @@ pub const CYCLE_FADE: f32 = 1.6;
 /// Screensaver choices in minutes (0 is Off).
 pub const SCREENSAVER_MINUTES: [u32; 6] = [0, 1, 5, 10, 15, 30];
 /// Crossfade of the top-shelf wash between apps, in seconds.
-pub const WASH_FADE: f32 = 0.35;
+pub const WASH_FADE: f32 = 0.4;
+/// Focus rests this long on a first-row app before its artwork appears.
+pub const WASH_DWELL: Duration = Duration::from_millis(250);
 
 /// A card of the main screen's grid (inputs, apps and the system cards).
 fn is_grid_card(target: &Target) -> bool {
@@ -292,6 +294,8 @@ pub struct State {
     /// one fading out (Widgets › App artwork).
     pub wash: Option<(String, Instant)>,
     pub wash_previous: Option<(String, Instant)>,
+    /// The app focus is resting on, and since when: the wash changes only after `WASH_DWELL`.
+    pub wash_pending: Option<(Option<String>, Instant)>,
     /// Control Center's last known TV status, commands waiting for its worker, and whether
     /// Sleep asks for a second OK.
     pub control: crate::control_center::Status,
@@ -349,6 +353,7 @@ impl State {
             motion: crate::motion::Motion::default(),
             wash: None,
             wash_previous: None,
+            wash_pending: None,
             control: crate::control_center::Status::default(),
             control_outbox: vec![],
             confirm_sleep: false,
@@ -601,8 +606,20 @@ impl State {
     /// Reduced motion). Called before each scene is built.
     pub fn sync_wash(&mut self) {
         let target = self.wash_target();
-        if self.wash.as_ref().map(|(id, _)| id) != target.as_ref() {
-            let now = Instant::now();
+        let now = Instant::now();
+        if self.wash.as_ref().map(|(id, _)| id) == target.as_ref() {
+            self.wash_pending = None;
+        } else if self.wash_pending.as_ref().map(|(id, _)| id) != Some(&target) {
+            // Focus moved: wait until it rests, so scrolling through a row never flashes.
+            self.wash_pending = Some((target.clone(), now));
+        }
+        // Leaving (no target) fades out at once; a new app waits for the dwell.
+        if self
+            .wash_pending
+            .as_ref()
+            .is_some_and(|(id, since)| id.is_none() || now.duration_since(*since) >= WASH_DWELL)
+        {
+            self.wash_pending = None;
             let previous = self.wash.take().map(|(id, _)| (id, now));
             self.wash_previous = previous.filter(|_| !self.preferences.reduced_motion);
             self.wash = target.map(|id| (id, now));
@@ -750,6 +767,11 @@ impl State {
     }
 
     pub fn tick(&mut self) {
+        // The wash's dwell runs on the loop's regular wakes rather than as an animation, so
+        // waiting for focus to rest never holds off idle work such as wallpaper rotation.
+        if self.wash_pending.is_some() {
+            self.sync_wash();
+        }
         let mut motion = std::mem::take(&mut self.motion);
         self.dirty |= motion.advance(&self.motion_inputs(), Instant::now());
         self.motion = motion;
@@ -797,19 +819,25 @@ impl State {
     }
 
     pub fn animating(&self) -> bool {
+        self.animating_besides_wash()
+            || self.wash_previous.is_some()
+            || self
+                .wash
+                .as_ref()
+                .is_some_and(|(_, since)| self.wash_progress(*since) < 1.)
+    }
+
+    /// Whether anything other than the faint shelf artwork is moving: idle work such as the
+    /// wallpaper rotation waits for this, not for the artwork's fade.
+    pub fn animating_besides_wash(&self) -> bool {
         ((self.recents_open() || self.recents.visibility > 0.)
             && (self.recents.visibility != if self.recents_open() { 1. } else { 0. }
                 || self.recents.cards_animating(self.pointer)))
             || self.previous_background.is_some()
             || self.panel_started.is_some()
             || self.motion.animating()
-            || self.wash_previous.is_some()
             || (self.screensaver.is_some() && !self.preferences.reduced_motion)
             || (self.moving.is_some() && !self.preferences.reduced_motion)
-            || self
-                .wash
-                .as_ref()
-                .is_some_and(|(_, since)| self.wash_progress(*since) < 1.)
             || (!self.preferences.reduced_motion
                 && self
                     .notice

@@ -166,7 +166,14 @@ pub const MAX_WASH_FILE: usize = 4 * 1024 * 1024;
 /// A wash is this small (16:9): stretched across the shelf, linear filtering blurs it.
 pub const WASH_SIZE: [u32; 2] = [48, 27];
 
-/// A background, splash image or icon as a tiny, blurred 16:9 wash, cropped to cover.
+/// Wide enough to be real artwork (a banner or splash), not an icon: icons are square and,
+/// stretched, only tint the shelf with their colour.
+pub const WASH_MIN_ASPECT: f32 = 1.3;
+/// How much of its colour a wash keeps: strongly desaturated, so the wallpaper stays itself.
+pub const WASH_SATURATION: f32 = 0.3;
+
+/// A wide background or splash image as a tiny, blurred, desaturated 16:9 wash, cropped to
+/// cover. Anything narrower than `WASH_MIN_ASPECT` (an icon) gives no wash.
 pub fn decode_wash(bytes: &[u8]) -> Option<Artwork> {
     let mut reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
@@ -178,7 +185,7 @@ pub fn decode_wash(bytes: &[u8]) -> Option<Artwork> {
     reader.limits(limits);
     let image = reader.decode().ok()?.into_rgba8();
     let (width, height) = image.dimensions();
-    if width == 0 || height == 0 {
+    if width == 0 || height == 0 || (width as f32) < height as f32 * WASH_MIN_ASPECT {
         return None;
     }
     // Cover 16:9: crop the longer side around the centre.
@@ -202,8 +209,12 @@ pub fn decode_wash(bytes: &[u8]) -> Option<Artwork> {
         image::imageops::FilterType::Triangle,
     );
     let mut pixels = image::imageops::blur(&small, 1.6);
-    // Transparent icons wash in their own colour, not black.
     for pixel in pixels.pixels_mut() {
+        let grey = 0.2126 * pixel[0] as f32 + 0.7152 * pixel[1] as f32 + 0.0722 * pixel[2] as f32;
+        for channel in 0..3 {
+            pixel[channel] =
+                (grey + (pixel[channel] as f32 - grey) * WASH_SATURATION).round() as u8;
+        }
         pixel[3] = 255;
     }
     let average = average(&pixels);
@@ -445,7 +456,8 @@ fn load(source: &Source) -> Option<Artwork> {
     if let Some(image) = load_local(source, read_bounded) {
         return Some(image);
     }
-    // The elevated reader returns icons only, which still make a wash.
+    // The elevated reader returns the background images first for a wash; square icons it
+    // falls back to are refused by `decode_wash`.
     let decode = |bytes: &[u8]| {
         if source.wash {
             decode_wash(bytes)
@@ -485,25 +497,27 @@ fn load_local(
         };
         // A wash prefers the app's own background or splash image (webOS appinfo
         // `bgImage`, `splashBackground`), then falls back to its icons.
-        let backgrounds = if source.wash {
-            [manifest_icon("bgImage"), manifest_icon("splashBackground")]
+        // A wash uses only the app's own wide background or splash image (webOS appinfo
+        // `bgImage`, `splashBackground`), never its icons.
+        let candidates: Vec<(Option<&str>, usize)> = if source.wash {
+            vec![
+                (manifest_icon("bgImage"), MAX_WASH_FILE),
+                (manifest_icon("splashBackground"), MAX_WASH_FILE),
+            ]
         } else {
-            [None, None]
-        };
-        for (icon, limit) in backgrounds
+            [
+                source.large_icon.as_deref(),
+                manifest_icon("largeIcon"),
+                source.icon.as_deref(),
+                manifest_icon("icon"),
+                Some("icon.png"),
+            ]
             .into_iter()
-            .map(|icon| (icon, MAX_WASH_FILE))
-            .chain(
-                [
-                    source.large_icon.as_deref(),
-                    manifest_icon("largeIcon"),
-                    source.icon.as_deref(),
-                    manifest_icon("icon"),
-                    Some("icon.png"),
-                ]
-                .into_iter()
-                .map(|icon| (icon, MAX_FILE)),
-            )
+            .map(|icon| (icon, MAX_FILE))
+            .collect()
+        };
+        for (icon, limit) in candidates
+            .into_iter()
             .filter_map(|(icon, limit)| Some((icon?, limit)))
         {
             if let Some(artwork) = icon_path(&directory, icon)

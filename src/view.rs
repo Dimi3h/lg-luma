@@ -1942,31 +1942,27 @@ fn home(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
     out.shift(content_start, 0., s - state.display_scroll());
 }
 
-/// One app's top-shelf wash: its background, splash image or icon reduced to a few dozen
-/// pixels (decoded on the artwork worker) and stretched, dimmed, behind the shelf. Curated
-/// brands without installed artwork use their card surface.
+/// One app's top-shelf wash: its own wide background or splash image (decoded, reduced and
+/// desaturated on the artwork worker), stretched faintly behind the shelf so the wallpaper
+/// stays recognisable. Apps without wide artwork (most have only an icon) show none.
+pub const WASH_OPACITY: f32 = 0.22;
+
 fn wash(out: &mut Scene, state: &State, assets: &Assets, id: &str, alpha: f32, bottom: f32) {
-    let Some(app) = state.inventory.apps.iter().find(|app| app.id == id) else {
+    let Some(source) = state
+        .inventory
+        .apps
+        .iter()
+        .find(|app| app.id == id)
+        .and_then(|app| app.icon.as_ref())
+    else {
         return;
     };
-    let rect = Rect::new(0., 0., 1920., bottom);
-    // Dimmed so white shelf text stays readable over bright artwork.
-    let tint = [0.62, 0.62, 0.62, 0.6 * alpha];
-    if crate::branding::for_key(&app.brand).is_none() {
-        if let Some(image) = app
-            .icon
-            .as_ref()
-            .and_then(|source| assets.artwork.get(&source.wash()))
-        {
-            out.draw.push(Draw::AppImage(image, rect, 0., tint));
-        }
-    } else {
-        out.draw.push(Draw::TintedImage(
-            assets.path(format!("surfaces/{}.png", app.brand)),
-            rect,
+    if let Some(image) = assets.artwork.get(&source.wash()) {
+        out.draw.push(Draw::AppImage(
+            image,
+            Rect::new(0., 0., 1920., bottom),
             0.,
-            false,
-            tint,
+            [0.8, 0.8, 0.8, WASH_OPACITY * alpha],
         ));
     }
 }

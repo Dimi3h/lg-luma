@@ -3491,60 +3491,59 @@ fn badge_and_tilt_preferences_default_and_toggle_from_general() {
 }
 
 #[test]
-fn app_artwork_washes_the_shelf_for_first_row_apps_and_crossfades() {
+fn app_artwork_waits_for_focus_to_rest_and_never_tints_without_wide_artwork() {
     use crate::renderer::Draw;
+    use std::time::{Duration, Instant};
     let old: Preferences = serde_json::from_value(json!({"favorites": ["netflix"]})).unwrap();
     assert!(old.app_artwork, "App artwork defaults on");
     let mut state = ready();
     state.open(Page::Home);
     let disney = Target::App("com.disney.disneyplus-prod".into());
+    let netflix = Target::App("netflix".into());
     assert!(state.grid()[..6].contains(&disney));
+    // Moving onto an app only marks it; nothing changes while focus is still moving.
     state.focus = disney.clone();
+    state.sync_wash();
+    assert!(state.wash.is_none());
+    // The dwell is not an animation (idle work such as rotation still runs); the loop's
+    // regular tick completes it.
+    assert!(!state.animating());
+    state.focus = netflix.clone();
+    state.sync_wash();
+    assert_eq!(
+        state.wash_pending.as_ref().map(|(id, _)| id.as_deref()),
+        Some(Some("netflix"))
+    );
+    // Resting 250 ms brings it in, crossfading over 400 ms.
+    let rested = Instant::now() - crate::state::WASH_DWELL - Duration::from_millis(10);
+    state.wash_pending = Some((Some("netflix".into()), rested));
     state.sync_wash();
     assert_eq!(
         state.wash.as_ref().map(|(id, _)| id.as_str()),
-        Some("com.disney.disneyplus-prod")
+        Some("netflix")
     );
-    let washed = |state: &State| {
-        scene(state).draw.iter().any(|draw| {
-            matches!(draw, Draw::TintedImage(path, rect, ..)
-                if path.contains("surfaces/") && rect.w == 1920.)
-        })
-    };
-    assert!(
-        washed(&state),
-        "A curated brand washes with its card surface"
-    );
-    // Leaving the first row fades the wash out; with motion it crossfades.
+    assert_eq!(crate::state::WASH_FADE, 0.4);
+    // Its fade keeps frames coming but does not hold off idle work (wallpaper rotation).
+    assert!(state.animating());
+    assert!(!state.animating_besides_wash());
+    // Desktop demo apps have no installed wide artwork: no wash is drawn, never a card colour.
+    assert!(!scene(&state).draw.iter().any(|draw| matches!(draw,
+        Draw::TintedImage(path, rect, ..) if path.contains("surfaces/") && rect.w == 1920.)));
+    // Leaving the first row fades it out at once.
     state.focus = state.grid()[13].clone();
     state.sync_wash();
     assert!(state.wash.is_none());
     assert!(state.wash_previous.is_some());
-    assert!(state.animating());
-    // Reduced motion swaps instantly.
-    state.preferences.reduced_motion = true;
-    state.focus = disney.clone();
-    state.sync_wash();
-    state.focus = Target::App("netflix".into());
-    state.sync_wash();
-    assert!(state.wash_previous.is_none());
-    assert_eq!(state.wash_progress(state.wash.as_ref().unwrap().1), 1.);
     // Widgets › App artwork switches it off.
     state.open(Page::Settings);
     state.section = crate::state::WIDGETS_SECTION;
     state.focus = Target::Widget(5);
-    assert!(
-        controls(&state)
-            .iter()
-            .any(|c| c.target == Target::Widget(5))
-    );
     assert_eq!(state.activate(), vec![Effect::Save]);
     assert!(!state.preferences.app_artwork);
     state.open(Page::Home);
     state.focus = disney;
     state.sync_wash();
-    assert!(state.wash.is_none());
-    assert!(!washed(&state));
+    assert!(state.wash.is_none() && state.wash_pending.is_none());
 }
 
 #[test]
