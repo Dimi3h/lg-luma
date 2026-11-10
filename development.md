@@ -461,24 +461,27 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   Title 3 (48/56, overlay and sidebar titles), Headline (38/46, section headings), Callout (31/38),
   Body (29/36, rows and captions), Caption 1 (25/32, values and status) and Caption 2 (23/30, the
   smallest text anywhere).
-- **Focus** on app and wallpaper cards changes instantly and only highlights: the focused card is
-  a few percent brighter (a 7% white overlay) with a light 2.5 px rim, and its title appears
-  beneath it. Cards never lift, scale, tilt or spring; every card keeps the same small resting
-  shadow. Rows (2.5%) and buttons (6%) still grow with a soft shadow when focused.
-  A focused list row is drawn above its neighbours so its shadow falls over them. Focused rows and buttons turn
-  opaque white with dark labels; selected items (the sidebar section, the background) stay
-  highlighted at their resting size; pressed items return to their resting size. Hit regions stay at the
-  unscaled rectangles; only drawing scales.
-- **Motion** (rows, buttons and other controls; cards change focus instantly): a gained focus
-  lifts on a light spring (damping 0.76 at 34 rad/s: about 2.3%
-  overshoot, at rest after about 200 ms); losing focus, scrolling (the main grid and shelf,
-  Settings lists) and page switches ease with a critically damped exponential (about 200 ms,
-  250 ms and a 200 ms fade-in). Small controls (the top-bar icons, input glyphs and keyboard
-  keys) respond in the frame focus moves: the gaining one starts 40% lifted and the losing one
-  drops to 60% before the next motion tick, then a stiffer spring (0.85 at 55 rad/s) and a faster
-  release settle both in about 120 ms; rows and buttons keep the slower lift. Controls always use the
-  logical, unanimated positions; the drawn content follows. Wheel and pointer scrolling, list changes and **Reduced motion** snap immediately.
-  `State::animating()` keeps presenting only while a value is moving.
+- **Focus** is static on app and wallpaper cards and everywhere in Settings: it changes in the
+  first frame after the key, with no lift, scale, spring, tilt or fade on the item itself. The
+  focused card is a few percent brighter (a 7% white overlay) with a light 2.5 px rim, and its
+  title appears beneath it; every card keeps the same small resting shadow. In Settings the
+  focused sidebar entry, row, choice, button or key turns opaque white with dark labels and its
+  shadow at once, at its own rectangle (`Scene::lift` is 0 there), and holding OK keeps that look
+  (the release changes a toggle's value in the same frame). A focused list row is drawn above its
+  neighbours so its shadow falls over them. Selected items (the sidebar section, the background)
+  stay highlighted. Hit regions never move.
+- **Motion** elsewhere (Home's top-bar icons, input glyphs, popups and their buttons): a gained
+  focus lifts on a light spring (damping 0.76 at 34 rad/s: about 2.3% overshoot, at rest after
+  about 200 ms; rows 2.5%, buttons 6%); pressed items return to their resting size. Small
+  controls (the top-bar icons and input glyphs) respond in the frame focus moves: the gaining one
+  starts 40% lifted and the losing one drops to 60% before the next motion tick, then a stiffer
+  spring (0.85 at 55 rad/s) and a faster release settle both in about 120 ms. The main grid and
+  shelf scroll with a critically damped exponential (about 250 ms); Settings lists, which only
+  scroll to keep the focused row inside their fade, take about 120 ms (none when the row is
+  already visible). Switching a Settings section or opening a subpage has no fade; page switches
+  (Home and Settings) fade in over 200 ms. Controls always use the logical, unanimated
+  positions; the drawn content follows. Wheel and pointer scrolling, list changes and **Reduced
+  motion** snap immediately. `State::animating()` keeps presenting only while a value is moving.
 - **Liquid Glass**: GLES2 has no backdrop blur, so `pnpm assets` writes a 480 × 270 blurred copy
   of every background, with 30% more saturation, slightly lower contrast and a light glass tint
   baked in (rather than dimming) (`wallpapers/<id>-blur.jpg` and `<id>-plain-blur.jpg`), and the
@@ -802,8 +805,9 @@ beneath the outgoing interface rather than over it, so they fold in while both f
 
 The first visit to a page pays for laying out its text, rasterising new glyphs, loading logo
 meshes and uploading icons. After each inventory, once the screen has been still for 1.5 s, Luma builds
-the other pages' scenes without drawing them (`Renderer::prepare`), one page per idle wake; the TV
-log reports each (`Luma prewarm: …`). The script action `prewarm` triggers it at once, and the
+the other pages' scenes without drawing them (`Renderer::prepare`), Home and then every Settings
+section, one per idle wake, so their glyphs are rasterised before focus reaches them; the TV log
+reports each (`Luma prewarm: …`). The script action `prewarm` triggers it at once, and the
 profiling timeline records first-use work per frame (`glyph_ms`, `vector_ms`, `image_ms`).
 
 ## TV startup diagnostics

@@ -24,10 +24,10 @@ const SMALL_FREQUENCY: f32 = 55.;
 /// Losing focus, they fade in about 120 ms.
 const SMALL_RATE: f32 = 40.;
 
-/// App and wallpaper cards change focus instantly: no lift, spring or fade between cards, only
-/// a highlight.
-pub fn instant(target: &Target) -> bool {
-    matches!(target, Target::App(_) | Target::Background(_))
+/// Focus changes instantly, with no lift, spring or fade, on app and wallpaper cards (only a
+/// highlight) and on everything in Settings: its sidebar, rows, choices, buttons and keys.
+pub fn instant(target: &Target, page: Page) -> bool {
+    page == Page::Settings || matches!(target, Target::App(_) | Target::Background(_))
 }
 
 /// Controls small enough that the cards' 200 ms lift feels sluggish on them.
@@ -40,6 +40,8 @@ pub fn small(target: &Target) -> bool {
 
 /// About 96% of the way after 250 ms.
 const SCROLL_RATE: f32 = 13.;
+/// Settings lists keep the focused row inside their fade quickly: about 96% after 120 ms.
+const SETTINGS_SCROLL_RATE: f32 = 27.;
 /// Page switches fade the new page in over this many seconds.
 pub const PAGE_FADE: f32 = 0.2;
 
@@ -129,7 +131,7 @@ impl Motion {
         // Small controls change visibly in the very frame focus moves, before the next tick;
         // app cards change completely.
         for (target, level, velocity) in &mut self.levels {
-            if instant(target) {
+            if instant(target, input.page) {
                 *level = if target == input.focus { 1. } else { 0. };
                 *velocity = 0.;
             } else if small(target) {
@@ -160,7 +162,7 @@ impl Motion {
         let mut changed = false;
         for (target, level, velocity) in &mut self.levels {
             let goal = if target == input.focus { 1. } else { 0. };
-            if input.reduced || instant(target) {
+            if input.reduced || instant(target, input.page) {
                 changed |= *level != goal;
                 *level = goal;
                 *velocity = 0.;
@@ -203,7 +205,14 @@ impl Motion {
 
         let snap = switched || input.reduced || input.pointer;
         match &mut self.scroll {
-            Some(value) if !snap => changed |= approach(value, input.scroll, SCROLL_RATE, dt, 0.5),
+            Some(value) if !snap => {
+                let rate = if input.page == Page::Settings {
+                    SETTINGS_SCROLL_RATE
+                } else {
+                    SCROLL_RATE
+                };
+                changed |= approach(value, input.scroll, rate, dt, 0.5)
+            }
             display => {
                 changed |= display.is_some_and(|value| value != input.scroll);
                 *display = Some(input.scroll);

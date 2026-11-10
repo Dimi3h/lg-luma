@@ -253,6 +253,8 @@ pub struct Scene {
     backdrop: Option<String>,
     /// A focused list row, drawn after its neighbours so its soft shadow lies over them.
     raised: Vec<Draw>,
+    /// Settings: focused controls appear at once in place (no lift), as cards do.
+    static_focus: bool,
 }
 
 /// Settings › General › Text size: Larger scales the body text styles (40 px and below) by this
@@ -305,7 +307,12 @@ impl Scene {
             modal: None,
             backdrop: None,
             raised: Vec::new(),
+            static_focus: false,
         }
+    }
+    /// How much a focused control grows: `lift`, or nothing where focus is static (Settings).
+    fn lift(&self, lift: f32) -> f32 {
+        if self.static_focus { 0. } else { lift }
     }
     fn shape(&mut self, rect: Rect, radius: f32, fill: Color) {
         self.draw.push(Draw::Shape(rect, radius, 0., fill));
@@ -415,7 +422,7 @@ impl Scene {
     /// A tvOS control in one of its focus states: glass at rest, an opaque white surface
     /// (with a light top-to-bottom shading) when focused or selected. Returns the drawn rect.
     fn button(&mut self, rect: Rect, radius: f32, level: f32, selected: bool, lift: f32) -> Rect {
-        let drawn = grow(rect, lift * level);
+        let drawn = grow(rect, self.lift(lift) * level);
         let radius = radius * drawn.h / rect.h;
         if level > 0. {
             self.lift_shadow(drawn, radius, level);
@@ -721,6 +728,7 @@ pub fn scene(state: &State, assets: &Assets, now: OffsetDateTime) -> Scene {
         return screensaver(state, assets, now, started, first);
     }
     let mut out = Scene::new();
+    out.static_focus = state.page == Page::Settings;
     // The night wallpaper replaces the chosen one between sunset and sunrise.
     let shown = state.shown_background(now).to_owned();
     out.backdrop = assets.glass_backdrop(state, &shown);
@@ -1099,13 +1107,7 @@ fn screensaver_label(language: Language, minutes: u32) -> String {
 }
 
 /// Screensaver's choices: the owned labels need their own pass of the choice rows.
-fn screensaver_choices(
-    out: &mut Scene,
-    state: &State,
-    assets: &Assets,
-    labels: Vec<String>,
-    start: usize,
-) {
+fn screensaver_choices(out: &mut Scene, state: &State, assets: &Assets, labels: Vec<String>) {
     let s = state.scroll;
     for (index, title) in labels.iter().enumerate() {
         row(
@@ -1124,9 +1126,6 @@ fn screensaver_choices(
                 chevron: false,
             },
         );
-    }
-    if let Some(opened) = state.panel_started {
-        out.fade(start, (opened.elapsed().as_secs_f32() / 0.15).min(1.), 1.);
     }
 }
 
@@ -1727,12 +1726,8 @@ fn top_caption(out: &mut Scene, assets: &Assets, rect: Rect, text: &str, alpha: 
 /// Focus lifts it onto a small white circle and names it with its status beneath.
 fn top_input(out: &mut Scene, state: &State, assets: &Assets, input: &Input, rect: Rect) {
     let target = Target::Input(input.id.clone());
-    let level = if state.pressed.as_ref() == Some(&target) {
-        0.
-    } else {
-        state.focus_level(&target)
-    };
-    let drawn = grow(rect, BUTTON_LIFT * 1.5 * level);
+    let level = state.display_level(&target);
+    let drawn = grow(rect, out.lift(BUTTON_LIFT * 1.5) * level);
     if level > 0. {
         out.lift_shadow(drawn, drawn.h / 2., level);
         out.draw.push(Draw::RoundedGradient(
@@ -1791,7 +1786,7 @@ fn top_bar(out: &mut Scene, state: &State, assets: &Assets) {
         } else {
             state.focus_level(target)
         };
-        let drawn = grow(rect, BUTTON_LIFT * 1.5 * level);
+        let drawn = grow(rect, out.lift(BUTTON_LIFT * 1.5) * level);
         if level > 0. {
             out.lift_shadow(drawn, drawn.h / 2., level);
         }
@@ -1993,7 +1988,7 @@ fn segment(
     let level = state.focus_level(&target);
     let pressed = state.pressed.as_ref() == Some(&target);
     let level = if pressed { 0. } else { level };
-    let drawn = grow(rect, BUTTON_LIFT * level);
+    let drawn = grow(rect, out.lift(BUTTON_LIFT) * level);
     if level > 0. {
         out.lift_shadow(drawn, drawn.h / 2., level);
     }
@@ -2100,12 +2095,7 @@ fn rotation_value_width(assets: &Assets, language: Language) -> f32 {
 /// rounds into a lifted card. Values sit right-aligned in secondary grey.
 fn row(out: &mut Scene, state: &State, assets: &Assets, row: Row<'_>) {
     let start = out.draw.len();
-    let pressed = state.pressed.as_ref() == Some(&row.target);
-    let level = if pressed {
-        0.
-    } else {
-        state.focus_level(&row.target)
-    };
+    let level = state.display_level(&row.target);
     let drawn = out.button(row.rect, ROW_RADIUS, level, false, ROW_LIFT);
     let ink = |rest: Color, focused: Color| mix_color(rest, focused, level);
     let primary = ink(WHITE, ON_LIGHT);
@@ -2257,7 +2247,7 @@ fn weather_settings(out: &mut Scene, state: &State, assets: &Assets) {
     if let Some(city) = city {
         let extra = out.draw.len();
         let level = state.focus_level(&Target::WeatherLocation);
-        let drawn = grow(rect, ROW_LIFT * level);
+        let drawn = grow(rect, out.lift(ROW_LIFT) * level);
         out.text(
             city,
             Rect::new(
@@ -2472,7 +2462,7 @@ fn location_settings(out: &mut Scene, state: &State, assets: &Assets) {
         {
             let extra = out.draw.len();
             let level = state.focus_level(&target);
-            let drawn = grow(rect, ROW_LIFT * level);
+            let drawn = grow(rect, out.lift(ROW_LIFT) * level);
             out.icon(
                 assets,
                 "check",
@@ -2627,12 +2617,8 @@ fn settings_sidebar(out: &mut Scene, state: &State, assets: &Assets) {
         let target = Target::Sidebar(index);
         // The selected section stays highlighted (translucent) while focus is elsewhere.
         let selected = state.section == index;
-        let level = if state.pressed.as_ref() == Some(&target) {
-            0.
-        } else {
-            state.focus_level(&target)
-        };
-        let drawn = grow(rect, BUTTON_LIFT / 2. * level);
+        let level = state.display_level(&target);
+        let drawn = grow(rect, out.lift(BUTTON_LIFT / 2.) * level);
         if level > 0. {
             out.lift_shadow(drawn, ROW_RADIUS, level);
         }
@@ -2729,7 +2715,6 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
     let language = state.preferences.language;
     let s = state.scroll;
     if let Some(subpage) = &state.subpage {
-        let start = out.draw.len();
         if matches!(
             subpage,
             Subpage::WeatherLocation
@@ -2751,9 +2736,6 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                 Subpage::Date => date_settings(out, state, assets),
                 Subpage::Clock => clock_settings(out, state, assets),
                 _ => unreachable!(),
-            }
-            if let Some(opened) = state.panel_started {
-                out.fade(start, (opened.elapsed().as_secs_f32() / 0.15).min(1.), 1.);
             }
             return;
         }
@@ -2858,7 +2840,7 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                     .iter()
                     .map(|minutes| screensaver_label(language, *minutes))
                     .collect();
-                return screensaver_choices(out, state, assets, labels, start);
+                return screensaver_choices(out, state, assets, labels);
             }
         };
         for (index, (title, description, selected)) in options.into_iter().enumerate() {
@@ -2891,9 +2873,6 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                 id,
                 SETTINGS_TOP + 3. * (DETAIL_ROW_H + ROW_GAP) + 16. - s,
             );
-        }
-        if let Some(opened) = state.panel_started {
-            out.fade(start, (opened.elapsed().as_secs_f32() / 0.15).min(1.), 1.);
         }
         return;
     }
@@ -3001,11 +2980,7 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                 let custom = state.wallpapers.iter().find(|item| item.id == id);
                 let rect = gallery_rect(index, s);
                 let target = Target::Background(index);
-                let level = if state.pressed.as_ref() == Some(&target) {
-                    0.
-                } else {
-                    state.focus_level(&target)
-                };
+                let level = state.display_level(&target);
                 let drawn = rect;
                 let radius = CARD_RADIUS;
                 out.resting_shadow(drawn, radius);
@@ -3882,13 +3857,8 @@ fn options(out: &mut Scene, state: &State, assets: &Assets, id: &str, anchor: Op
             target,
             Target::Option(2) | Target::DeleteBackground | Target::TileRemove(_)
         );
-        let pressed = state.pressed.as_ref() == Some(&target);
-        let level = if pressed {
-            0.
-        } else {
-            state.focus_level(&target)
-        };
-        let drawn = grow(rect, BUTTON_LIFT / 2. * level);
+        let level = state.display_level(&target);
+        let drawn = grow(rect, out.lift(BUTTON_LIFT / 2.) * level);
         if level > 0. {
             out.lift_shadow(drawn, 20., level);
             out.draw.push(Draw::RoundedGradient(
@@ -4028,12 +3998,12 @@ fn delete_confirmation(out: &mut Scene, state: &State, assets: &Assets, id: &str
             80.,
         );
         let disabled = target == Target::ConfirmDelete && deleting;
-        let level = if disabled || state.pressed.as_ref() == Some(&target) {
+        let level = if disabled {
             0.
         } else {
-            state.focus_level(&target)
+            state.display_level(&target)
         };
-        let drawn = grow(rect, BUTTON_LIFT * level);
+        let drawn = grow(rect, out.lift(BUTTON_LIFT) * level);
         if level > 0. {
             out.lift_shadow(drawn, 20., level);
         }
@@ -4150,12 +4120,8 @@ fn linear_keyboard(out: &mut Scene, state: &State, assets: &Assets) {
         }
         let rect = Rect::new(x, row.y, widths[index], row.h);
         let target = Target::Key(index);
-        let level = if state.pressed.as_ref() == Some(&target) {
-            0.
-        } else {
-            state.focus_level(&target)
-        };
-        let drawn = grow(rect, BUTTON_LIFT * 1.5 * level);
+        let level = state.display_level(&target);
+        let drawn = grow(rect, out.lift(BUTTON_LIFT * 1.5) * level);
         if level > 0. {
             out.lift_shadow(drawn, 16., level);
             out.draw.push(Draw::RoundedGradient(
@@ -4289,12 +4255,8 @@ fn keyboard(out: &mut Scene, state: &State, assets: &Assets) {
             76.,
         );
         let target = Target::Key(index);
-        let level = if state.pressed.as_ref() == Some(&target) {
-            0.
-        } else {
-            state.focus_level(&target)
-        };
-        let drawn = grow(rect, BUTTON_LIFT * 1.5 * level);
+        let level = state.display_level(&target);
+        let drawn = grow(rect, out.lift(BUTTON_LIFT * 1.5) * level);
         if level > 0. {
             out.lift_shadow(drawn, 16., level);
         }

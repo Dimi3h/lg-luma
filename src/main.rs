@@ -571,13 +571,14 @@ fn log_home_output() {
     unsafe { sdl2::sys::SDL_LogSetAllPriority(sdl2::sys::SDL_LogPriority::SDL_LOG_PRIORITY_INFO) };
 }
 
-/// The next page to prepare while the screen is idle. Jobs wait while the scene would not
-/// contain their page (fully shown Recents replaces it), rather than preparing Recents again.
+/// The next page (and Settings section) to prepare while the screen is idle. Jobs wait while
+/// the scene would not contain their page (fully shown Recents replaces it), rather than
+/// preparing Recents again.
 fn next_prewarm(
-    prewarm: &mut Vec<state::Page>,
+    prewarm: &mut Vec<(state::Page, usize)>,
     state: &state::State,
     idle: bool,
-) -> Option<state::Page> {
+) -> Option<(state::Page, usize)> {
     if !idle || state.dirty || view::recents_replaces_page(state) {
         return None;
     }
@@ -853,7 +854,7 @@ fn run() -> Result<(), String> {
     let mut damage_tracker = damage::Tracker::default();
     let mut first_text = serde_json::Value::Null;
     // Pages to prepare while the screen is idle (text, logos, icons), after each inventory.
-    let mut prewarm: Vec<state::Page> = Vec::new();
+    let mut prewarm: Vec<(state::Page, usize)> = Vec::new();
     let mut prewarm_now = false;
     let mut last_present = Instant::now();
     let verify_damage = std::env::var("LUMA_DAMAGE_VERIFY").as_deref() == Ok("1");
@@ -1121,7 +1122,13 @@ fn run() -> Result<(), String> {
                     if warning.is_none() {
                         input_refresh.superseded(Instant::now());
                     }
-                    prewarm = vec![state::Page::Settings, state::Page::Home];
+                    // Home first, then every Settings section, so moving through the sidebar
+                    // never waits for its glyphs to be rasterised.
+                    prewarm = (0..=state::SYSTEM_SECTION)
+                        .rev()
+                        .map(|section| (state::Page::Settings, section))
+                        .chain([(state::Page::Home, 0)])
+                        .collect();
                     if std::mem::take(&mut state.reload_artwork) {
                         assets.artwork.reset();
                     } else {
@@ -1918,17 +1925,23 @@ fn run() -> Result<(), String> {
         let idle = visible
             && (prewarm_now
                 || (!state.animating() && last_present.elapsed() > Duration::from_millis(1500)));
-        while let Some(page) = next_prewarm(&mut prewarm, &state, idle) {
-            if page != state.page {
+        while let Some((page, section)) = next_prewarm(&mut prewarm, &state, idle) {
+            let shown =
+                page == state.page && (page == state::Page::Home || section == state.section);
+            if !shown {
                 let started = Instant::now();
                 let current = std::mem::replace(&mut state.page, page);
+                let current_section = std::mem::replace(&mut state.section, section);
+                let current_subpage = state.subpage.take();
                 let hidden = view::scene(&state, &assets, now);
                 state.page = current;
+                state.section = current_section;
+                state.subpage = current_subpage;
                 let (width, height) = window.drawable_size();
                 renderer.prepare(&hidden.draw, width, height);
                 if webos {
                     eprintln!(
-                        "Luma prewarm: {page:?} in {} ms",
+                        "Luma prewarm: {page:?} {section} in {} ms",
                         started.elapsed().as_millis()
                     );
                 }

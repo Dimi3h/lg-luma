@@ -99,7 +99,7 @@ pub fn bounds(command: &Draw) -> Option<Rect> {
     }
 }
 
-fn same(a: &Draw, b: &Draw) -> bool {
+pub(crate) fn same(a: &Draw, b: &Draw) -> bool {
     let rect = |a: &Rect, b: &Rect| a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h;
     match (a, b) {
         (Draw::Shape(r1, a1, b1, c1), Draw::Shape(r2, a2, b2, c2)) => {

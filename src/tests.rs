@@ -2222,7 +2222,7 @@ fn foreground_check_needs_focus_after_a_relaunch_from_the_background() {
 #[test]
 fn prewarm_waits_while_recents_replaces_the_page() {
     let mut state = ready();
-    let mut jobs = vec![Page::Settings, Page::Home];
+    let mut jobs = vec![(Page::Settings, 0), (Page::Home, 0)];
     state.open_recents();
     state.recents.visibility = 1.;
     // As after the frame that showed it.
@@ -2238,7 +2238,7 @@ fn prewarm_waits_while_recents_replaces_the_page() {
     };
     assert!(!apps_controls(&mut state));
     assert_eq!(crate::next_prewarm(&mut jobs, &state, true), None);
-    assert_eq!(jobs, [Page::Settings, Page::Home]);
+    assert_eq!(jobs, [(Page::Settings, 0), (Page::Home, 0)]);
     // Once Recents is gone the retained jobs run, in order.
     state.overlay = None;
     state.recents.visibility = 0.;
@@ -2247,11 +2247,11 @@ fn prewarm_waits_while_recents_replaces_the_page() {
     assert_eq!(crate::next_prewarm(&mut jobs, &state, false), None);
     assert_eq!(
         crate::next_prewarm(&mut jobs, &state, true),
-        Some(Page::Home)
+        Some((Page::Home, 0))
     );
     assert_eq!(
         crate::next_prewarm(&mut jobs, &state, true),
-        Some(Page::Settings)
+        Some((Page::Settings, 0))
     );
     assert_eq!(crate::next_prewarm(&mut jobs, &state, true), None);
 }
@@ -4099,4 +4099,92 @@ fn focused_card_only_brightens_in_place_and_focus_moves_instantly() {
     assert_eq!(state.focus_level(&netflix), 0.);
     assert_eq!(highlight(&state, card(&state, &next)), (true, true));
     assert_eq!(highlight(&state, first), (false, false));
+}
+
+#[test]
+fn settings_focus_changes_in_the_first_frame_and_never_moves_afterwards() {
+    use crate::renderer::Draw;
+    use std::time::Duration;
+    let mut state = ready();
+    state.open(Page::Settings);
+    state.sync_motion();
+    let same_scene = |a: &[Draw], b: &[Draw]| {
+        a.len() == b.len() && a.iter().zip(b).all(|(a, b)| crate::damage::same(a, b))
+    };
+    // The opaque white surface of the focused control, and its control rect.
+    let focused = |state: &State| {
+        let scene = scene(state);
+        let control = scene
+            .controls
+            .iter()
+            .find(|control| control.target == state.focus)
+            .map(|control| control.rect)
+            .unwrap();
+        let surfaces: Vec<_> = scene
+            .draw
+            .iter()
+            .filter_map(|draw| match draw {
+                Draw::RoundedGradient(rect, _, top, _) if *top == [1., 1., 1., 1.] => Some(*rect),
+                _ => None,
+            })
+            .collect();
+        (control, surfaces, scene.draw)
+    };
+    // Sidebar, into General's rows, and back: no list scrolls along this path.
+    for direction in [
+        Direction::Down,
+        Direction::Up,
+        Direction::Right,
+        Direction::Down,
+        Direction::Down,
+        Direction::Up,
+        Direction::Left,
+    ] {
+        let controls = controls(&state);
+        state.direction(direction, &controls);
+        state.sync_motion();
+        let (control, surfaces, first) = focused(&state);
+        // The first frame already shows the focused control fully, in place (no grow).
+        assert_eq!(
+            state.focus_level(&state.focus.clone()),
+            1.,
+            "{:?}",
+            state.focus
+        );
+        assert!(
+            surfaces.iter().any(|rect| rect.x == control.x
+                && rect.y == control.y
+                && rect.w == control.w
+                && rect.h == control.h),
+            "{:?}: no full white surface at its rect",
+            state.focus
+        );
+        // Settling changes nothing.
+        state.advance_motion(Duration::from_millis(600));
+        let (_, _, settled) = focused(&state);
+        assert!(
+            same_scene(&first, &settled),
+            "{:?} moved while settling",
+            state.focus
+        );
+    }
+    // Holding OK keeps the focused look in Settings; releasing toggles the value at once.
+    state.focus = Target::Setting(2);
+    state.sync_motion();
+    state.pressed = Some(Target::Setting(2));
+    assert_eq!(state.display_level(&Target::Setting(2)), 1.);
+    state.pressed = None;
+    let on = state.preferences.language.t("stateOn").to_owned();
+    let count_on = |state: &State| {
+        scene(state)
+            .draw
+            .iter()
+            .filter(|draw| matches!(draw, Draw::Text(text, ..) if *text == on))
+            .count()
+    };
+    let before = count_on(&state);
+    assert_eq!(state.activate(), vec![Effect::Save]);
+    assert!(state.preferences.reduced_motion);
+    // The very next scene shows the new value.
+    assert_eq!(count_on(&state), before + 1);
 }

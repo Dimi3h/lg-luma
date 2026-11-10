@@ -124,9 +124,8 @@ fn cycling_button_toggles_on_off_without_opening_a_page_or_moving_controls() {
             .unwrap();
         assert!(style.align_right);
         assert!((value.x - title.x - title.w - 20.).abs() < 0.001);
-        // Focus grows the button around its centre; the value keeps its inset.
-        let lifted = button.w * crate::view::ROW_LIFT / 2.;
-        assert!((button.x + button.w + lifted - value.x - value.w - 28.).abs() < 0.001);
+        // Focus in Settings is static (no grow); the value keeps its inset from the edge.
+        assert!((button.x + button.w - value.x - value.w - 28.).abs() < 0.001);
         for (old, new) in before.iter().zip(&enabled.controls) {
             assert_eq!(old.target, new.target);
             assert_eq!(

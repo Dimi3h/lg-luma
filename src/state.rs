@@ -423,9 +423,34 @@ impl State {
         self.motion = motion;
     }
 
+    /// Tests: lets display motion run `by` from now (eased values settle).
+    #[cfg(test)]
+    pub fn advance_motion(&mut self, by: Duration) {
+        let mut motion = std::mem::take(&mut self.motion);
+        let now = Instant::now();
+        motion.advance(&self.motion_inputs(), now);
+        let mut at = now;
+        while at < now + by {
+            at += Duration::from_millis(16);
+            motion.advance(&self.motion_inputs(), at);
+        }
+        self.motion = motion;
+    }
+
     /// How far `target` is lifted by focus, 0 at rest and 1 fully focused.
     pub fn focus_level(&self, target: &Target) -> f32 {
         self.motion.focus_level(target, &self.focus)
+    }
+
+    /// The focus level to draw `target` with. Held OK returns a control to its resting look
+    /// (tvOS click feedback), except in Settings, where focus is static: the row keeps its
+    /// focused look and the release changes its value in the same frame.
+    pub fn display_level(&self, target: &Target) -> f32 {
+        if self.pressed.as_ref() == Some(target) && self.page != Page::Settings {
+            0.
+        } else {
+            self.focus_level(target)
+        }
     }
 
     /// The scroll offset content is drawn with; controls keep `scroll`.
@@ -2076,9 +2101,6 @@ impl State {
         self.subpage = Some(Subpage::WeatherLocation);
         self.focus = Target::WeatherQuery;
         self.scroll = 0.;
-        if !self.preferences.reduced_motion {
-            self.panel_started = Some(Instant::now());
-        }
         self.dirty = true;
     }
     fn keyboard_return(&self) -> Target {
@@ -2162,9 +2184,6 @@ impl State {
                 self.focus = Target::Choice(usize::from(
                     self.preferences.temperature_unit == Unit::Fahrenheit,
                 ));
-                if !self.preferences.reduced_motion {
-                    self.panel_started = Some(Instant::now());
-                }
             }
             Target::WeatherQuery => self.open_keyboard(TextField::Location),
             Target::InputsToggle => {
@@ -2183,9 +2202,6 @@ impl State {
                 self.subpage = Some(Subpage::DateFormat);
                 self.focus = Target::Choice(self.preferences.date_format.index());
                 self.scroll = 0.;
-                if !self.preferences.reduced_motion {
-                    self.panel_started = Some(Instant::now());
-                }
             }
             Target::GreetingName => self.open_keyboard(TextField::Name),
             Target::GreetingNameClear => {
@@ -2206,9 +2222,6 @@ impl State {
                     self.preferences.show_seconds
                 }));
                 self.scroll = 0.;
-                if !self.preferences.reduced_motion {
-                    self.panel_started = Some(Instant::now());
-                }
             }
             Target::InputRename => self.open_keyboard(TextField::InputName),
             Target::Widget(index) => {
@@ -2225,9 +2238,6 @@ impl State {
                 self.subpage = Some(subpage);
                 self.focus = focus;
                 self.scroll = 0.;
-                if !self.preferences.reduced_motion {
-                    self.panel_started = Some(Instant::now());
-                }
             }
             Target::InstallUpdate => {
                 if !self.update_busy()
@@ -2323,9 +2333,6 @@ impl State {
                     1 => {
                         self.subpage = Some(Subpage::Clock);
                         self.scroll = 0.;
-                        if !self.preferences.reduced_motion {
-                            self.panel_started = Some(Instant::now());
-                        }
                         self.focus = Target::ClockFormat;
                         return vec![];
                     }
@@ -2340,9 +2347,6 @@ impl State {
                                 .position(|m| *m == self.preferences.screensaver_minutes)
                                 .unwrap_or(3),
                         );
-                        if !self.preferences.reduced_motion {
-                            self.panel_started = Some(Instant::now());
-                        }
                         return vec![];
                     }
                     13 => self.preferences.screensaver_clock = !self.preferences.screensaver_clock,
@@ -2350,35 +2354,23 @@ impl State {
                         self.subpage = Some(Subpage::TextSize);
                         self.scroll = 0.;
                         self.focus = Target::Choice(usize::from(self.preferences.larger_text));
-                        if !self.preferences.reduced_motion {
-                            self.panel_started = Some(Instant::now());
-                        }
                         return vec![];
                     }
                     14 => {
                         self.subpage = Some(Subpage::Appearance);
                         self.scroll = 0.;
                         self.focus = Target::Choice(self.preferences.appearance.index());
-                        if !self.preferences.reduced_motion {
-                            self.panel_started = Some(Instant::now());
-                        }
                         return vec![];
                     }
                     11 => {
                         self.subpage = Some(Subpage::HiddenApps);
                         self.scroll = 0.;
                         self.focus = Target::Choice(0);
-                        if !self.preferences.reduced_motion {
-                            self.panel_started = Some(Instant::now());
-                        }
                         return vec![];
                     }
                     4 => {
                         self.subpage = Some(Subpage::Language);
                         self.focus = Target::Choice(self.preferences.language.index());
-                        if !self.preferences.reduced_motion {
-                            self.panel_started = Some(Instant::now());
-                        }
                         return vec![];
                     }
                     5 => return vec![Effect::Quit],
@@ -2456,9 +2448,6 @@ impl State {
                     .copied()
                     .unwrap_or_default();
                 self.subpage = Some(Subpage::Input(id));
-                if !self.preferences.reduced_motion {
-                    self.panel_started = Some(Instant::now());
-                }
                 self.focus = Target::Choice(match mode {
                     InputMode::On => 0,
                     InputMode::Off => 1,
