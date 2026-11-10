@@ -14,6 +14,28 @@ const FOCUS_RATE: f32 = 16.;
 /// (within 0.6%) after about 0.2 s.
 const SPRING_DAMPING: f32 = 0.76;
 const SPRING_FREQUENCY: f32 = 34.;
+/// Small controls (top-bar icons, input glyphs, keyboard keys) respond in the frame focus moves:
+/// the gaining one starts this far lifted and the losing one drops to `1 - SMALL_START` at once.
+const SMALL_START: f32 = 0.4;
+/// Their spring: damping 0.85 at 55 rad/s settles within 0.6% in about 100 ms, with no
+/// visible overshoot.
+const SMALL_DAMPING: f32 = 0.85;
+const SMALL_FREQUENCY: f32 = 55.;
+/// Losing focus, they fade in about 120 ms.
+const SMALL_RATE: f32 = 40.;
+
+/// Controls small enough that the cards' 200 ms lift feels sluggish on them.
+pub fn small(target: &Target) -> bool {
+    matches!(
+        target,
+        Target::StoreIcon
+            | Target::ControlIcon
+            | Target::SettingsIcon
+            | Target::Input(_)
+            | Target::Key(_)
+    )
+}
+
 /// The tilt follows its target in about 120 ms.
 const TILT_RATE: f32 = 25.;
 /// A d-pad press tilts the focused card towards the press for this long.
@@ -66,15 +88,20 @@ pub struct Inputs<'a> {
 }
 
 /// Advances an underdamped spring towards 1 in small steps; snaps once it has settled.
-fn spring(value: &mut f32, velocity: &mut f32, dt: f32) -> bool {
+fn spring(value: &mut f32, velocity: &mut f32, dt: f32, small: bool) -> bool {
     if *value == 1. && *velocity == 0. {
         return false;
     }
+    let (frequency, damping) = if small {
+        (SMALL_FREQUENCY, SMALL_DAMPING)
+    } else {
+        (SPRING_FREQUENCY, SPRING_DAMPING)
+    };
     let steps = (dt * 240.).ceil().max(1.);
     let h = dt / steps;
     for _ in 0..steps as usize {
-        let acceleration = SPRING_FREQUENCY * SPRING_FREQUENCY * (1. - *value)
-            - 2. * SPRING_DAMPING * SPRING_FREQUENCY * *velocity;
+        let acceleration =
+            frequency * frequency * (1. - *value) - 2. * damping * frequency * *velocity;
         *velocity += acceleration * h;
         *value += *velocity * h;
     }
@@ -110,6 +137,16 @@ impl Motion {
             let start = if input.reduced { 1. } else { 0. };
             self.levels.push((input.focus.clone(), start, 0.));
         }
+        // Small controls change visibly in the very frame focus moves, before the next tick.
+        for (target, level, _) in &mut self.levels {
+            if small(target) {
+                if target == input.focus {
+                    *level = level.max(SMALL_START);
+                } else {
+                    *level = level.min(1. - SMALL_START);
+                }
+            }
+        }
         if input.reduced {
             self.levels.retain(|(target, ..)| target == input.focus);
             for level in &mut self.levels {
@@ -136,10 +173,15 @@ impl Motion {
                 *level = goal;
                 *velocity = 0.;
             } else if goal == 1. {
-                changed |= spring(level, velocity, dt);
+                changed |= spring(level, velocity, dt, small(target));
             } else {
                 *velocity = 0.;
-                changed |= approach(level, goal, FOCUS_RATE, dt, 0.004);
+                let rate = if small(target) {
+                    SMALL_RATE
+                } else {
+                    FOCUS_RATE
+                };
+                changed |= approach(level, goal, rate, dt, 0.004);
             }
         }
         self.levels
@@ -354,6 +396,43 @@ mod tests {
         // Sampled per frame, so the observed peak sits a little under the true 2.3%.
         assert!((1.01..1.04).contains(&peak), "peak {peak}");
         assert_eq!(motion.focus_level(&a, &a), 1.);
+    }
+
+    #[test]
+    fn small_controls_respond_in_the_first_frame_and_settle_in_about_120_ms() {
+        let none = None;
+        let settings = Target::SettingsIcon;
+        let control = Target::ControlIcon;
+        let card = Target::App("a".into());
+        let mut motion = Motion::default();
+        let start = Instant::now();
+        motion.advance(&input(&settings, &none, false), start);
+        let mut now = start;
+        for _ in 0..20 {
+            now += Duration::from_millis(16);
+            motion.advance(&input(&settings, &none, false), now);
+        }
+        assert_eq!(motion.focus_level(&settings, &settings), 1.);
+        // The press: synchronised before any tick, the change is already visible.
+        motion.sync(&input(&control, &none, false));
+        assert!(motion.focus_level(&control, &control) >= SMALL_START);
+        assert!(motion.focus_level(&settings, &control) <= 1. - SMALL_START);
+        let mut settled = None;
+        for frame in 1..=12 {
+            now += Duration::from_millis(16);
+            motion.advance(&input(&control, &none, false), now);
+            if settled.is_none()
+                && motion.focus_level(&control, &control) == 1.
+                && motion.focus_level(&settings, &control) == 0.
+            {
+                settled = Some(frame * 16);
+            }
+        }
+        let settled = settled.expect("small controls settle");
+        assert!(settled <= 144, "settled after {settled} ms");
+        // Cards keep their slower lift: nothing visible before the first tick.
+        motion.sync(&input(&card, &none, false));
+        assert_eq!(motion.focus_level(&card, &card), 0.);
     }
 
     #[test]

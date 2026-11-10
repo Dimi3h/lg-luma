@@ -460,8 +460,11 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
 - **Motion**: a gained focus lifts on a light spring (damping 0.76 at 34 rad/s: about 2.3%
   overshoot, at rest after about 200 ms); losing focus, scrolling (the main grid and shelf,
   Settings lists) and page switches ease with a critically damped exponential (about 200 ms,
-  250 ms and a 200 ms fade-in). Controls always use the logical, unanimated positions; the drawn content
-  follows. Wheel and pointer scrolling, list changes and **Reduced motion** snap immediately.
+  250 ms and a 200 ms fade-in). Small controls (the top-bar icons, input glyphs and keyboard
+  keys) respond in the frame focus moves: the gaining one starts 40% lifted and the losing one
+  drops to 60% before the next motion tick, then a stiffer spring (0.85 at 55 rad/s) and a faster
+  release settle both in about 120 ms; cards keep the slower lift. Controls always use the
+  logical, unanimated positions; the drawn content follows. Wheel and pointer scrolling, list changes and **Reduced motion** snap immediately.
   `State::animating()` keeps presenting only while a value is moving.
 - **Liquid Glass**: GLES2 has no backdrop blur, so `pnpm assets` writes a 480 × 270 blurred copy
   of every background, with 30% more saturation, slightly lower contrast and a light glass tint
