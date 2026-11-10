@@ -72,6 +72,8 @@ struct Options {
     frames: Option<u64>,
     script: VecDeque<String>,
     fullscreen: bool,
+    /// Desktop checks without a visible window: hidden, never presented, no focus stealing.
+    headless: bool,
     time: Option<OffsetDateTime>,
     resolution: Option<Size>,
     capture_size: Option<Size>,
@@ -115,7 +117,7 @@ impl Options {
         while let Some(arg) = args.next() {
             if arg == "--help" {
                 println!(
-                    "Luma native\n\n  --assets PATH       Generated artwork directory\n  --preferences PATH  Isolated preferences file\n  --fullscreen        Fullscreen desktop preview\n  --resolution SIZE   Request 1080p, 4k, or WIDTHxHEIGHT; verify actual drawable\n  --frames N          Exit after N event-loop frames\n  --profile-frames N  Force N presentations (20+) and report pacing after warmup\n  --script ACTIONS    Comma-separated home/apps/settings/up/down/left/right/enter/back/menu/hold/type:TEXT/click:X:Y/wait\n  --time RFC3339      Fix the preview's clock and date\n  --screenshot PATH   Save an offscreen PNG\n  --capture-scale N   Capture at 1x/1080p (default) or 2x/4k\n  --diagnostics PATH  Save actual drawable, GPU, font-cache and timing information\n  --dump-state PATH   Save final UI state as JSON\n\nCompile with --features webos for the TV backend. Desktop builds never call TV services."
+                    "Luma native\n\n  --assets PATH       Generated artwork directory\n  --preferences PATH  Isolated preferences file\n  --fullscreen        Fullscreen desktop preview\n  --headless          Hidden window, never presented (also LUMA_HEADLESS=1)\n  --resolution SIZE   Request 1080p, 4k, or WIDTHxHEIGHT; verify actual drawable\n  --frames N          Exit after N event-loop frames\n  --profile-frames N  Force N presentations (20+) and report pacing after warmup\n  --script ACTIONS    Comma-separated home/apps/settings/up/down/left/right/enter/back/menu/hold/type:TEXT/click:X:Y/wait\n  --time RFC3339      Fix the preview's clock and date\n  --screenshot PATH   Save an offscreen PNG\n  --capture-scale N   Capture at 1x/1080p (default) or 2x/4k\n  --diagnostics PATH  Save actual drawable, GPU, font-cache and timing information\n  --dump-state PATH   Save final UI state as JSON\n\nCompile with --features webos for the TV backend. Desktop builds never call TV services."
                 );
                 println!(
                     "\n  --test-extra-apps N  Explicit scroll preview with up to 300 non-launchable extra cards; separate preferences"
@@ -130,6 +132,10 @@ impl Options {
             }
             if arg == "--fullscreen" {
                 result.fullscreen = true;
+                continue;
+            }
+            if arg == "--headless" {
+                result.headless = true;
                 continue;
             }
             let value = args
@@ -729,6 +735,13 @@ fn run() -> Result<(), String> {
     platform.sync_splash(state.preferences.splash_background());
     startup_stage("preferences and workers");
 
+    // Headless desktop runs (smoke checks, screenshots) must not take the foreground: macOS
+    // runs SDL as a background app, the window stays hidden and frames are never presented.
+    let headless =
+        !webos && (options.headless || std::env::var("LUMA_HEADLESS").as_deref() == Ok("1"));
+    if headless {
+        sdl2::hint::set("SDL_MAC_BACKGROUND_APP", "1");
+    }
     let sdl = sdl2::init()?;
     let drivers: Vec<_> = sdl2::video::drivers().collect();
     if webos && !drivers.contains(&"wayland") {
@@ -767,6 +780,9 @@ fn run() -> Result<(), String> {
     let create_window = || {
         let mut builder = video.window("Luma", requested.width, requested.height);
         builder.opengl().allow_highdpi().position_centered();
+        if headless {
+            builder.hidden();
+        }
         if options.fullscreen || (webos && options.resolution.is_none()) {
             builder.fullscreen_desktop();
         } else if webos {
@@ -1335,7 +1351,7 @@ fn run() -> Result<(), String> {
                     window_id,
                     win_event,
                     ..
-                } if window_id == window.id() => match win_event {
+                } if window_id == window.id() && !headless => match win_event {
                     WindowEvent::Hidden | WindowEvent::Minimized => {
                         if matches!(
                             state.overlay,
@@ -1822,7 +1838,12 @@ fn run() -> Result<(), String> {
                     report.3 = report.3.max(largest);
                 }
                 let swap_started = Instant::now();
-                window.gl_swap_window();
+                // Headless frames are drawn and counted but never shown.
+                if !headless {
+                    window.gl_swap_window();
+                } else {
+                    unsafe { gl::Finish() };
+                }
                 let swap_ms = swap_started.elapsed().as_secs_f64() * 1000.;
                 if presented == 0 {
                     startup_stage("first frame");

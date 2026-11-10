@@ -71,6 +71,14 @@ backend. Avoid copying the whole SDK library directory or the TV's graphics driv
 
 ## Controls and navigation
 
+### Headless desktop runs
+
+`--headless` (or `LUMA_HEADLESS=1`) runs the desktop build without a visible window: on macOS SDL
+runs as a background app (no Dock icon, no activation), the window is created hidden, frames are
+drawn and counted but never presented, and hide/focus-loss window events are ignored. Captures
+(`--screenshot`) and state dumps are unaffected, since they already render offscreen. The smoke
+scripts and `tools/screenshots.mjs` set it on macOS, so a local run never takes the foreground.
+
 ### Documentation screenshots
 
 `pnpm screenshots` generates `docs/home.png`, `docs/apps.png`, `docs/settings.png`,

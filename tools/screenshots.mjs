@@ -3,6 +3,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
+// Desktop runs stay hidden on macOS so they never take the foreground (see --headless).
+if (process.platform === 'darwin') process.env.LUMA_HEADLESS ??= '1';
+
 const root = path.resolve(import.meta.dirname, '..');
 const docs = path.join(root, 'docs');
 const scratch = path.join(root, '.build');

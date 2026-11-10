@@ -5,6 +5,9 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import sharp from 'sharp';
 
+// Desktop runs stay hidden on macOS so they never take the foreground (see --headless).
+if (process.platform === 'darwin') process.env.LUMA_HEADLESS ??= '1';
+
 const root = path.resolve(import.meta.dirname, '..');
 const out = path.join(root, '.build');
 await fs.mkdir(out, { recursive: true });
