@@ -29,10 +29,6 @@ pub const MAIN_TOP: f32 = 120.;
 pub const CYCLE_FADE: f32 = 1.6;
 /// Screensaver choices in minutes (0 is Off).
 pub const SCREENSAVER_MINUTES: [u32; 6] = [0, 1, 5, 10, 15, 30];
-/// Crossfade of the top-shelf wash between apps, in seconds.
-pub const WASH_FADE: f32 = 0.4;
-/// Focus rests this long on a first-row app before its artwork appears.
-pub const WASH_DWELL: Duration = Duration::from_millis(250);
 
 /// A card of the main screen's grid (inputs, apps and the system cards).
 fn is_grid_card(target: &Target) -> bool {
@@ -288,12 +284,6 @@ pub struct State {
     pub recents: crate::recents::Recents,
     /// Display-only easing of focus, scrolling and page switches.
     pub motion: crate::motion::Motion,
-    /// The top-shelf wash: the app whose artwork shows behind the shelf, since when, and the
-    /// one fading out (Widgets › App artwork).
-    pub wash: Option<(String, Instant)>,
-    pub wash_previous: Option<(String, Instant)>,
-    /// The app focus is resting on, and since when: the wash changes only after `WASH_DWELL`.
-    pub wash_pending: Option<(Option<String>, Instant)>,
     /// Control Center's last known TV status, commands waiting for its worker, and whether
     /// Sleep asks for a second OK.
     pub control: crate::control_center::Status,
@@ -348,9 +338,6 @@ impl State {
             input_name: String::new(),
             recents: crate::recents::Recents::default(),
             motion: crate::motion::Motion::default(),
-            wash: None,
-            wash_previous: None,
-            wash_pending: None,
             control: crate::control_center::Status::default(),
             control_outbox: vec![],
             confirm_sleep: false,
@@ -588,59 +575,6 @@ impl State {
         self.dirty = true;
     }
 
-    /// The app whose artwork washes the top shelf: the focused app in the first row.
-    fn wash_target(&self) -> Option<String> {
-        if !self.preferences.app_artwork || self.page != Page::Home || self.overlay.is_some() {
-            return None;
-        }
-        match &self.focus {
-            Target::App(id) if self.in_first_row(&self.focus) => Some(id.clone()),
-            _ => None,
-        }
-    }
-
-    /// Follows focus with the top-shelf wash, crossfading between apps (an instant swap under
-    /// Reduced motion). Called before each scene is built.
-    pub fn sync_wash(&mut self) {
-        let target = self.wash_target();
-        let now = Instant::now();
-        if self.wash.as_ref().map(|(id, _)| id) == target.as_ref() {
-            self.wash_pending = None;
-        } else if self.wash_pending.as_ref().map(|(id, _)| id) != Some(&target) {
-            // Focus moved: wait until it rests, so scrolling through a row never flashes.
-            self.wash_pending = Some((target.clone(), now));
-        }
-        // Leaving (no target) fades out at once; a new app waits for the dwell.
-        if self
-            .wash_pending
-            .as_ref()
-            .is_some_and(|(id, since)| id.is_none() || now.duration_since(*since) >= WASH_DWELL)
-        {
-            self.wash_pending = None;
-            let previous = self.wash.take().map(|(id, _)| (id, now));
-            self.wash_previous = previous.filter(|_| !self.preferences.reduced_motion);
-            self.wash = target.map(|id| (id, now));
-            self.dirty = true;
-        }
-        if self
-            .wash_previous
-            .as_ref()
-            .is_some_and(|(_, since)| since.elapsed().as_secs_f32() >= WASH_FADE)
-        {
-            self.wash_previous = None;
-            self.dirty = true;
-        }
-    }
-
-    /// How far a wash shown or hidden at `since` has faded in (1 = complete).
-    pub fn wash_progress(&self, since: Instant) -> f32 {
-        if self.preferences.reduced_motion {
-            1.
-        } else {
-            (since.elapsed().as_secs_f32() / WASH_FADE).min(1.)
-        }
-    }
-
     fn motion_inputs(&self) -> crate::motion::Inputs<'_> {
         crate::motion::Inputs {
             focus: &self.focus,
@@ -747,11 +681,6 @@ impl State {
     }
 
     pub fn tick(&mut self) {
-        // The wash's dwell runs on the loop's regular wakes rather than as an animation, so
-        // waiting for focus to rest never holds off idle work such as wallpaper rotation.
-        if self.wash_pending.is_some() {
-            self.sync_wash();
-        }
         let mut motion = std::mem::take(&mut self.motion);
         self.dirty |= motion.advance(&self.motion_inputs(), Instant::now());
         self.motion = motion;
@@ -799,17 +728,6 @@ impl State {
     }
 
     pub fn animating(&self) -> bool {
-        self.animating_besides_wash()
-            || self.wash_previous.is_some()
-            || self
-                .wash
-                .as_ref()
-                .is_some_and(|(_, since)| self.wash_progress(*since) < 1.)
-    }
-
-    /// Whether anything other than the faint shelf artwork is moving: idle work such as the
-    /// wallpaper rotation waits for this, not for the artwork's fade.
-    pub fn animating_besides_wash(&self) -> bool {
         ((self.recents_open() || self.recents.visibility > 0.)
             && (self.recents.visibility != if self.recents_open() { 1. } else { 0. }
                 || self.recents.cards_animating(self.pointer)))
@@ -1618,7 +1536,7 @@ impl State {
             if matches!(
                 self.focus,
                 Target::Setting(1 | 4 | 7 | 11 | 12 | 14 | 15)
-                    | Target::Widget(0..=4)
+                    | Target::Widget(_)
                     | Target::InputMode(_)
                     | Target::WeatherLocation
                     | Target::WeatherTemperature
@@ -2486,10 +2404,6 @@ impl State {
                     4 => (Subpage::Date, Target::DateToggle),
                     // Like the other widgets, Inputs opens on its Show widget toggle.
                     3 => (Subpage::Inputs, Target::InputsToggle),
-                    5 => {
-                        self.preferences.app_artwork = !self.preferences.app_artwork;
-                        return vec![Effect::Save];
-                    }
                     _ => return vec![],
                 };
                 self.section = WIDGETS_SECTION;

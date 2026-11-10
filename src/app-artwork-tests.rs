@@ -386,7 +386,6 @@ fn unavailable_icons_are_not_retried_on_every_redraw() {
 fn hundreds_of_apps_stay_within_the_cache_bounds_across_refreshes() {
     let service = Service::with_loader(true, |_| {
         Some(Artwork {
-            wash: false,
             key: String::new(),
             pixels: RgbaImage::new(256, 256),
             backdrop: [[20; 3]; 2],
@@ -417,7 +416,6 @@ fn hundreds_of_apps_stay_within_the_cache_bounds_across_refreshes() {
 fn decoded_cache_evicts_old_icons_when_scrolling_through_many_apps() {
     let service = Service::with_loader(true, |_| {
         Some(Artwork {
-            wash: false,
             key: String::new(),
             pixels: RgbaImage::new(256, 256),
             backdrop: [[20; 3]; 2],
@@ -699,67 +697,4 @@ fn reset_discards_prefetch_backlog_and_queued_requests() {
     assert_eq!(service.cache.borrow().entries.len(), 1);
     assert!(service.cache.borrow().entries.contains_key(&current));
     assert!(observed.try_recv().is_err());
-}
-
-#[test]
-fn a_wash_uses_only_wide_artwork_desaturated_and_never_icons() {
-    let png = |color: [u8; 4], width, height| {
-        let mut bytes = Vec::new();
-        image::RgbaImage::from_pixel(width, height, image::Rgba(color))
-            .write_to(
-                &mut std::io::Cursor::new(&mut bytes),
-                image::ImageFormat::Png,
-            )
-            .unwrap();
-        bytes
-    };
-    // Reads are simulated, under an installed-app root as on the TV.
-    let directory = PathBuf::from("/media/developer/apps/usr/palm/applications/sample");
-    let manifest = |extra: serde_json::Value| {
-        let mut value = json!({"id": "sample", "icon": "icon.png"});
-        value
-            .as_object_mut()
-            .unwrap()
-            .extend(extra.as_object().unwrap().clone());
-        serde_json::to_vec(&value).unwrap()
-    };
-    let files = |manifest: Vec<u8>| -> std::collections::HashMap<PathBuf, Vec<u8>> {
-        [
-            (directory.join("appinfo.json"), manifest),
-            (directory.join("icon.png"), png([120, 40, 200, 255], 80, 80)),
-            (
-                directory.join("banner.png"),
-                png([200, 40, 10, 255], 1280, 720),
-            ),
-            (
-                directory.join("square.png"),
-                png([200, 40, 10, 255], 400, 400),
-            ),
-        ]
-        .into_iter()
-        .collect()
-    };
-    let source = Source::new("sample", &json!({"folderPath": directory}));
-    // A wide bgImage makes a tiny, opaque, strongly desaturated wash.
-    let with_banner = files(manifest(json!({"bgImage": "banner.png"})));
-    let read =
-        |path: &Path, limit: usize| with_banner.get(path).filter(|b| b.len() <= limit).cloned();
-    let wash = load_local(&source.wash(), read).unwrap();
-    assert!(wash.wash);
-    assert_eq!(wash.pixels.dimensions(), (WASH_SIZE[0], WASH_SIZE[1]));
-    let pixel = wash.pixels.get_pixel(10, 10);
-    assert_eq!(pixel[3], 255);
-    // Red 200 against blue 10 keeps only about 30% of its difference.
-    assert!((pixel[0] as f32 - pixel[2] as f32) <= 190. * WASH_SATURATION + 2.);
-    // The icon request for the same app is unaffected.
-    assert!(!load_local(&source, read).unwrap().wash);
-    // Without wide artwork there is no wash: never the icon, never a square image.
-    let icon_only = files(manifest(json!({})));
-    let read =
-        |path: &Path, limit: usize| icon_only.get(path).filter(|b| b.len() <= limit).cloned();
-    assert!(load_local(&source.wash(), read).is_none());
-    let square = files(manifest(json!({"splashBackground": "square.png"})));
-    let read = |path: &Path, limit: usize| square.get(path).filter(|b| b.len() <= limit).cloned();
-    assert!(load_local(&source.wash(), read).is_none());
-    assert!(decode_wash(&png([0, 0, 255, 255], 80, 80)).is_none());
 }

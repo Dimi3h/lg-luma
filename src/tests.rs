@@ -2572,7 +2572,7 @@ fn widgets_group_existing_settings_and_restore_each_parent_without_changing_pref
         })
         .collect();
     // App artwork (5) is a toggle after the subpages.
-    assert_eq!(widget_order, [4, 0, 1, 2, 3, 5]);
+    assert_eq!(widget_order, [4, 0, 1, 2, 3]);
     for (index, subpage) in [
         Subpage::Greeting,
         Subpage::Weather,
@@ -2657,7 +2657,7 @@ fn widgets_are_localized_without_legacy_sidebar_entries() {
                 .iter()
                 .filter(|c| matches!(c.target, Target::Widget(_)))
                 .count(),
-            6
+            5
         );
         for key in [
             "widgets",
@@ -2666,7 +2666,6 @@ fn widgets_are_localized_without_legacy_sidebar_entries() {
             "shortcuts",
             "inputs",
             "date",
-            "appArtwork",
         ] {
             assert!(page.draw.iter().any(|draw| matches!(draw, crate::renderer::Draw::Text(label, ..) if label == language.t(key))), "{key}/{language:?}");
         }
@@ -3480,59 +3479,64 @@ fn badge_preference_defaults_and_toggles_from_general() {
 }
 
 #[test]
-fn app_artwork_waits_for_focus_to_rest_and_never_tints_without_wide_artwork() {
+fn home_dims_its_wallpaper_constantly_and_never_per_app() {
     use crate::renderer::Draw;
-    use std::time::{Duration, Instant};
-    let old: Preferences = serde_json::from_value(json!({"favorites": ["netflix"]})).unwrap();
-    assert!(old.app_artwork, "App artwork defaults on");
+    // Files saved with the removed App artwork preference still load and drop it.
+    let old: Preferences =
+        serde_json::from_value(json!({"favorites": ["netflix"], "app_artwork": true})).unwrap();
+    assert!(
+        !serde_json::to_value(&old)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("app_artwork")
+    );
     let mut state = ready();
     state.open(Page::Home);
-    let disney = Target::App("com.disney.disneyplus-prod".into());
-    let netflix = Target::App("netflix".into());
-    assert!(state.grid()[..6].contains(&disney));
-    // Moving onto an app only marks it; nothing changes while focus is still moving.
-    state.focus = disney.clone();
-    state.sync_wash();
-    assert!(state.wash.is_none());
-    // The dwell is not an animation (idle work such as rotation still runs); the loop's
-    // regular tick completes it.
-    assert!(!state.animating());
-    state.focus = netflix.clone();
-    state.sync_wash();
+    let dims = |state: &State| {
+        scene(state)
+            .draw
+            .iter()
+            .filter_map(|draw| match draw {
+                Draw::Shape(rect, 0., 0., color)
+                    if rect.x <= 0. && rect.y <= 0. && rect.w >= 1920. && rect.h >= 1080. =>
+                {
+                    Some(*color)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let first = dims(&state);
     assert_eq!(
-        state.wash_pending.as_ref().map(|(id, _)| id.as_deref()),
-        Some(Some("netflix"))
+        first.len(),
+        1,
+        "one full-screen dim behind the shelf and grid"
     );
-    // Resting 250 ms brings it in, crossfading over 400 ms.
-    let rested = Instant::now() - crate::state::WASH_DWELL - Duration::from_millis(10);
-    state.wash_pending = Some((Some("netflix".into()), rested));
-    state.sync_wash();
-    assert_eq!(
-        state.wash.as_ref().map(|(id, _)| id.as_str()),
-        Some("netflix")
-    );
-    assert_eq!(crate::state::WASH_FADE, 0.4);
-    // Its fade keeps frames coming but does not hold off idle work (wallpaper rotation).
-    assert!(state.animating());
-    assert!(!state.animating_besides_wash());
-    // Desktop demo apps have no installed wide artwork: no wash is drawn, never a card colour.
-    assert!(!scene(&state).draw.iter().any(|draw| matches!(draw,
-        Draw::TintedImage(path, rect, ..) if path.contains("surfaces/") && rect.w == 1920.)));
-    // Leaving the first row fades it out at once.
-    state.focus = state.grid()[13].clone();
-    state.sync_wash();
-    assert!(state.wash.is_none());
-    assert!(state.wash_previous.is_some());
-    // Widgets › App artwork switches it off.
+    assert_eq!(first[0][3], view::HOME_DIM);
+    // It lies directly on the wallpaper, so the renderer folds it into the wallpaper's pass.
+    let draws = scene(&state).draw;
+    let at = draws
+        .iter()
+        .position(|draw| matches!(draw, Draw::Shape(rect, 0., 0., _) if rect.w >= 1920.))
+        .unwrap();
+    assert!(matches!(&draws[at - 1], Draw::Image(_, rect, ..) if rect.w == 1920.));
+    // The same for every focused app, in any row: nothing reacts to the app.
+    for target in [state.grid()[1].clone(), state.grid()[13].clone()] {
+        state.focus = target;
+        state.sync_motion();
+        assert_eq!(dims(&state), first);
+        assert!(!scene(&state).draw.iter().any(|draw| matches!(draw,
+            Draw::AppImage(_, rect, ..) | Draw::TintedImage(_, rect, ..) if rect.w == 1920. && rect.y == 0. && rect.h < 1080.)));
+    }
+    // Widgets lists only its five subpages; the App artwork row is gone.
     state.open(Page::Settings);
     state.section = crate::state::WIDGETS_SECTION;
-    state.focus = Target::Widget(5);
-    assert_eq!(state.activate(), vec![Effect::Save]);
-    assert!(!state.preferences.app_artwork);
-    state.open(Page::Home);
-    state.focus = disney;
-    state.sync_wash();
-    assert!(state.wash.is_none() && state.wash_pending.is_none());
+    assert!(
+        !controls(&state)
+            .iter()
+            .any(|c| c.target == Target::Widget(5))
+    );
 }
 
 #[test]

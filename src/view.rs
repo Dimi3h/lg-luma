@@ -1764,38 +1764,12 @@ fn card_rect(index: usize, top: f32) -> Rect {
 fn home(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
     let language = state.preferences.language;
     let s = state.scroll;
-    let content_start = out.draw.len();
-    // The focused first-row app's artwork, softly behind the shelf, crossfading between apps.
-    if state.wash.is_some() || state.wash_previous.is_some() {
-        let wash_bottom = grid_y(state) + 60.;
-        out.draw.push(Draw::EdgeFade(Some([
-            -2.,
-            -1.,
-            wash_bottom - 220.,
-            wash_bottom,
-        ])));
-        if let Some((id, since)) = &state.wash_previous {
-            wash(
-                out,
-                state,
-                assets,
-                id,
-                1. - state.wash_progress(*since),
-                wash_bottom,
-            );
-        }
-        if let Some((id, since)) = &state.wash {
-            wash(
-                out,
-                state,
-                assets,
-                id,
-                state.wash_progress(*since),
-                wash_bottom,
-            );
-        }
-        out.draw.push(Draw::EdgeFade(None));
+    // A constant dim over the wallpaper behind the shelf and grid, for legibility. It lies
+    // directly on the wallpaper, so the renderer folds it into the wallpaper's own pass.
+    if !state.light(now) {
+        out.shape(Rect::new(0., 0., 1920., 1080.), 0., c(0x05070b, HOME_DIM));
     }
+    let content_start = out.draw.len();
     let shelf_start = out.draw.len();
     if state.preferences.show_date {
         // On the clock's line, after the clock (drawn by `header`).
@@ -1913,30 +1887,8 @@ fn home(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
     out.shift(content_start, 0., s - state.display_scroll());
 }
 
-/// One app's top-shelf wash: its own wide background or splash image (decoded, reduced and
-/// desaturated on the artwork worker), stretched faintly behind the shelf so the wallpaper
-/// stays recognisable. Apps without wide artwork (most have only an icon) show none.
-pub const WASH_OPACITY: f32 = 0.22;
-
-fn wash(out: &mut Scene, state: &State, assets: &Assets, id: &str, alpha: f32, bottom: f32) {
-    let Some(source) = state
-        .inventory
-        .apps
-        .iter()
-        .find(|app| app.id == id)
-        .and_then(|app| app.icon.as_ref())
-    else {
-        return;
-    };
-    if let Some(image) = assets.artwork.get(&source.wash()) {
-        out.draw.push(Draw::AppImage(
-            image,
-            Rect::new(0., 0., 1920., bottom),
-            0.,
-            [0.8, 0.8, 0.8, WASH_OPACITY * alpha],
-        ));
-    }
-}
+/// How much the main screen dims its wallpaper: constant, the same for every app and focus.
+pub const HOME_DIM: f32 = 0.2;
 
 /// The main screen's top bar, right-aligned on the clock's line: LG's app store (when
 /// installed), Control Center and Settings as small glass circles with a glyph. Focus lifts
@@ -3321,13 +3273,10 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                 (1, "weather", "weather-sun"),
                 (2, "shortcuts", "sparkles"),
                 (3, "inputs", "input-hdmi"),
-                (5, "appArtwork", "tv"),
             ]
             .into_iter()
             .enumerate()
             {
-                // App artwork is a toggle; the others open their subpage.
-                let toggle = widget == 5;
                 row(
                     out,
                     state,
@@ -3337,16 +3286,10 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                         rect: settings_rect(row_y(index) - s, ROW_H),
                         title: language.t(key),
                         icon: Some(icon),
-                        value: toggle.then(|| {
-                            language.t(if state.preferences.app_artwork {
-                                "stateOn"
-                            } else {
-                                "stateOff"
-                            })
-                        }),
+                        value: None,
                         description: None,
                         selected: false,
-                        chevron: !toggle,
+                        chevron: true,
                     },
                 );
             }

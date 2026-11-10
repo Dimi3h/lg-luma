@@ -453,7 +453,6 @@ fn main() {
 }
 
 fn compose(state: &mut State, assets: &view::Assets, now: OffsetDateTime) -> view::Scene {
-    state.sync_wash();
     state.sync_motion();
     let mut scene = view::scene(state, assets, now);
     if !state.pointer && state.overlay.is_none() && state.reveal_focus(&scene.controls) {
@@ -1097,7 +1096,7 @@ fn run() -> Result<(), String> {
             && state.overlay.is_none()
             && state.moving.is_none()
             && state.deleting_wallpaper.is_none()
-            && !state.animating_besides_wash()
+            && !state.animating()
             && (startup_cycle
                 || wallpaper_cycle::due(
                     state.preferences.wallpaper_cycle,

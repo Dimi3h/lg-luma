@@ -278,8 +278,6 @@ pub struct Preferences {
     pub show_inputs: bool,
     /// Heart badges on pinned favourites (tvOS has none, so off by default).
     pub favorite_badges: bool,
-    /// The focused first-row app's artwork as a soft wash behind the top shelf.
-    pub app_artwork: bool,
     /// Minutes without input before the screensaver starts while Luma is in front; 0 is Off.
     pub screensaver_minutes: u32,
     /// The time and date over the screensaver.
@@ -337,7 +335,6 @@ impl Default for Preferences {
             show_app_names: true,
             show_inputs: false,
             favorite_badges: false,
-            app_artwork: true,
             screensaver_minutes: 10,
             screensaver_clock: true,
             appearance: Appearance::Dark,
