@@ -2904,14 +2904,13 @@ fn clock_date_and_home_input_descriptions_use_tvos_text_styles() {
             state.preferences.input_name(&input).is_some(),
             language,
         );
-        // With inputs shown, an input's status is its caption beneath the card while focused.
+        // With inputs shown, a focused input glyph is captioned with its name and status
+        // (Caption 2, nothing smaller).
         state.preferences.show_inputs = true;
         state.focus = Target::Input(input.id.clone());
         let focused = scene(&state);
         assert!(focused.draw.iter().any(|draw| matches!(draw,
-            Draw::Text(text, rect, style, ..) if (text == &description
-                || description.starts_with(text.trim_end_matches('…')))
-                && style.size >= 23. && rect.h == 32.
+            Draw::Text(text, _, style, ..) if text.contains(&description) && style.size >= 23.
         )));
     }
 }
@@ -2946,7 +2945,7 @@ fn one_screen_has_no_tab_bar_and_inputs_appear_only_when_enabled() {
             .iter()
             .any(|control| matches!(control.target, Target::Input(_)))
     );
-    // Settings › Widgets › Inputs › Show widget adds a row of input cards above the apps.
+    // Settings › Widgets › Inputs › Show widget adds small input glyphs to the top bar.
     state.open(Page::Settings);
     state.focus = Target::Widget(3);
     state.activate();
@@ -2964,14 +2963,25 @@ fn one_screen_has_no_tab_bar_and_inputs_appear_only_when_enabled() {
         .iter()
         .find(|control| control.target == Target::App("netflix".into()))
         .unwrap();
-    assert_eq!(first_input.rect.y, view::grid_y(&state));
-    assert_eq!(first_app.rect.y, view::grid_y(&state) + view::ROW_PITCH);
-    // Up from the first app row enters the inputs in the same column.
-    state.focus = first_app.target.clone();
-    state.direction(Direction::Up, &with_inputs);
-    assert_eq!(state.focus, first_input.target);
-    state.direction(Direction::Down, &with_inputs);
-    assert_eq!(state.focus, first_app.target);
+    // On the clock's line, left of the icons, small; the grid does not move.
+    assert_eq!(first_input.rect.w, view::TOP_INPUT);
+    assert!(first_input.rect.y < view::CLOCK_Y + 36.);
+    let store = with_inputs
+        .iter()
+        .find(|control| control.target == Target::StoreIcon)
+        .unwrap();
+    assert!(first_input.rect.x + first_input.rect.w < store.rect.x);
+    assert_eq!(first_app.rect.y, view::grid_y(&state));
+    // Left from the first icon reaches the inputs; OK switches; long OK opens its settings.
+    state.focus = Target::StoreIcon;
+    state.direction(Direction::Left, &with_inputs);
+    let Target::Input(id) = state.focus.clone() else {
+        panic!("Left of the icons are the inputs: {:?}", state.focus);
+    };
+    assert_eq!(state.activate(), vec![Effect::Launch(id.clone())]);
+    state.hold();
+    assert_eq!(state.page, Page::Settings);
+    assert_eq!(state.subpage, Some(crate::state::Subpage::Input(id)));
 }
 
 #[test]

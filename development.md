@@ -147,8 +147,10 @@ Captions never reserve layout space or extend a card's hit region.
 **Settings → Widgets** groups **Date**, **Greeting**, **Weather**, **Shortcuts**, and **Inputs** as separate subpages.
 Weather location and temperature choices return to Weather; Back from a widget returns to its row
 in Widgets. Input visibility/naming choices return to Inputs, then its Widgets row.
-**Widgets → Inputs → Show widget** (`show_inputs`, default Off) adds the visible inputs as a row of
-5:3 cards under the top shelf, above the apps. Off, inputs stay available on the TV remote and
+**Widgets → Inputs → Show widget** (`show_inputs`, default Off) adds the visible inputs as small
+glyphs (the device icon, a green dot when connected, dim when not) at the start of the top bar,
+left of the Apps, Control Center and Settings icons. Focus names the input and its status
+beneath it, OK switches to it, and a long OK opens its existing settings (show mode and name). Off, inputs stay available on the TV remote and
 in the Inputs subpage, which keeps per-input visibility and names.
 Existing greeting, weather, shortcut and input preferences are unchanged. Every Settings list
 (pages, subpages and the Background gallery alike) fades out over 52 px above the bottom
@@ -196,8 +198,7 @@ favourites block; unpinning moves it back. Reorder mode moves a favourite within
 Back finishes it without launching.
 
 Up/Down follow the six-column grid indices, including offscreen rows, so the shelf cannot steal
-mid-grid navigation; Left/Right stay within a row. Up from the first row reaches the input cards
-when shown; above them, the left-hand columns reach the shelf's weather button (when no location
+mid-grid navigation; Left/Right stay within a row. Up from the first row: the left-hand columns reach the shelf's weather button (when no location
 is set) and the right-hand columns the top-bar icon above them. Right from the weather button
 reaches the icons, Left from the first icon returns to it, and Down from an icon enters the
 column beneath it. Pointer clicks work on every icon. With more than three rows,
@@ -440,9 +441,9 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
 `src/view.rs`; motion lives in `src/motion.rs`.
 
 - **Layout**: an 80 × 60 safe area; six columns of 260 × 156 (5:3) cards with 40 between them and
-  76 between rows (pitch 300 × 232; the HIG's 100 was more space than wanted), holding every app and Settings beneath the compact
-  top shelf; optional input cards form a row above the apps and count towards the three rows that
-  fit without scrolling.
+  76 between rows (pitch 300 × 232; the HIG's 100 was more space than wanted), holding every app
+  beneath the top shelf; the store, Control Center and Settings, and optionally the inputs, are
+  small icons in the top bar.
 - **Type**: the tvOS text styles with Inter instead of SF Pro. The bundled Inter 4.1 subset keeps
   its `opsz` axis, so text of 32 px and up (Title 2, Title 3, Headline) uses Inter Display and
   smaller text uses Inter (one font file, instantiated by `tools/font-weights.py`). Tracking is

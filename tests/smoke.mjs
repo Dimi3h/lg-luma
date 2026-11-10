@@ -225,9 +225,9 @@ try {
   // Inputs opens on Show widget (off): the main screen has no input cards by default.
   assert.equal(inputs.focus, 'InputsToggle');
   assert.equal(inputs.preferences.show_inputs, false);
-  const inputCards = await scenario('inputs-shown', `${inputsPage},enter,home,up`);
+  // Shown inputs are glyphs at the start of the top bar: Right from the weather button.
+  const inputCards = await scenario('inputs-shown', `${inputsPage},enter,home,up,right`);
   assert.equal(inputCards.preferences.show_inputs, true);
-  // Up from the first app (column one, now that there is no Search card) enters HDMI 1.
   assert.deepEqual(inputCards.focus, { Input: 'com.webos.app.hdmi1' });
   const inputsHidden = await scenario('inputs-hidden', `${inputsPage},enter,home,up`);
   assert.equal(inputsHidden.preferences.show_inputs, false);

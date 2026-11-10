@@ -1095,11 +1095,8 @@ impl State {
     /// grid), where the top shelf stays in view.
     fn in_first_row(&self, target: &Target) -> bool {
         match target {
-            Target::Input(id) => self
-                .home_inputs()
-                .iter()
-                .position(|input| &input.id == id)
-                .is_some_and(|index| index < APPS_COLUMNS),
+            // Input glyphs sit in the top bar, above the cards.
+            Target::Input(_) => true,
             Target::App(_) => self
                 .grid()
                 .iter()
@@ -1860,11 +1857,8 @@ impl State {
     /// the press without moving.
     fn home_direction(&self, direction: Direction) -> Option<Option<Target>> {
         let grid = self.grid();
-        let inputs: Vec<Target> = self
-            .home_inputs()
-            .iter()
-            .map(|input| Target::Input(input.id.clone()))
-            .collect();
+        // Inputs live in the top bar now, not in a block of cards above the grid.
+        let inputs: Vec<Target> = Vec::new();
         let weather = (self.preferences.show_weather
             && self.preferences.weather_location.is_none())
         .then_some(Target::WeatherConfigure);
@@ -1961,8 +1955,8 @@ impl State {
         None
     }
 
-    /// The main screen's top bar, left to right: the LG app store (when installed), Control
-    /// Center and Settings.
+    /// The main screen's top bar, left to right: the visible inputs when Show widget is on, then
+    /// the LG app store (when installed), Control Center and Settings.
     pub fn top_bar(&self) -> Vec<Target> {
         let store = self
             .inventory
@@ -1970,10 +1964,22 @@ impl State {
             .iter()
             .any(|app| app.id == STORE_ID)
             .then_some(Target::StoreIcon);
-        store
-            .into_iter()
+        self.home_inputs()
+            .iter()
+            .map(|input| Target::Input(input.id.clone()))
+            .chain(store)
             .chain([Target::ControlIcon, Target::SettingsIcon])
             .collect()
+    }
+
+    /// Long OK on an input glyph: its existing settings (show mode and name) in
+    /// Settings › Widgets › Inputs.
+    fn input_options(&mut self, id: String) {
+        self.open(Page::Settings);
+        self.section = WIDGETS_SECTION;
+        self.subpage = Some(Subpage::Inputs);
+        self.focus = Target::InputMode(id);
+        self.activate();
     }
 
     pub fn options(&mut self) {
@@ -2068,6 +2074,14 @@ impl State {
     /// Holding OK on a pinned favourite reorders it (as on tvOS, where icons jiggle);
     /// on any other app it opens the options popup.
     pub fn hold(&mut self) {
+        if self.page == Page::Home
+            && self.overlay.is_none()
+            && let Target::Input(id) = &self.focus
+        {
+            let id = id.clone();
+            self.input_options(id);
+            return;
+        }
         if self.page == Page::Home
             && self.overlay.is_none()
             && let Target::App(id) = &self.focus

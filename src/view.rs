@@ -1774,8 +1774,7 @@ pub fn grid_y(_state: &State) -> f32 {
 
 /// Logical (unscrolled) top of the grid's first row.
 pub fn grid_top(state: &State) -> f32 {
-    let inputs = state.home_inputs().len();
-    grid_y(state) + inputs.div_ceil(APPS_COLUMNS) as f32 * ROW_PITCH
+    grid_y(state)
 }
 
 /// Position of the `index`th card of a six-column block starting at `top`.
@@ -1901,11 +1900,6 @@ fn home(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
             false,
         );
     }
-    for (index, input) in state.home_inputs().into_iter().enumerate() {
-        let mut rect = card_rect(index, grid_y(state));
-        rect.y -= s;
-        input_card(out, state, assets, input, rect);
-    }
     let grid_y = grid_top(state) - s;
     let apps = state.apps();
     let favorites = state.preferences.favorites(&state.inventory.apps);
@@ -1983,22 +1977,120 @@ fn wash(out: &mut Scene, state: &State, assets: &Assets, id: &str, alpha: f32, b
 pub const TOP_ICON: f32 = 44.;
 const TOP_ICON_GAP: f32 = 14.;
 
-/// Where the top bar's `index`th of `count` items sits.
+/// Where the top bar's `index`th of `count` icons sits.
 pub fn top_icon_rect(index: usize, count: usize) -> Rect {
     let x = 1920. - SAFE_X - TOP_ICON - (count - 1 - index) as f32 * (TOP_ICON + TOP_ICON_GAP);
     Rect::new(x, CLOCK_Y + 18. - TOP_ICON / 2., TOP_ICON, TOP_ICON)
 }
 
+/// Input glyphs in the top bar: this wide (focus area), left of the icons with a wider gap.
+pub const TOP_INPUT: f32 = 40.;
+const TOP_INPUT_GAP: f32 = 8.;
+const TOP_GROUP_GAP: f32 = 30.;
+
+/// Every top-bar item and its rectangle, left to right.
+pub fn top_bar_rects(state: &State) -> Vec<(Target, Rect)> {
+    let bar = state.top_bar();
+    let icons = bar
+        .iter()
+        .filter(|target| !matches!(target, Target::Input(_)))
+        .count();
+    let inputs = bar.len() - icons;
+    let first_icon = top_icon_rect(0, icons).x;
+    bar.into_iter()
+        .enumerate()
+        .map(|(index, target)| {
+            let rect = if index < inputs {
+                let right = first_icon - TOP_GROUP_GAP;
+                let x =
+                    right - (inputs - index) as f32 * (TOP_INPUT + TOP_INPUT_GAP) + TOP_INPUT_GAP;
+                Rect::new(x, CLOCK_Y + 18. - TOP_INPUT / 2., TOP_INPUT, TOP_INPUT)
+            } else {
+                top_icon_rect(index - inputs, icons)
+            };
+            (target, rect)
+        })
+        .collect()
+}
+
+/// A focused top-bar item's caption, beneath it and kept inside the safe area.
+fn top_caption(out: &mut Scene, assets: &Assets, rect: Rect, text: &str, alpha: f32) {
+    let (text, style) = assets.single_line(text, CAPTION2, 520.);
+    let width = assets.width(&text, style).ceil() + 2.;
+    let x = (rect.x + (rect.w - width) / 2.).min(1920. - SAFE_X - width);
+    out.text(
+        text,
+        Rect::new(x, rect.y + rect.h + 10., width, 30.),
+        style,
+        c(0xffffff, 0.8 * alpha),
+        false,
+    );
+}
+
+/// An input in the top bar: its device glyph with a status dot, dim when nothing is connected.
+/// Focus lifts it onto a small white circle and names it with its status beneath.
+fn top_input(out: &mut Scene, state: &State, assets: &Assets, input: &Input, rect: Rect) {
+    let target = Target::Input(input.id.clone());
+    let level = if state.pressed.as_ref() == Some(&target) {
+        0.
+    } else {
+        state.focus_level(&target)
+    };
+    let drawn = grow(rect, BUTTON_LIFT * 1.5 * level);
+    if level > 0. {
+        out.lift_shadow(drawn, drawn.h / 2., level);
+        out.draw.push(Draw::RoundedGradient(
+            drawn,
+            drawn.h / 2.,
+            c(0xffffff, level),
+            c(0xebebed, level),
+        ));
+    }
+    let connected = !matches!(input.connected, Some(false)) && input.signal != Some(false);
+    let name = state.preferences.input_name(input);
+    let icon = input_icon(input, name);
+    let alpha = if connected { 0.86 } else { 0.38 };
+    out.icon(
+        assets,
+        &format!("input-{icon}"),
+        drawn.inset(6. * drawn.w / rect.w),
+        mix_color(c(0xffffff, alpha), ON_LIGHT, level),
+    );
+    if connected {
+        let dot = 7.;
+        out.shape(
+            Rect::new(drawn.x + drawn.w - dot - 1., drawn.y + 1., dot, dot),
+            dot / 2.,
+            c(0x5ad27c, 0.95),
+        );
+    }
+    if level > 0. {
+        let language = state.preferences.language;
+        let caption = format!(
+            "{} · {}",
+            state.preferences.input_title(input),
+            input_status(input, name.is_some(), language)
+        );
+        top_caption(out, assets, rect, &caption, level);
+    }
+    out.control(target, rect, false);
+}
+
 fn top_bar(out: &mut Scene, state: &State, assets: &Assets) {
     let language = state.preferences.language;
-    let bar = state.top_bar();
-    for (index, target) in bar.iter().enumerate() {
+    for (target, rect) in top_bar_rects(state) {
+        if let Target::Input(id) = &target {
+            if let Some(input) = state.inventory.inputs.iter().find(|input| &input.id == id) {
+                top_input(out, state, assets, input, rect);
+            }
+            continue;
+        }
+        let target = &target;
         let (icon, label) = match target {
             Target::StoreIcon => ("store", "storeApps"),
             Target::ControlIcon => ("controls", "controlCenter"),
             _ => ("gear", "settings"),
         };
-        let rect = top_icon_rect(index, bar.len());
         let level = if state.pressed.as_ref() == Some(target) {
             0.
         } else {
@@ -2018,18 +2110,7 @@ fn top_bar(out: &mut Scene, state: &State, assets: &Assets) {
                 c(0xffffff, level),
                 c(0xebebed, level),
             ));
-            let label = language.t(label);
-            let (label, style) = assets.single_line(label, CAPTION2, 360.);
-            let width = assets.width(&label, style).ceil() + 2.;
-            // Beneath the icon, kept inside the safe area at the right edge.
-            let x = (rect.x + (rect.w - width) / 2.).min(1920. - SAFE_X - width);
-            out.text(
-                label,
-                Rect::new(x, rect.y + rect.h + 10., width, 30.),
-                style,
-                c(0xffffff, 0.8 * level),
-                false,
-            );
+            top_caption(out, assets, rect, language.t(label), level);
         }
         out.icon(
             assets,
@@ -2039,97 +2120,6 @@ fn top_bar(out: &mut Scene, state: &State, assets: &Assets) {
         );
         out.control(target.clone(), rect, false);
     }
-}
-
-/// tvOS has no inputs, so each is drawn as a 5:3 card in the app-card language: a large
-/// device glyph and its name on a dark glassy face, its status as the focused caption.
-fn input_card(out: &mut Scene, state: &State, assets: &Assets, input: &Input, rect: Rect) {
-    let language = state.preferences.language;
-    let target = Target::Input(input.id.clone());
-    let pressed = state.pressed.as_ref() == Some(&target);
-    let level = if pressed {
-        0.
-    } else {
-        state.focus_level(&target)
-    };
-    let start = out.draw.len();
-    let tilt = card_tilt(state, &target, level);
-    let drawn = offset(grow(rect, CARD_LIFT * level), tilt, TILT_FACE);
-    let scale = drawn.h / rect.h;
-    let radius = CARD_RADIUS * scale;
-    out.lift_shadow(offset(drawn, tilt, -TILT_SHADOW), radius, level);
-    out.draw.push(Draw::RoundedGradient(
-        drawn,
-        radius,
-        c(0x3a4250, 1.),
-        c(0x1b2028, 1.),
-    ));
-    card_glass(out, drawn, radius, level);
-    glint(out, drawn, radius, tilt);
-    let name = state.preferences.input_name(input);
-    let icon = input_icon(input, name);
-    let size = if icon == "apple-tv" { 64. } else { 54. } * scale;
-    out.icon(
-        assets,
-        &format!("input-{icon}"),
-        Rect::new(
-            drawn.x + (drawn.w - size) / 2.,
-            drawn.y + 50. * scale - size / 2.,
-            size,
-            size,
-        ),
-        c(0xffffff, 0.92),
-    );
-    let (title, style) = assets.single_line(
-        state.preferences.input_title(input),
-        CAPTION1.weight(600),
-        rect.w - 32.,
-    );
-    let mut style = style;
-    style.size *= scale;
-    out.text(
-        title,
-        Rect::new(
-            drawn.x + 16. * scale,
-            drawn.y + 96. * scale,
-            drawn.w - 32. * scale,
-            32. * scale,
-        ),
-        style,
-        WHITE,
-        true,
-    );
-    let connected = !matches!(input.connected, Some(false)) && input.signal != Some(false);
-    let dot = 10. * scale;
-    out.shape(
-        Rect::new(
-            drawn.x + drawn.w - 22. * scale,
-            drawn.y + 14. * scale,
-            dot,
-            dot,
-        ),
-        dot / 2.,
-        if connected {
-            c(0x5ad27c, 0.95)
-        } else {
-            c(0xffffff, 0.3)
-        },
-    );
-    if pressed {
-        out.fade(start, 1., 0.88);
-    }
-    if level > 0. {
-        // Only the focused card has a caption, so it may use its neighbours' width.
-        let width = 2. * CARD_PITCH - CARD_GAP_CAPTION;
-        let (status, style) = assets.single_line(
-            &input_status(input, name.is_some(), language),
-            CAPTION1,
-            width,
-        );
-        let area = caption_area(assets, &status, style, rect, 32.);
-        out.text(status, area, style, c(0xffffff, 0.72 * level), true);
-    }
-    out.control(target, rect, true);
 }
 
 struct WeatherSummary {
