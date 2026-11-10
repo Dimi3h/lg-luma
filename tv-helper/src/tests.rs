@@ -22,6 +22,8 @@ struct Fixture {
     close_normal: Cell<bool>,
     uid: Cell<u32>,
     pauses: Cell<usize>,
+    polls: Cell<usize>,
+    trusted: Cell<bool>,
     fail_unmount: Cell<bool>,
     stuck: Cell<bool>,
 }
@@ -51,6 +53,8 @@ impl Fixture {
             close_normal: Cell::new(true),
             uid: Cell::new(0),
             pauses: Cell::new(0),
+            polls: Cell::new(0),
+            trusted: Cell::new(false),
             fail_unmount: Cell::new(false),
             stuck: Cell::new(false),
         };
@@ -168,6 +172,12 @@ impl System for Fixture {
     }
     fn pause(&self) {
         self.pauses.set(self.pauses.get() + 1);
+    }
+    fn poll(&self) {
+        self.polls.set(self.polls.get() + 1);
+    }
+    fn trusted(&self, _: &Path) -> bool {
+        self.trusted.get()
     }
     fn terminate(&self, pid: u32) -> Result<()> {
         self.calls.borrow_mut().push(format!("kill {pid}"));
@@ -449,7 +459,7 @@ fn changing_an_enabled_target_or_using_a_foreign_hook_is_rejected() {
     system::link(
         &f,
         "/other/home.sh",
-        "/var/lib/webosbrew/init.d/64-luma-home",
+        "/var/lib/webosbrew/init.d/10-luma-home",
     )
     .unwrap();
     assert!(
@@ -961,5 +971,59 @@ fn persistent_preferences_win_over_package_local_migration_and_active_stages_ref
     assert_eq!(
         f.read("/usr/palm/applications/com.webos.app.home/splash.png"),
         b"prism"
+    );
+}
+#[test]
+fn the_boot_hook_runs_first_and_stale_luma_hooks_are_removed() {
+    const NEW: &str = "/var/lib/webosbrew/init.d/10-luma-home";
+    const OLD: &str = "/var/lib/webosbrew/init.d/64-luma-home";
+    let hook_target = |f: &Fixture, hook: &str| fs::read_link(f.p(hook)).ok();
+    // An existing installation from before the rename: enable moves the hook to 10-.
+    let f = Fixture::new();
+    system::link(&f, "/var/lib/luma-home/home.sh", OLD).unwrap();
+    home::dispatch(&f, "enable", Some(DIR), None).unwrap();
+    assert_eq!(
+        hook_target(&f, NEW),
+        Some(f.p("/var/lib/luma-home/home.sh"))
+    );
+    assert!(hook_target(&f, OLD).is_none());
+    // A boot after updating also moves it; someone else's 64- hook is never touched.
+    system::remove(&f, NEW).unwrap();
+    system::link(&f, "/var/lib/luma-home/home.sh", OLD).unwrap();
+    home::dispatch(&f, "apply", None, None).unwrap();
+    assert!(hook_target(&f, NEW).is_some() && hook_target(&f, OLD).is_none());
+    system::link(&f, "/other/home.sh", OLD).unwrap();
+    home::dispatch(&f, "disable", None, None).unwrap();
+    assert!(hook_target(&f, NEW).is_none());
+    assert_eq!(hook_target(&f, OLD), Some(f.p("/other/home.sh")));
+}
+#[test]
+fn boot_apply_polls_briefly_and_refreshes_only_trusted_newer_scripts() {
+    let f = Fixture::new();
+    home::dispatch(&f, "enable", Some(DIR), None).unwrap();
+    // A stuck previous Home is waited for in 100 ms steps (5 s in all), never 1 s pauses.
+    f.put("/proc/777/cmdline", b"/usr/bin/com.webos.app.home\0");
+    f.stuck.set(true);
+    f.pauses.set(0);
+    f.polls.set(0);
+    assert!(home::dispatch(&f, "apply", None, None).is_err());
+    assert_eq!(f.pauses.get(), 0);
+    assert!(f.polls.get() >= 50, "{} polls", f.polls.get());
+    f.stuck.set(false);
+    fs::remove_dir_all(f.p("/proc/777")).unwrap();
+    // An updated app: its scripts reach the boot copies only when root owns them.
+    f.put(&format!("{DIR}/home.sh"), b"#!/bin/sh\n# 2.18.1\n");
+    f.put(&format!("{DIR}/luma-helper"), b"native-helper 2.18.1");
+    home::dispatch(&f, "apply", None, None).unwrap();
+    assert_eq!(f.read("/var/lib/luma-home/luma-helper"), b"native-helper");
+    f.trusted.set(true);
+    home::dispatch(&f, "apply", None, None).unwrap();
+    assert_eq!(
+        f.read("/var/lib/luma-home/luma-helper"),
+        b"native-helper 2.18.1"
+    );
+    assert_eq!(
+        f.read("/var/lib/luma-home/home.sh"),
+        b"#!/bin/sh\n# 2.18.1\n"
     );
 }

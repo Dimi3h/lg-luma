@@ -875,9 +875,28 @@ executable itself stays at its installed path for LS2 authentication, `$ORIGIN/l
 and preference selection. Opening Luma's normal tile while the Home mount is active redirects to
 the Home instance. The scripts do not create a browser wrapper or change the package's app ID.
 
-`64-luma-home` reapplies the mount from a detached boot hook. The existing TV Home Auto Launch
-and Quick Start+ settings determine whether power-on opens Home. Until the hook applies, LG Home
-can still appear. This integration does not change those settings or install a remote-key filter.
+`10-luma-home` reapplies the mount from a detached boot hook. Homebrew Channel runs
+`/var/lib/webosbrew/init.d` once LG's services are up (about 30–40 s after a cold boot), one hook
+after another in name order, so the low number puts Luma before other apps' hooks, which can take
+tens of seconds each. `enable`, a boot `apply` and `disable` remove an earlier `64-luma-home`
+link when it still points at Luma's script; anyone else's hook is never touched. The existing TV
+Home Auto Launch and Quick Start+ settings determine whether power-on opens Home. Until the hook
+applies, LG Home can still appear; a Quick Start+ wake from standby keeps the running Luma. This
+integration does not change those settings or install a remote-key filter.
+
+The hook returns at once and runs `apply` detached, with no fixed delay: the helper waits only
+until SAM answers (normally at the first check, at most 20 s), then mounts, has SAM reread the
+manifest, stops LG Home and launches Luma. Its waits poll every 100 ms (`system::POLL`) within
+the former budgets (5 s for the old Home to stop, 15 s for the manifest reread). Each step goes to
+`/var/lib/luma-home/boot.log` with the time since `apply` started and the TV's uptime, after a
+line with the hook's wall-clock start; the log is rotated to `boot.log.1` past 64 KiB.
+
+After a successful boot `apply`, the helper compares the installed app's `home.sh` and
+`luma-helper` with the copies in `/var/lib/luma-home` that the hook runs, and copies newer ones
+for the next boot, but only when both files and their directory are owned by root and not
+writable by group or others (root runs them at boot). Otherwise the log asks to run `enable`
+again, which copies them as before. The copy is atomic, so the running helper is unaffected.
+
 `disable` (also `restore`) removes the mount, refreshes LG's manifest, stops the native Home
 instance and removes the boot hook. The copied restore scripts remain in `/var/lib/luma-home`
 even if the installed package is removed. Disable the standalone `65-luma` cold-boot hook before
