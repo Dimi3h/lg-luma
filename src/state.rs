@@ -5,7 +5,10 @@ use crate::model::{
 };
 use crate::weather::{self, Unit};
 use serde::Serialize;
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 pub const WIDGETS_SECTION: usize = 2;
 pub const SYSTEM_SECTION: usize = 3;
@@ -133,6 +136,28 @@ impl Rect {
     }
 }
 
+/// A pointer drag of an app card on the main screen: in move mode, or started by holding the
+/// pointer button on a card. Only the dragged card's drawing follows the pointer; every hit
+/// region stays at its slot until the drop reorders the grid.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Drag {
+    pub id: String,
+    /// The pointer where the drag began and where it is now, in logical pixels.
+    pub start: (f32, f32),
+    pub at: (f32, f32),
+    /// The pointer's offset inside the card, so the card follows it without jumping.
+    pub grab: (f32, f32),
+    /// Moved far enough (`DRAG_THRESHOLD`) to be a drag rather than a still press.
+    pub active: bool,
+    /// Started by holding the pointer on a card: a release without moving opens its options.
+    pub from_hold: bool,
+    /// The app whose slot the card drops into, highlighted while dragging.
+    pub target: Option<String>,
+}
+
+/// How far the pointer moves before a press on a card becomes a drag.
+pub const DRAG_THRESHOLD: f32 = 16.;
+
 #[derive(Clone, Debug)]
 pub struct Control {
     pub target: Target,
@@ -230,8 +255,10 @@ pub struct State {
     pub scroll: f32,
     pub overlay: Option<Overlay>,
     pub moving: Option<String>,
-    /// When move mode began, for the favourites' jiggle.
+    /// When move mode began, for the cards' jiggle.
     pub moving_since: Option<Instant>,
+    /// A card being dragged with the pointer (Magic Remote).
+    pub drag: Option<Drag>,
     pub loading: bool,
     /// Set by Refresh apps: the next inventory also reloads every app icon.
     pub reload_artwork: bool,
@@ -285,6 +312,7 @@ impl State {
             scroll: 0.,
             overlay: None,
             moving: None,
+            drag: None,
             moving_since: None,
             loading: false,
             reload_artwork: false,
@@ -627,6 +655,7 @@ impl State {
         self.scroll = 0.;
         self.overlay = None;
         self.moving = None;
+        self.drag = None;
         self.subpage = None;
         if page == Page::Settings {
             self.section = 0;
@@ -635,27 +664,141 @@ impl State {
         self.dirty = true;
     }
 
-    /// The main grid's apps: pinned favourites in their saved order, then every other visible
-    /// app by title. Hidden apps are listed in Settings › General › Hidden apps instead.
+    /// The main grid's apps in the user's order (`Preferences::ordered_ids`). Hidden apps are
+    /// listed in Settings › General › Hidden apps instead.
     pub fn apps(&self) -> Vec<&App> {
-        let ids = self.preferences.favorites(&self.inventory.apps);
+        let ids = self.preferences.ordered_ids(&self.inventory.apps);
+        let rank: HashMap<&str, usize> = ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (id.as_str(), index))
+            .collect();
         let mut apps: Vec<_> = self
             .inventory
             .apps
             .iter()
             .filter(|app| !self.preferences.hidden.contains(&app.id) && app.id != STORE_ID)
             .collect();
-        apps.sort_by(|a, b| {
-            let rank = |app: &App| {
-                ids.iter()
-                    .position(|id| id == &app.id)
-                    .unwrap_or(usize::MAX)
-            };
-            rank(a)
-                .cmp(&rank(b))
-                .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
-        });
+        apps.sort_by_key(|app| rank.get(app.id.as_str()).copied().unwrap_or(usize::MAX));
         apps
+    }
+
+    /// Starts dragging the card `id` (at `card`) with the pointer at `at`: move mode for that
+    /// card, which follows the pointer once it moves past `DRAG_THRESHOLD`.
+    pub fn drag_start(&mut self, id: &str, at: (f32, f32), card: Rect, from_hold: bool) {
+        if self.page != Page::Home || self.overlay.is_some() {
+            return;
+        }
+        if self.moving.as_deref() != Some(id) {
+            self.moving = Some(id.into());
+            self.moving_since = Some(Instant::now());
+        }
+        self.focus = Target::App(id.into());
+        self.pressed = None;
+        self.notice = None;
+        self.drag = Some(Drag {
+            id: id.into(),
+            start: at,
+            at,
+            grab: (at.0 - card.x, at.1 - card.y),
+            active: false,
+            from_hold,
+            target: None,
+        });
+        self.dirty = true;
+    }
+
+    /// The pointer moved during a drag: the card follows it, and the app card under the pointer
+    /// (its slot, from `controls`) becomes the drop target.
+    pub fn drag_move(&mut self, at: (f32, f32), controls: &[Control]) {
+        let Some(drag) = &mut self.drag else {
+            return;
+        };
+        drag.at = at;
+        if !drag.active && (at.0 - drag.start.0).hypot(at.1 - drag.start.1) >= DRAG_THRESHOLD {
+            drag.active = true;
+        }
+        if drag.active {
+            drag.target = controls.iter().find_map(|control| match &control.target {
+                Target::App(id) if control.rect.contains(at.0, at.1) => Some(id.clone()),
+                _ => None,
+            });
+        }
+        self.dirty = true;
+    }
+
+    /// The pointer button was released: a drag drops the card into the target's slot (the
+    /// others shift) and ends move mode; a hold that never moved opens the card's options.
+    pub fn drag_end(&mut self) -> Vec<Effect> {
+        let Some(drag) = self.drag.take() else {
+            return vec![];
+        };
+        self.dirty = true;
+        if !drag.active {
+            if drag.from_hold {
+                self.moving = None;
+                self.focus = Target::App(drag.id);
+                self.options();
+            }
+            return vec![];
+        }
+        self.moving = None;
+        self.focus = Target::App(drag.id.clone());
+        let to = drag
+            .target
+            .and_then(|target| self.apps().iter().position(|app| app.id == target));
+        if let Some(to) = to
+            && self.move_app(&drag.id, to)
+        {
+            return vec![Effect::Save];
+        }
+        vec![]
+    }
+
+    /// Moves `id` to `to` among the visible apps; hidden apps keep their places in the order.
+    /// True when the order changed.
+    pub fn move_app(&mut self, id: &str, to: usize) -> bool {
+        let visible: Vec<String> = self.apps().iter().map(|app| app.id.clone()).collect();
+        let Some(from) = visible.iter().position(|item| item == id) else {
+            return false;
+        };
+        let to = to.min(visible.len().saturating_sub(1));
+        if from == to {
+            return false;
+        }
+        let mut moved = visible.clone();
+        let item = moved.remove(from);
+        moved.insert(to, item);
+        let mut moved = moved.into_iter();
+        let order = self
+            .preferences
+            .ordered_ids(&self.inventory.apps)
+            .into_iter()
+            .map(|old| {
+                if visible.contains(&old) {
+                    moved.next().unwrap_or(old)
+                } else {
+                    old
+                }
+            })
+            .collect();
+        self.preferences.app_order = Some(order);
+        self.dirty = true;
+        true
+    }
+
+    /// Stores the order once it covers every installed app: migrated on the first run, newly
+    /// installed apps appended. True when it changed and needs saving.
+    fn settle_app_order(&mut self) -> bool {
+        if self.inventory.apps.is_empty() {
+            return false;
+        }
+        let order = self.preferences.ordered_ids(&self.inventory.apps);
+        if self.preferences.app_order.as_ref() == Some(&order) {
+            return false;
+        }
+        self.preferences.app_order = Some(order);
+        true
     }
 
     /// Hidden apps that are still installed, by title (Settings › General › Hidden apps).
@@ -775,9 +918,12 @@ impl State {
         self.page == Page::Home && self.scroll != previous
     }
 
-    pub fn set_inventory(&mut self, next: Inventory, warning: Option<String>) {
+    /// Applies a fresh inventory. True when the app order was stored or extended (new apps) and
+    /// the preferences need saving.
+    pub fn set_inventory(&mut self, next: Inventory, warning: Option<String>) -> bool {
         self.inventory.apps = next.apps;
         self.sync_custom_tiles();
+        let order_changed = self.settle_app_order();
         if let Some(warning) = warning {
             self.notify(warning);
         } else {
@@ -788,6 +934,7 @@ impl State {
         self.inventory_failures = 0;
         self.dirty = true;
         self.reconcile_focus();
+        order_changed
     }
 
     /// Replace only input status; leave installed apps, artwork and saved preferences alone.
@@ -1214,28 +1361,23 @@ impl State {
             return vec![];
         }
         if let Some(id) = self.moving.clone() {
-            let mut ids = self.preferences.favorites(&self.inventory.apps);
-            let slots: Vec<_> = ids
-                .iter()
-                .enumerate()
-                .filter_map(|(index, id)| {
-                    (!self.preferences.hidden.contains(id)
-                        && self.inventory.apps.iter().any(|app| &app.id == id))
-                    .then_some(index)
-                })
-                .collect();
-            if let Some(index) = slots.iter().position(|slot| ids[*slot] == id) {
-                let next = match direction {
-                    Direction::Left => index.saturating_sub(1),
-                    Direction::Right => (index + 1).min(slots.len() - 1),
-                    _ => index,
-                };
-                if next != index {
-                    ids.swap(slots[index], slots[next]);
-                    self.preferences.favorites = Some(ids);
-                    self.dirty = true;
-                    return vec![Effect::Save];
-                }
+            // One slot at a time in the six-column grid: Left/Right step through the order
+            // (wrapping across rows), Up/Down move a whole row. The other cards shift.
+            let Some(index) = self.apps().iter().position(|app| app.id == id) else {
+                return vec![];
+            };
+            let columns = APPS_COLUMNS;
+            let last = self.apps().len().saturating_sub(1);
+            let to = match direction {
+                Direction::Left => index.checked_sub(1),
+                Direction::Right => (index < last).then_some(index + 1),
+                Direction::Up => index.checked_sub(columns),
+                Direction::Down => (index + columns <= last).then_some(index + columns),
+            };
+            if let Some(to) = to
+                && self.move_app(&id, to)
+            {
+                return vec![Effect::Save];
             }
             return vec![];
         }
@@ -1758,18 +1900,9 @@ impl State {
     /// Builds `build` from the options overlay a long press on the focused item would open,
     /// then leaves everything as it was: the menu's labels can be rasterised while OK is still
     /// held, so the menu is complete in the frame the hold fires. `None` when a long press opens
-    /// no menu here (move mode for favourites, input settings, or an overlay already open).
+    /// no menu here (input settings, or an overlay already open).
     pub fn with_hold_preview<T>(&mut self, build: impl FnOnce(&State) -> T) -> Option<T> {
         if self.overlay.is_some() || self.moving.is_some() {
-            return None;
-        }
-        if let Target::App(id) = &self.focus
-            && self.page == Page::Home
-            && self
-                .preferences
-                .favorites(&self.inventory.apps)
-                .contains(id)
-        {
             return None;
         }
         let (focus, dirty) = (self.focus.clone(), self.dirty);
@@ -1809,7 +1942,8 @@ impl State {
                 id: id.clone(),
                 restore: self.focus.clone(),
             });
-            self.focus = Target::OpenApp;
+            // Move is the first item, so a long press then OK starts moving the app.
+            self.focus = Target::Option(0);
             self.dirty = true;
         }
     }
@@ -1839,9 +1973,12 @@ impl State {
         }
         let old_ids: Vec<_> = self.apps().iter().map(|app| app.id.clone()).collect();
         let index = old_ids.iter().position(|item| item == &id).unwrap_or(0);
-        let mut favorites = self.preferences.favorites(&self.inventory.apps);
-        favorites.retain(|item| item != &id);
-        self.preferences.favorites = Some(favorites);
+        if let Some(order) = &mut self.preferences.app_order {
+            order.retain(|item| item != &id);
+        }
+        if let Some(favorites) = &mut self.preferences.favorites {
+            favorites.retain(|item| item != &id);
+        }
         self.preferences.hidden.retain(|item| item != &id);
         self.inventory.apps.retain(|app| app.id != id);
         if matches!(&self.overlay, Some(Overlay::Delete { id: current, .. } | Overlay::Options { id: current, .. }) if current == &id)
@@ -1861,8 +1998,8 @@ impl State {
         vec![Effect::Save, Effect::Refresh]
     }
 
-    /// Holding OK on a pinned favourite reorders it (as on tvOS, where icons jiggle);
-    /// on any other app it opens the options popup.
+    /// Holding OK (or the Menu key) on any app opens its options, which start with Move; on
+    /// an input glyph it opens that input's settings.
     pub fn hold(&mut self) {
         if self.page == Page::Home
             && self.overlay.is_none()
@@ -1870,20 +2007,6 @@ impl State {
         {
             let id = id.clone();
             self.input_options(id);
-            return;
-        }
-        if self.page == Page::Home
-            && self.overlay.is_none()
-            && let Target::App(id) = &self.focus
-            && self
-                .preferences
-                .favorites(&self.inventory.apps)
-                .contains(id)
-        {
-            self.moving = Some(id.clone());
-            self.moving_since = Some(Instant::now());
-            self.notice = None;
-            self.dirty = true;
             return;
         }
         self.options();
@@ -1989,7 +2112,7 @@ impl State {
     }
 
     /// Applies the tile list edited on a phone or computer. New tiles join
-    /// the end of the Home favorites and removed ones leave favorites and hidden apps.
+    /// the end of the app order and removed ones leave the order and hidden apps.
     pub fn replace_tiles(&mut self, tiles: Vec<CustomTile>) -> Vec<Effect> {
         let removed: Vec<_> = self
             .preferences
@@ -2024,13 +2147,13 @@ impl State {
             self.focus = Target::TileEditor;
         }
         if !added.is_empty() {
-            let mut favorites = self.preferences.favorites(&self.inventory.apps);
+            let mut order = self.preferences.ordered_ids(&self.inventory.apps);
             for id in added {
-                if self.preferences.custom_tile(&id).is_some() && !favorites.contains(&id) {
-                    favorites.push(id);
+                if self.preferences.custom_tile(&id).is_some() && !order.contains(&id) {
+                    order.push(id);
                 }
             }
-            self.preferences.favorites = Some(favorites);
+            self.preferences.app_order = Some(order);
         }
         vec![Effect::Save]
     }
@@ -2352,7 +2475,6 @@ impl State {
                         return vec![];
                     }
                     2 => self.preferences.reduced_motion = !self.preferences.reduced_motion,
-                    10 => self.preferences.favorite_badges = !self.preferences.favorite_badges,
                     12 => {
                         self.subpage = Some(Subpage::Screensaver);
                         self.scroll = 0.;
@@ -2558,7 +2680,6 @@ impl State {
                 };
                 let old_ids: Vec<_> = self.apps().iter().map(|a| a.id.clone()).collect();
                 let old_index = old_ids.iter().position(|item| item == &id).unwrap_or(0);
-                let mut favorites = self.preferences.favorites(&self.inventory.apps);
                 let title = self
                     .inventory
                     .apps
@@ -2566,23 +2687,15 @@ impl State {
                     .find(|app| app.id == id)
                     .map_or(id.clone(), |app| app.title.clone());
                 if index == 0 {
-                    if favorites.contains(&id) {
-                        favorites.retain(|item| item != &id);
-                        self.notify(
-                            self.preferences
-                                .language
-                                .format("favoriteRemoved", &[("app", &title)]),
-                        );
-                    } else {
-                        favorites.push(id.clone());
-                        self.notify(
-                            self.preferences
-                                .language
-                                .format("favoriteAdded", &[("app", &title)]),
-                        );
-                    }
-                    self.preferences.hidden.retain(|item| item != &id);
-                    self.preferences.favorites = Some(favorites);
+                    // Move: the card enters move mode. The d-pad moves it one slot at a time
+                    // (or the pointer drags it); OK or Back keeps the new order.
+                    self.focus = Target::App(id.clone());
+                    self.moving = Some(id);
+                    self.moving_since = Some(Instant::now());
+                    self.notice = None;
+                    self.pressed = None;
+                    self.dirty = true;
+                    return vec![];
                 } else if index == 1 {
                     if self.preferences.hidden.contains(&id) {
                         self.preferences.hidden.retain(|item| item != &id);
@@ -2666,6 +2779,7 @@ impl State {
         self.pointer = false;
         self.dirty = true;
         if self.moving.take().is_some() {
+            self.drag = None;
             return vec![];
         }
         if let Some(overlay) = self.overlay.take() {

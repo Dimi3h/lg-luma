@@ -509,34 +509,46 @@ fn hidden_apps_lists_only_installed_hidden_apps_by_title_and_keeps_focus_in_the_
     assert!(count);
 }
 
+/// Long press on an app, then Move (the menu's first item): move mode for that app.
+fn start_moving(state: &mut State, id: &str) {
+    state.focus = Target::App(id.into());
+    state.hold();
+    assert!(matches!(&state.overlay, Some(Overlay::Options { id: open, .. }) if open == id));
+    assert_eq!(state.focus, Target::Option(0), "Move is focused first");
+    assert!(state.activate().is_empty());
+    assert_eq!(state.moving.as_deref(), Some(id));
+    assert!(state.overlay.is_none());
+}
+
 #[test]
 fn reorder_persists_order_and_keeps_selected_identity() {
     let mut state = ready();
-    state.focus = Target::App("netflix".into());
-    state.hold();
+    start_moving(&mut state, "netflix");
     assert_eq!(
         state.direction(Direction::Right, &controls(&state)),
         vec![Effect::Save]
     );
+    let order =
+        |state: &State| -> Vec<String> { state.apps().iter().map(|app| app.id.clone()).collect() };
+    assert_eq!(&order(&state)[..2], &["youtube.leanback.v4", "netflix"]);
     assert_eq!(
-        &state.preferences.favorites(&state.inventory.apps)[..2],
+        &state.preferences.app_order.as_ref().unwrap()[..2],
         &["youtube.leanback.v4", "netflix"]
     );
     assert_eq!(state.focus, Target::App("netflix".into()));
     assert!(state.back().is_empty());
     assert!(state.moving.is_none());
-    // Holding OK on an app outside the favourites opens its options instead.
+    // Any app, not only the former favourites, can be moved the same way; OK confirms.
     let other = state.apps()[7].id.clone();
-    assert!(
-        !state
-            .preferences
-            .favorites(&state.inventory.apps)
-            .contains(&other)
-    );
-    state.focus = Target::App(other.clone());
-    state.hold();
+    start_moving(&mut state, &other);
+    state.direction(Direction::Left, &controls(&state));
+    assert_eq!(order(&state)[6], other);
+    assert!(state.activate().is_empty());
     assert!(state.moving.is_none());
-    assert!(matches!(&state.overlay, Some(Overlay::Options { id, .. }) if id == &other));
+    assert!(
+        state.overlay.is_none(),
+        "OK in move mode confirms, never launches"
+    );
 }
 
 #[test]
@@ -778,19 +790,19 @@ fn gallery_right_crosses_rows_in_gallery_order() {
 #[test]
 fn reordering_skips_hidden_and_unavailable_favorite_slots() {
     let mut state = ready();
-    state.preferences.favorites = Some(vec![
+    state.preferences.app_order = Some(vec![
         "netflix".into(),
         "missing".into(),
         "youtube.leanback.v4".into(),
         "amazon".into(),
     ]);
     state.preferences.hidden.push("youtube.leanback.v4".into());
-    state.focus = Target::App("netflix".into());
-    state.hold();
+    start_moving(&mut state, "netflix");
     state.direction(Direction::Right, &controls(&state));
+    // Hidden and missing apps keep their places in the order.
     assert_eq!(
-        state.preferences.favorites.unwrap(),
-        vec!["amazon", "missing", "youtube.leanback.v4", "netflix"]
+        &state.preferences.app_order.unwrap()[..4],
+        &["amazon", "missing", "youtube.leanback.v4", "netflix"]
     );
     assert_eq!(state.focus, Target::App("netflix".into()));
 }
@@ -1322,7 +1334,6 @@ fn opening_side_popup_preserves_card_artwork_geometry_with_or_without_captions()
         for names in [false, true] {
             let mut state = ready();
             state.preferences.show_app_names = names;
-            state.preferences.favorite_badges = true;
             state.open(Page::Home);
             state.focus = Target::App("netflix".into());
             let before = scene(&state);
@@ -1355,26 +1366,6 @@ fn opening_side_popup_preserves_card_artwork_geometry_with_or_without_captions()
                     );
                 }
             }
-            let hearts = |draws: &[crate::renderer::Draw]| {
-                draws
-                    .iter()
-                    .filter_map(|draw| match draw {
-                        crate::renderer::Draw::Image(path, rect, ..)
-                        | crate::renderer::Draw::TintedImage(path, rect, ..)
-                            // Netflix, the first favourite, is the grid's first card.
-                            if path.contains("heart-filled") && (60. ..350.).contains(&rect.x) =>
-                        {
-                            Some([rect.x, rect.y, rect.w, rect.h])
-                        }
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-            };
-            let original_hearts = hearts(&before.draw);
-            assert_eq!(original_hearts.len(), 1);
-            let popup_hearts = hearts(&scene(&state).draw);
-            assert_eq!(popup_hearts.len(), 2);
-            assert_eq!(popup_hearts[1], original_hearts[0]);
         }
     }
 }
@@ -1528,17 +1519,23 @@ fn deletion_completion_does_not_steal_focus_after_dismissal() {
 }
 
 #[test]
-fn app_activation_launches_and_options_open_with_open_focused() {
+fn app_activation_launches_and_options_open_with_move_first() {
     let mut state = ready();
     state.open(Page::Home);
     // tvOS: OK on a grid card launches it.
     state.focus = Target::App("netflix".into());
     assert_eq!(state.activate(), vec![Effect::Launch("netflix".into())]);
     assert!(state.overlay.is_none());
-    // Menu (or a hold outside the favourites) opens options with Open focused.
+    // Menu (or a long press on any app) opens options with Move first and focused; Open is
+    // just below it.
     state.options();
     assert!(matches!(state.overlay, Some(Overlay::Options { .. })));
-    assert_eq!(state.focus, Target::OpenApp);
+    assert_eq!(state.focus, Target::Option(0));
+    let menu = controls(&state);
+    let row = |target: Target| menu.iter().find(|c| c.target == target).unwrap().rect.y;
+    assert!(row(Target::Option(0)) < row(Target::OpenApp));
+    assert!(row(Target::OpenApp) < row(Target::Option(1)));
+    state.focus = Target::OpenApp;
     assert_eq!(state.activate(), vec![Effect::Launch("netflix".into())]);
     assert!(state.overlay.is_none());
     assert_eq!(state.focus, Target::App("netflix".into()));
@@ -1640,22 +1637,29 @@ fn reduced_motion_disables_panel_wallpaper_and_notification_animation() {
 }
 
 #[test]
-fn pinning_a_hidden_app_restores_it_and_leaves_hidden_when_empty() {
+fn showing_a_hidden_app_restores_it_to_its_place_and_leaves_hidden_empty() {
     let mut state = ready();
     state.open(crate::state::Page::Home);
+    let place = state
+        .apps()
+        .iter()
+        .position(|app| app.id == "org.jellyfin.webos")
+        .unwrap();
     state.preferences.hidden.push("org.jellyfin.webos".into());
+    assert!(
+        !state
+            .apps()
+            .iter()
+            .any(|app| app.id == "org.jellyfin.webos")
+    );
     state.focus = Target::App("org.jellyfin.webos".into());
     state.options();
-    assert_eq!(state.focus, Target::OpenApp);
-    state.focus = Target::Option(0);
-    state.activate();
+    // The hidden app's menu offers Show in place of Hide.
+    state.focus = Target::Option(1);
+    assert_eq!(state.activate(), vec![Effect::Save]);
     assert!(state.preferences.hidden.is_empty());
-    assert!(
-        state
-            .preferences
-            .favorites(&state.inventory.apps)
-            .contains(&"org.jellyfin.webos".into())
-    );
+    // It comes back to the slot it had in the user's order, not to the end.
+    assert_eq!(state.apps()[place].id, "org.jellyfin.webos");
     assert_eq!(state.focus, Target::App("org.jellyfin.webos".into()));
 }
 
@@ -3198,31 +3202,30 @@ fn shortcut_tiles_keep_apps_options_and_never_launch_or_uninstall_a_platform_app
     state.focus = Target::App(tile.id.clone());
     assert_eq!(state.activate(), vec![Effect::FireWebhook(tile.clone())]);
     state.options();
+    state.focus = Target::OpenApp;
     assert_eq!(state.activate(), vec![Effect::FireWebhook(tile.clone())]);
 
     state.open(crate::state::Page::Home);
     state.focus = Target::App(tile.id.clone());
     state.options();
-    assert_eq!(state.focus, Target::OpenApp);
+    assert_eq!(state.focus, Target::Option(0));
     assert!(matches!(state.overlay, Some(Overlay::Options { .. })));
     assert!(
         !controls(&state)
             .iter()
             .any(|c| c.target == Target::Option(2))
     );
+    state.focus = Target::OpenApp;
     assert_eq!(state.activate(), vec![Effect::FireWebhook(tile.clone())]);
     assert!(state.overlay.is_none());
 
+    // A shortcut moves like any app.
     state.focus = Target::App(tile.id.clone());
     state.options();
-    state.focus = Target::Option(0);
-    assert_eq!(state.activate(), vec![Effect::Save]);
-    assert!(
-        !state
-            .preferences
-            .favorites(&state.inventory.apps)
-            .contains(&tile.id)
-    );
+    assert!(state.activate().is_empty());
+    assert_eq!(state.moving.as_deref(), Some(tile.id.as_str()));
+    state.back();
+    state.focus = Target::App(tile.id.clone());
     state.options();
     state.focus = Target::Option(1);
     assert_eq!(state.activate(), vec![Effect::Save]);
@@ -3284,15 +3287,16 @@ fn tiles_edited_elsewhere_join_and_leave_home_like_tv_edits() {
         ..Default::default()
     };
     let mut state = ready();
-    let before = state.preferences.favorites(&state.inventory.apps);
+    let before = state.preferences.app_order.clone().unwrap();
     let saved = state.replace_tiles(vec![
         tile("custom.gate", "Gate"),
         tile("custom.lights", "Lights"),
     ]);
     assert_eq!(saved, vec![Effect::Save]);
-    let favorites = state.preferences.favorites.clone().unwrap();
-    assert_eq!(&favorites[..before.len()], &before[..]);
-    assert_eq!(&favorites[before.len()..], ["custom.gate", "custom.lights"]);
+    // New shortcuts join the end of the user's order.
+    let order = state.preferences.app_order.clone().unwrap();
+    assert_eq!(&order[..before.len()], &before[..]);
+    assert_eq!(&order[before.len()..], ["custom.gate", "custom.lights"]);
     assert!(
         state
             .inventory
@@ -3301,11 +3305,11 @@ fn tiles_edited_elsewhere_join_and_leave_home_like_tv_edits() {
             .any(|app| app.id == "custom.gate")
     );
     state.preferences.hidden.push("custom.lights".into());
-    // A rename keeps the favorite in place; a removal clears it from favorites and hidden.
+    // A rename keeps its place; a removal clears it from the order and hidden apps.
     state.replace_tiles(vec![tile("custom.gate", "Garage")]);
     assert_eq!(state.preferences.custom_tiles[0].title, "Garage");
-    let favorites = state.preferences.favorites.clone().unwrap();
-    assert_eq!(&favorites[before.len()..], ["custom.gate"]);
+    let order = state.preferences.app_order.clone().unwrap();
+    assert_eq!(&order[before.len()..], ["custom.gate"]);
     assert!(state.preferences.hidden.is_empty());
     assert!(
         !state
@@ -3392,18 +3396,18 @@ fn update_card_shows_progress_restores_retry_and_ignores_presses_while_busy() {
 }
 
 #[test]
-fn badge_preference_defaults_and_toggles_from_general() {
-    // Older preference files gain the default: no badges (tvOS has none). Files still carrying
-    // the removed Sounds or Focus tilt preferences load and drop them.
-    let old: Preferences = serde_json::from_value(
-        json!({"favorites": ["netflix"], "sounds": true, "focus_tilt": true}),
-    )
+fn removed_general_preferences_load_and_their_rows_stay_gone() {
+    // Files still carrying the removed Sounds, Focus tilt or Favorite badges preferences load
+    // and drop them; there are no heart badges anywhere.
+    let old: Preferences = serde_json::from_value(json!({
+        "favorites": ["netflix"], "sounds": true, "focus_tilt": true, "favorite_badges": true
+    }))
     .unwrap();
-    assert!(!old.favorite_badges);
     let saved = serde_json::to_value(&old).unwrap();
     let saved = saved.as_object().unwrap();
-    assert!(!saved.contains_key("sounds"));
-    assert!(!saved.contains_key("focus_tilt"));
+    for key in ["sounds", "focus_tilt", "favorite_badges"] {
+        assert!(!saved.contains_key(key), "{key}");
+    }
     let mut state = ready();
     let hearts = |state: &State| {
         scene(state)
@@ -3414,27 +3418,14 @@ fn badge_preference_defaults_and_toggles_from_general() {
     };
     assert_eq!(hearts(&state), 0);
     state.open(Page::Settings);
-    // The removed Sounds (Setting(9)) and Focus tilt (Setting(8)) rows never come back.
-    for removed in [8, 9] {
+    // Focus tilt (8), Sounds (9) and Favorite badges (10) never come back.
+    for removed in [8, 9, 10] {
         assert!(
             !controls(&state)
                 .iter()
                 .any(|c| c.target == Target::Setting(removed))
         );
     }
-    assert!(
-        controls(&state)
-            .iter()
-            .any(|c| c.target == Target::Setting(10))
-    );
-    state.focus = Target::Setting(10);
-    assert_eq!(state.activate(), vec![Effect::Save]);
-    assert!(state.preferences.favorite_badges);
-    state.open(Page::Home);
-    assert!(
-        hearts(&state) > 0,
-        "Badges mark the pinned favourites when switched on"
-    );
 }
 
 #[test]
@@ -3737,19 +3728,17 @@ fn forecasts_carry_todays_sunrise_and_sunset() {
 }
 
 #[test]
-fn favourites_jiggle_while_one_is_moved_without_moving_hit_regions() {
+fn every_card_jiggles_while_one_is_moved_without_moving_hit_regions() {
     let mut state = ready();
     state.open(Page::Home);
     let before = controls(&state);
     assert_eq!(view::jiggle(&state, "netflix"), [0., 0.]);
-    state.focus = Target::App("netflix".into());
-    state.hold();
-    assert!(state.moving.is_some());
+    start_moving(&mut state, "netflix");
     assert!(state.animating());
     let ids = ["netflix", "youtube.leanback.v4", "com.apple.appletv"];
     assert!(
         ids.iter().any(|id| view::jiggle(&state, id) != [0., 0.]),
-        "Favourites wobble"
+        "Cards wobble"
     );
     for id in ids {
         let [x, y] = view::jiggle(&state, id);
@@ -4380,14 +4369,13 @@ fn overlays_are_complete_in_their_first_frame_and_the_hold_preview_changes_nothi
     let mut state = ready();
     state.open(Page::Home);
     state.sync_motion();
-    let favorites = state.preferences.favorites(&state.inventory.apps);
     let plain = state
         .grid()
         .into_iter()
-        .find(|target| matches!(target, Target::App(id) if !favorites.contains(id)))
+        .find(|target| matches!(target, Target::App(_)))
         .unwrap();
     // While OK is held, the menu a long press opens can be built (its labels rasterised)
-    // without changing anything; a favourite's long press opens move mode, not a menu.
+    // without changing anything; every app's long press opens that menu.
     state.focus = plain.clone();
     state.dirty = false;
     let menu = state
@@ -4395,8 +4383,7 @@ fn overlays_are_complete_in_their_first_frame_and_the_hold_preview_changes_nothi
         .expect("an app's long press opens its menu");
     assert!(menu.modal.is_some());
     assert!(state.overlay.is_none() && state.focus == plain && !state.dirty);
-    let favorite = Target::App(favorites[0].clone());
-    state.focus = favorite;
+    state.focus = Target::SettingsIcon;
     assert!(state.with_hold_preview(scene).is_none());
     // The long press opens the menu complete in its first frame: no fade, no lift easing.
     state.focus = plain.clone();
@@ -4433,4 +4420,173 @@ fn overlays_are_complete_in_their_first_frame_and_the_hold_preview_changes_nothi
     let (first, settled) = first_and_settled(&mut state);
     assert!(same(&first, &settled), "closing fades");
     assert!(!state.animating());
+}
+
+#[test]
+fn the_first_run_migrates_favourites_into_one_saved_order_and_appends_new_apps() {
+    let mut state = State::new(
+        serde_json::from_value(json!({"favorites": ["youtube.leanback.v4", "netflix"]})).unwrap(),
+    );
+    let mut inventory = demo_inventory();
+    let late = inventory.apps.pop().unwrap();
+    // The first inventory stores the order once: former favourites first, then the rest by
+    // title.
+    assert!(state.set_inventory(inventory.clone(), None));
+    let order = state.preferences.app_order.clone().unwrap();
+    assert_eq!(&order[..2], ["youtube.leanback.v4", "netflix"]);
+    let titles: Vec<String> = order[2..]
+        .iter()
+        .map(|id| {
+            let app = inventory.apps.iter().find(|app| &app.id == id).unwrap();
+            app.title.to_lowercase()
+        })
+        .collect();
+    let mut sorted = titles.clone();
+    sorted.sort();
+    assert_eq!(titles, sorted);
+    assert_eq!(order.len(), inventory.apps.len());
+    // Saved with the order; the former favourites stay as they were.
+    let saved = serde_json::to_value(&state.preferences).unwrap();
+    assert_eq!(saved["app_order"], json!(order));
+    assert_eq!(
+        saved["favorites"],
+        json!(["youtube.leanback.v4", "netflix"])
+    );
+    // The same inventory changes nothing; a newly installed app joins the end.
+    assert!(!state.set_inventory(inventory.clone(), None));
+    inventory.apps.push(late.clone());
+    assert!(state.set_inventory(inventory.clone(), None));
+    let order = state.preferences.app_order.clone().unwrap();
+    assert_eq!(order.last(), Some(&late.id));
+    // A saved order is never replaced by the favourites again.
+    let reloaded: Preferences = serde_json::from_value(saved).unwrap();
+    let mut again = State::new(reloaded);
+    again.set_inventory(inventory, None);
+    assert_eq!(
+        &again.preferences.app_order.unwrap()[..2],
+        ["youtube.leanback.v4", "netflix"]
+    );
+}
+
+#[test]
+fn a_moving_app_steps_one_slot_in_all_four_directions_and_wraps_across_rows() {
+    let mut state = ready();
+    state.open(Page::Home);
+    let index = |state: &State, id: &str| state.apps().iter().position(|app| app.id == id).unwrap();
+    let id = state.apps()[7].id.clone();
+    start_moving(&mut state, &id);
+    let go = |state: &mut State, direction| state.direction(direction, &controls(state));
+    // Six columns: Left/Right step through the order, Up/Down move a whole row.
+    assert_eq!(go(&mut state, Direction::Left), vec![Effect::Save]);
+    assert_eq!(index(&state, &id), 6);
+    // Left from the start of a row continues at the end of the row above.
+    go(&mut state, Direction::Left);
+    assert_eq!(index(&state, &id), 5);
+    go(&mut state, Direction::Right);
+    go(&mut state, Direction::Right);
+    assert_eq!(index(&state, &id), 7);
+    go(&mut state, Direction::Up);
+    assert_eq!(index(&state, &id), 1);
+    // The first row has nothing above; the move does nothing and saves nothing.
+    assert!(go(&mut state, Direction::Up).is_empty());
+    assert_eq!(index(&state, &id), 1);
+    go(&mut state, Direction::Down);
+    go(&mut state, Direction::Down);
+    assert_eq!(index(&state, &id), 13);
+    // The others shift by one slot; focus stays on the moving app; Back keeps the order.
+    assert_eq!(state.focus, Target::App(id.clone()));
+    assert!(state.back().is_empty());
+    assert!(state.moving.is_none());
+    assert_eq!(index(&state, &id), 13);
+    let last = state.apps().len() - 1;
+    let end = state.apps()[last].id.clone();
+    start_moving(&mut state, &end);
+    assert!(go(&mut state, Direction::Right).is_empty());
+    assert!(go(&mut state, Direction::Down).is_empty());
+    assert_eq!(index(&state, &end), last);
+}
+
+#[test]
+fn the_pointer_drags_a_card_to_a_new_slot_and_a_still_hold_opens_its_options() {
+    use crate::renderer::Draw;
+    let mut state = ready();
+    state.open(Page::Home);
+    let card = |state: &State, id: &str| {
+        controls(state)
+            .into_iter()
+            .find(|c| c.target == Target::App(id.into()))
+            .unwrap()
+            .rect
+    };
+    let order =
+        |state: &State| -> Vec<String> { state.apps().iter().map(|app| app.id.clone()).collect() };
+    let before = order(&state);
+    let (dragged, onto) = (before[0].clone(), before[8].clone());
+    // Holding the pointer button on a card picks it up (move mode, every card jiggles).
+    let from = card(&state, &dragged);
+    let grab = (from.x + 40., from.y + 30.);
+    state.drag_start(&dragged, grab, from, true);
+    assert_eq!(state.moving.as_deref(), Some(dragged.as_str()));
+    // A few pixels are not a drag yet.
+    state.drag_move((grab.0 + 5., grab.1 + 3.), &controls(&state));
+    assert!(!state.drag.as_ref().unwrap().active);
+    // Over another card: the card follows the pointer and that slot is the drop target.
+    let target = card(&state, &onto);
+    let over = (target.x + target.w / 2., target.y + target.h / 2.);
+    let slots = controls(&state);
+    state.drag_move(over, &slots);
+    let drag = state.drag.clone().unwrap();
+    assert!(drag.active);
+    assert_eq!(drag.target.as_deref(), Some(onto.as_str()));
+    let frame = scene(&state);
+    // Hit regions stay at their slots while dragging.
+    for control in &slots {
+        let now = frame
+            .controls
+            .iter()
+            .find(|c| c.target == control.target)
+            .unwrap();
+        assert_eq!((now.rect.x, now.rect.y), (control.rect.x, control.rect.y));
+    }
+    // The drop slot is outlined, and the dragged card is drawn last, where the pointer holds it.
+    assert!(frame.draw.iter().any(|draw| matches!(draw,
+        Draw::Shape(rect, _, border, _) if *border == 4. && rect.x == target.x && rect.y == target.y)));
+    let held = (over.0 - (grab.0 - from.x), over.1 - (grab.1 - from.y));
+    let face = frame
+        .draw
+        .iter()
+        .rposition(|draw| {
+            matches!(draw,
+            Draw::Image(_, rect, ..) | Draw::AppImage(_, rect, ..)
+                if (rect.x - held.0).abs() < 0.01 && (rect.y - held.1).abs() < 0.01
+                    && rect.w == from.w)
+        })
+        .expect("the dragged card is drawn at the pointer");
+    let last_card_face = frame
+        .draw
+        .iter()
+        .rposition(|draw| {
+            matches!(draw,
+            Draw::Image(_, rect, ..) | Draw::AppImage(_, rect, ..) if rect.w == from.w)
+        })
+        .unwrap();
+    assert_eq!(face, last_card_face, "drawn over the other cards");
+    // Releasing drops it into that slot; the others shift and move mode ends.
+    assert_eq!(state.drag_end(), vec![Effect::Save]);
+    assert!(state.moving.is_none() && state.drag.is_none());
+    let after = order(&state);
+    assert_eq!(after.iter().position(|id| id == &dragged), Some(8));
+    assert_eq!(after[0], before[1]);
+    // A hold that never moves opens the card's options, as a long press does.
+    let still = card(&state, &before[2]);
+    state.drag_start(&before[2], (still.x + 10., still.y + 10.), still, true);
+    assert!(state.drag_end().is_empty());
+    assert!(matches!(&state.overlay, Some(Overlay::Options { id, .. }) if id == &before[2]));
+    state.back();
+    // In move mode (from the menu), picking the card up without moving keeps move mode.
+    start_moving(&mut state, &before[3]);
+    let rect = card(&state, &before[3]);
+    state.drag_start(&before[3], (rect.x + 10., rect.y + 10.), rect, false);
+    assert!(state.drag_end().is_empty());
+    assert_eq!(state.moving.as_deref(), Some(before[3].as_str()));
 }

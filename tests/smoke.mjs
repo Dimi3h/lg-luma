@@ -135,8 +135,10 @@ try {
   assert.deepEqual(recentHomeBack.focus, { Recent: 'netflix' });
   const recentYoutube = await scenario('recents-youtube', 'recents,await-recents,right');
   assert.deepEqual(recentYoutube.focus, { Recent: 'youtube.leanback.v4' });
+  // Move is the menu's first item and focused; Open, Hide and Delete follow.
   const appOptions = await scenario('app-options', 'home,menu');
-  assert.deepEqual(appOptions.focus, 'OpenApp');
+  assert.deepEqual(appOptions.focus, { Option: 0 });
+  assert.ok(appOptions.ui_text.includes('Move'));
   assert.ok(appOptions.ui_text.includes('Delete app'));
   const deleteFocused = await scenario('delete-focused', 'home,menu,down,down,down');
   assert.deepEqual(deleteFocused.focus, { Option: 2 });
@@ -151,7 +153,7 @@ try {
   assert.deepEqual(hidden.focus, { App: 'youtube.leanback.v4' });
   assert.ok(!hidden.apps.includes('netflix'), 'Hidden apps leave the grid');
   // Reload from disk and show the hidden Netflix again from Settings › General › Hidden apps.
-  const hiddenAppsPage = 'settings,enter,down,down,down,down,down,enter';
+  const hiddenAppsPage = 'settings,enter,down,down,down,down,enter';
   const hiddenList = await scenario('hidden-apps', hiddenAppsPage);
   assert.equal(hiddenList.subpage, 'HiddenApps');
   assert.deepEqual(hiddenList.focus, { Choice: 0 });
@@ -173,9 +175,10 @@ try {
     assert.ok(noSearch.apps.includes(id), `${id} is in the grid`);
   const settings = await scenario('settings', 'settings,down,enter,down,enter,enter');
   assert.equal(settings.preferences.background, 'forest');
-  const saved = await scenario('saved', 'home,hold,right,back');
+  // Hold OK, choose Move, move right, Back keeps the order (saved with the rest).
+  const saved = await scenario('saved', 'home,hold,enter,right,back');
   assert.equal(saved.preferences.background, 'forest');
-  assert.deepEqual(saved.preferences.favorites.slice(0, 2), ['youtube.leanback.v4', 'netflix']);
+  assert.deepEqual(saved.preferences.app_order.slice(0, 2), ['youtube.leanback.v4', 'netflix']);
   const upload = await scenario(
     'wallpaper-upload',
     'settings,down,enter,up,up,up,enter,await-upload',
@@ -343,7 +346,7 @@ try {
   assert.ok(!hiddenNames.ui_text.includes('YouTube'));
   const shownNames = await scenario('app-names-enabled', `${appNamesRow},enter,home`);
   assert.equal(shownNames.preferences.show_app_names, true);
-  // tvOS captions only the focused card (the first favourite; an earlier scenario reordered).
+  // tvOS captions only the focused card (the first app; an earlier scenario reordered).
   assert.equal(
     ['Netflix', 'YouTube'].filter((title) => shownNames.ui_text.includes(title)).length,
     1,
@@ -435,7 +438,7 @@ try {
           method: 'POST',
         },
       ],
-      favorites: [...beforeShortcut.favorites, 'custom.sandmann'],
+      app_order: [...beforeShortcut.app_order, 'custom.sandmann'],
     }),
   );
   const shortcutsPage = `${widgetsPage},down,down,down,enter`;
@@ -450,7 +453,7 @@ try {
       method: 'POST',
     },
   ]);
-  assert.ok(shortcut.preferences.favorites.includes('custom.sandmann'));
+  assert.ok(shortcut.preferences.app_order.includes('custom.sandmann'));
   assert.ok(shortcut.ui_text.includes('Configure'));
   assert.ok(shortcut.ui_text.includes('Sandmann'));
   assert.ok(
@@ -463,7 +466,7 @@ try {
   assert.equal(removed.focus, 'TileEditor');
   assert.equal(removed.subpage, 'Shortcuts');
   assert.deepEqual(removed.preferences.custom_tiles, []);
-  assert.ok(!removed.preferences.favorites.includes('custom.sandmann'));
+  assert.ok(!removed.preferences.app_order.includes('custom.sandmann'));
   assert.ok(!removed.inventory.some((app) => app.id === 'custom.sandmann'));
   const tileEditorOpen = `${shortcutsPage},enter,await-tile-editor`;
   const tileEditor = await scenario('tile-editor', tileEditorOpen);
@@ -481,7 +484,7 @@ try {
   assert.equal(tileEditorClosed.modal, false);
   assert.equal(tileEditorClosed.focus, 'TileEditor');
   // Grid cards are real pointer targets, also after remote scrolling, and a click never
-  // scrolls the clicked card.
+  // scrolls the clicked card. A fresh file's favourites become the start of the saved order.
   const edgeFavorites = [
     'netflix',
     'youtube.leanback.v4',

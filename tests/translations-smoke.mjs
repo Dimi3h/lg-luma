@@ -156,7 +156,7 @@ try {
   const saved = JSON.parse(await fs.readFile(preferences, 'utf8'));
   await fs.writeFile(preferences, JSON.stringify({ ...saved, language: 'nl' }));
   const dialog = await scenario('nl-dialog', 'home,menu');
-  for (const key of ['open', 'removeFavorite', 'hideApp', 'deleteApp']) contains(dialog, key, 'nl');
+  for (const key of ['moveApp', 'open', 'hideApp', 'deleteApp']) contains(dialog, key, 'nl');
   const deleteConfirmation = 'home,menu,down,down,down,enter';
   const deletion = await scenario('nl-delete-confirm', deleteConfirmation);
   assert.equal(deletion.focus, 'CancelDelete');

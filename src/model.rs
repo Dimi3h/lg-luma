@@ -123,8 +123,8 @@ impl TileMethod {
 }
 
 /// A home-screen tile that fires a one-way HTTP request instead of launching
-/// an app. Its id lives in `favorites`/`hidden` like any real app id, so
-/// ordering, favoriting and hiding reuse the existing machinery unchanged.
+/// an app. Its id lives in `app_order`/`hidden` like any real app id, so
+/// ordering and hiding reuse the existing machinery unchanged.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct CustomTile {
     pub id: String,
@@ -268,7 +268,12 @@ impl DateFormat {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Preferences {
+    /// The former pinned favourites. Kept only so the first run of the single user-ordered grid
+    /// can migrate them (to the front of `app_order`); nothing writes it any more.
     pub favorites: Option<Vec<String>>,
+    /// The user's order of every app on the main screen. `None` until the first inventory, which
+    /// stores the migrated order once; newly installed apps are appended.
+    pub app_order: Option<Vec<String>>,
     pub custom_tiles: Vec<CustomTile>,
     pub hidden: Vec<String>,
     pub background: String,
@@ -279,8 +284,6 @@ pub struct Preferences {
     pub show_app_names: bool,
     /// Input cards above the apps on the main screen; inputs stay on the remote otherwise.
     pub show_inputs: bool,
-    /// Heart badges on pinned favourites (tvOS has none, so off by default).
-    pub favorite_badges: bool,
     /// Minutes without input before the screensaver starts while Luma is in front; 0 is Off.
     pub screensaver_minutes: u32,
     #[serde(deserialize_with = "deserialize_appearance")]
@@ -325,6 +328,7 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             favorites: None,
+            app_order: None,
             custom_tiles: vec![],
             hidden: vec![],
             background: "dunes".into(),
@@ -332,7 +336,6 @@ impl Default for Preferences {
             deleted_backgrounds: vec![],
             show_app_names: true,
             show_inputs: false,
-            favorite_badges: false,
             screensaver_minutes: 10,
             appearance: Appearance::Dark,
             larger_text: false,
@@ -378,6 +381,21 @@ impl Preferences {
             .unwrap_or(&self.background)
     }
 
+    /// The main screen's order for `apps`: the saved order, then any app not in it by title. On
+    /// the first run (no saved order) the former favourites come first, in their saved order.
+    pub fn ordered_ids(&self, apps: &[App]) -> Vec<String> {
+        let mut ids = self
+            .app_order
+            .clone()
+            .unwrap_or_else(|| self.favorites(apps));
+        let mut rest: Vec<&App> = apps.iter().filter(|app| !ids.contains(&app.id)).collect();
+        rest.sort_by_key(|app| app.title.to_lowercase());
+        ids.extend(rest.into_iter().map(|app| app.id.clone()));
+        ids
+    }
+
+    /// The former favourites (or, never set, the default first apps): the start of the
+    /// migrated order.
     pub fn favorites(&self, apps: &[App]) -> Vec<String> {
         self.favorites.clone().unwrap_or_else(|| {
             let mut ids = Vec::new();
@@ -426,6 +444,9 @@ impl Preferences {
         let index = self.custom_tiles.iter().position(|tile| tile.id == id)?;
         if let Some(favorites) = &mut self.favorites {
             favorites.retain(|item| item != id);
+        }
+        if let Some(order) = &mut self.app_order {
+            order.retain(|item| item != id);
         }
         self.hidden.retain(|item| item != id);
         Some(self.custom_tiles.remove(index))
@@ -484,6 +505,9 @@ impl Preferences {
             ids.truncate(1000);
         }
         if let Some(ids) = &mut self.favorites {
+            clean(ids);
+        }
+        if let Some(ids) = &mut self.app_order {
             clean(ids);
         }
         clean(&mut self.hidden);

@@ -46,7 +46,7 @@ try {
   for (const [index, logo] of logos.entries()) {
     const app = inventory.find((app) => app.brand === logo);
     assert.ok(app, `Desktop demo is missing ${logo}`);
-    // Pinned as the only favourite, the app is the grid's first card and has focus.
+    // As the only former favourite, the app starts the migrated order and has focus.
     await fs.writeFile(
       preferences,
       JSON.stringify({ reduced_motion: true, show_weather: false, favorites: [app.id] }),

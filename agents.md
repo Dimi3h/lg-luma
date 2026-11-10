@@ -58,8 +58,9 @@ native process, not `luna-send-pub -a` impersonation. Inventory failure must nev
 data on TV. Explicit `--test-extra-apps` is a labeled manual preview applied only after successful
 inventory reads, with separate preferences and no placeholder launch requests.
 
-Pointer hover/down must not move a clicked control. Favorites lead the main screen's single
-six-column grid; remote focus/reordering reveals the whole selected card. Up/Down follows grid
+Pointer hover/down must not move a clicked control (only a card being dragged in move mode follows
+the pointer). The main screen's single six-column grid holds every app in the user's saved order
+(`app_order`, never lost or reset); remote focus/reordering reveals the whole selected card. Up/Down follows grid
 indices, including offscreen rows, so the shelf and top-bar icons cannot steal mid-grid
 navigation. Back restores setting subpage parents and supports SDL-webOS Back. OK finishes
 move mode without launching.
