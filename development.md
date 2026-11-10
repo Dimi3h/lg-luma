@@ -656,7 +656,8 @@ Analytic mode requests a single-sample window. Multisampled text draws
 intact glyph fills without inward offsets/fringe triangles, which can cross on very thin
 small-text strokes. Single-sample targets (Analytic, or MSAA when the GPU grants no samples)
 draw a one-physical-pixel coverage ramp centred on the outline (`ANALYTIC_FRINGE`), as a box
-filter would; the earlier half-pixel ramp stepped visibly on curves at a TV's density of 1. Light
+filter would; the earlier half-pixel ramp stepped visibly on curves in density-1 desktop
+captures (the TV comparison is still open). Light
 text there has its coverage raised to the power 0.7, which offsets the thinning of light-on-dark
 edges when blending in sRGB; dark text stays linear. Glyph outlines are flattened to
 `FLATTENING_EM` (0.15 px at 256 px/em), about 0.05 physical px for focused Title text at density
