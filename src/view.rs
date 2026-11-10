@@ -816,10 +816,6 @@ pub fn scene(state: &State, assets: &Assets, now: OffsetDateTime) -> Scene {
     }
     out.draw.push(Draw::EdgeFade(None));
     out.draw.push(Draw::Clip(None));
-    let page_alpha = state.motion.page_alpha();
-    if page_alpha < 1. {
-        out.fade(content_start, page_alpha, 1.);
-    }
     header(&mut out, state, now);
     // The top bar stays put while the grid scrolls, like the clock.
     if state.page == Page::Home && state.overlay.is_none() && state.moving.is_none() {

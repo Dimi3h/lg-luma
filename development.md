@@ -478,8 +478,11 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   spring (0.85 at 55 rad/s) and a faster release settle both in about 120 ms. The main grid and
   shelf scroll with a critically damped exponential (about 250 ms); Settings lists, which only
   scroll to keep the focused row inside their fade, take about 120 ms (none when the row is
-  already visible). Switching a Settings section or opening a subpage has no fade; page switches
-  (Home and Settings) fade in over 200 ms. Controls always use the logical, unanimated
+  already visible). Switching a Settings section or opening a subpage has no fade, and neither
+  has a page switch (opening Settings, Back to Home): the first frame of the new page is
+  complete, with its wallpaper dim, glass and text. That frame is redrawn in full (partial
+  redraw's damage history is reset) and waits for any of the new page's glyphs the worker has
+  not finished (normally none: idle preparation has rasterised them). Controls always use the logical, unanimated
   positions; the drawn content follows. Wheel and pointer scrolling, list changes and **Reduced
   motion** snap immediately. `State::animating()` keeps presenting only while a value is moving.
 - **Liquid Glass**: GLES2 has no backdrop blur, so `pnpm assets` writes a 480 × 270 blurred copy

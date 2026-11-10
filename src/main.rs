@@ -853,6 +853,7 @@ fn run() -> Result<(), String> {
     });
     let mut damage_tracker = damage::Tracker::default();
     let mut first_text = serde_json::Value::Null;
+    let mut drawn_page: Option<state::Page> = None;
     // Pages to prepare while the screen is idle (text, logos, icons), after each inventory.
     let mut prewarm: Vec<(state::Page, usize)> = Vec::new();
     let mut prewarm_now = false;
@@ -1790,6 +1791,15 @@ fn run() -> Result<(), String> {
                         path,
                         options.capture_size.unwrap_or(Size::HD),
                     )?);
+                }
+                // A page switch is presented as one complete frame: redrawn in full (no partial
+                // damage that could miss an area) and with all of the new page's glyphs.
+                if drawn_page != Some(state.page) {
+                    if drawn_page.is_some() {
+                        damage_tracker.reset();
+                        renderer.complete_next_frame();
+                    }
+                    drawn_page = Some(state.page);
                 }
                 let damage = partial.as_ref().and_then(|partial| {
                     if last_drawable != Some(Size::new(width, height)) {

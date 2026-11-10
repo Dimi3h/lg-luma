@@ -261,7 +261,7 @@ pub struct State {
     pub greeting_name_draft: String,
     pub input_name: String,
     pub recents: crate::recents::Recents,
-    /// Display-only easing of focus, scrolling and page switches.
+    /// Display-only easing of focus and scrolling.
     pub motion: crate::motion::Motion,
     /// Live location suggestions: the query last seen while typing and when to search it.
     pub suggested_query: String,

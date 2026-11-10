@@ -365,7 +365,8 @@ pub struct Renderer {
     /// Glyphs the last drawn frame lacked; their arrival needs a redraw.
     awaited: HashSet<GlyphKey>,
     glyph_vertices: Vec<f32>,
-    /// Until the first frame is drawn, frames wait for every glyph (no text pops in).
+    /// Until the first frame is drawn, and for the first frame of a new page, frames wait for
+    /// every glyph (no text pops in).
     first_frame: bool,
     /// Rasterisation time reported by the worker, and glyphs, since the last reset.
     pub glyph_raster_ms: f64,
@@ -607,6 +608,12 @@ impl Renderer {
     pub fn poll_glyphs(&mut self) -> bool {
         let results = self.glyph_worker.receive(None);
         self.accept(results)
+    }
+
+    /// The next frame shows a different page: wait for all of its glyphs before presenting it,
+    /// so the switch is one complete frame (the rasterising itself stays on the worker).
+    pub fn complete_next_frame(&mut self) {
+        self.first_frame = true;
     }
 
     /// Whether glyphs are still being rasterised (the loop should wake soon to poll).

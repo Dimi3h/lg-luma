@@ -4301,3 +4301,67 @@ fn auto_inputs_follow_hdmi_plug_in_not_the_eim_connected_flag() {
         .expect("the input glyph is drawn");
     assert!(glyph[0] < 0.3 && glyph[3] >= 0.38, "{glyph:?}");
 }
+
+#[test]
+fn page_switches_are_instant_and_every_frame_is_fully_composed() {
+    use crate::renderer::Draw;
+    use std::time::Duration;
+    // Draws outside `skip` (the Home top-bar icon that focus returns to, which keeps its
+    // short lift); everything else must already be final in the first frame.
+    let steady = |state: &mut State| {
+        state.advance_motion(Duration::from_millis(800));
+        scene(state).draw
+    };
+    let compare = |first: &[Draw], settled: &[Draw], skip: Option<crate::state::Rect>| {
+        let keep = |draws: &[Draw]| -> Vec<Draw> {
+            draws
+                .iter()
+                .filter(|draw| {
+                    skip.is_none_or(|area| {
+                        crate::damage::bounds(draw).is_none_or(|bounds| {
+                            !crate::damage::intersects(bounds, area.inset(-80.))
+                        })
+                    })
+                })
+                .cloned()
+                .collect()
+        };
+        let (a, b) = (keep(first), keep(settled));
+        a.len() == b.len() && a.iter().zip(&b).all(|(a, b)| crate::damage::same(a, b))
+    };
+    let mut state = ready();
+    state.open(Page::Home);
+    state.sync_motion();
+    let home = steady(&mut state);
+    // Home → Settings from its icon: the very first frame is the finished Settings page.
+    state.focus = Target::SettingsIcon;
+    state.sync_motion();
+    assert!(state.activate().is_empty());
+    assert_eq!(state.page, Page::Settings);
+    state.sync_motion();
+    state.tick();
+    let first = scene(&state).draw;
+    assert!(!compare(&first, &home, None), "Settings is drawn at once");
+    let settings = steady(&mut state);
+    assert!(
+        compare(&first, &settings, None),
+        "no fade or partial frame into Settings"
+    );
+    // No frame shows the bare wallpaper: the first Settings frame has its glass and text.
+    assert!(first.iter().any(|draw| matches!(draw, Draw::Text(..))));
+    // Back → Home: the first frame is Home with its dim, shelf and grid at full opacity.
+    state.back();
+    assert_eq!(state.page, Page::Home);
+    state.sync_motion();
+    state.tick();
+    let back = scene(&state);
+    let icon = back
+        .controls
+        .iter()
+        .find(|control| control.target == Target::SettingsIcon)
+        .map(|control| control.rect);
+    let settled = steady(&mut state);
+    assert!(compare(&back.draw, &settled, icon), "no fade back to Home");
+    assert!(back.draw.iter().any(|draw| matches!(draw,
+        Draw::Shape(rect, 0., 0., color) if rect.w >= 1920. && color[3] == view::HOME_DIM)));
+}

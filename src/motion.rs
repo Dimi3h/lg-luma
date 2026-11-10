@@ -1,4 +1,5 @@
-//! Display-only motion in the tvOS manner: the focus lift, eased scrolling and page fades.
+//! Display-only motion in the tvOS manner: the focus lift and eased scrolling. Page switches
+//! are instant (no fade).
 //!
 //! Logical state (focus, scroll offsets, hit regions) still changes at once; these values only
 //! follow it on screen. A gained focus lifts on a light spring (about 3% overshoot, settled in
@@ -42,8 +43,6 @@ pub fn small(target: &Target) -> bool {
 const SCROLL_RATE: f32 = 13.;
 /// Settings lists keep the focused row inside their fade quickly: about 96% after 120 ms.
 const SETTINGS_SCROLL_RATE: f32 = 27.;
-/// Page switches fade the new page in over this many seconds.
-pub const PAGE_FADE: f32 = 0.2;
 
 /// What a scroll offset belongs to; a different list starts at its own offset, not eased.
 #[derive(Clone, PartialEq)]
@@ -63,7 +62,6 @@ pub struct Motion {
     levels: Vec<(Target, f32, f32)>,
     scroll: Option<f32>,
     context: Option<Context>,
-    page_since: Option<Instant>,
     active: bool,
 }
 
@@ -186,22 +184,10 @@ impl Motion {
             section: input.section,
             subpage: input.subpage.clone(),
         };
+        // A page switch is instant: the new page's first frame is already complete (no fade
+        // that would show the bare wallpaper for a frame), and its scroll starts in place.
         let switched = self.context.as_ref() != Some(&context);
-        let page_switched = self
-            .context
-            .as_ref()
-            .is_some_and(|previous| previous.page != context.page);
         self.context = Some(context);
-        if page_switched && !input.reduced {
-            self.page_since = Some(now);
-        }
-        if self.page_since.is_some_and(|since| {
-            input.reduced || now.duration_since(since).as_secs_f32() >= PAGE_FADE
-        }) {
-            self.page_since = None;
-            changed = true;
-        }
-        changed |= self.page_since.is_some();
 
         let snap = switched || input.reduced || input.pointer;
         match &mut self.scroll {
@@ -240,14 +226,6 @@ impl Motion {
     /// The scroll offset to draw with; hit regions keep the logical one.
     pub fn scroll(&self, logical: f32) -> f32 {
         self.scroll.unwrap_or(logical)
-    }
-
-    /// Opacity of the page content while a page switch fades it in.
-    pub fn page_alpha(&self) -> f32 {
-        self.page_since.map_or(1., |since| {
-            let t = (since.elapsed().as_secs_f32() / PAGE_FADE).clamp(0., 1.);
-            1. - (1. - t).powi(3)
-        })
     }
 }
 
@@ -301,7 +279,6 @@ mod tests {
         motion.advance(&values, Instant::now());
         assert_eq!(motion.scroll(300.), 300.);
         assert_eq!(motion.focus_level(&a, &a), 1.);
-        assert_eq!(motion.page_alpha(), 1.);
     }
 
     #[test]
