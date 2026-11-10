@@ -459,19 +459,22 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   Title 3 (48/56, overlay and sidebar titles), Headline (38/46, section headings), Callout (31/38),
   Body (29/36, rows and captions), Caption 1 (25/32, values and status) and Caption 2 (23/30, the
   smallest text anywhere).
-- **Focus** lifts instead of drawing a ring: the focused card grows 10% around its centre (rows
-  2.5%, buttons 6%) with a large soft shadow, and a light rim appears (resting cards have none).
+- **Focus** on app and wallpaper cards changes instantly and only highlights: the focused card is
+  a few percent brighter (a 7% white overlay) with a light 2.5 px rim, and its title appears
+  beneath it. Cards never lift, scale, tilt or spring; every card keeps the same small resting
+  shadow. Rows (2.5%) and buttons (6%) still grow with a soft shadow when focused.
   A focused list row is drawn above its neighbours so its shadow falls over them. Focused rows and buttons turn
   opaque white with dark labels; selected items (the sidebar section, the background) stay
   highlighted at their resting size; pressed items return to their resting size. Hit regions stay at the
   unscaled rectangles; only drawing scales.
-- **Motion**: a gained focus lifts on a light spring (damping 0.76 at 34 rad/s: about 2.3%
+- **Motion** (rows, buttons and other controls; cards change focus instantly): a gained focus
+  lifts on a light spring (damping 0.76 at 34 rad/s: about 2.3%
   overshoot, at rest after about 200 ms); losing focus, scrolling (the main grid and shelf,
   Settings lists) and page switches ease with a critically damped exponential (about 200 ms,
   250 ms and a 200 ms fade-in). Small controls (the top-bar icons, input glyphs and keyboard
   keys) respond in the frame focus moves: the gaining one starts 40% lifted and the losing one
   drops to 60% before the next motion tick, then a stiffer spring (0.85 at 55 rad/s) and a faster
-  release settle both in about 120 ms; cards keep the slower lift. Controls always use the
+  release settle both in about 120 ms; rows and buttons keep the slower lift. Controls always use the
   logical, unanimated positions; the drawn content follows. Wheel and pointer scrolling, list changes and **Reduced motion** snap immediately.
   `State::animating()` keeps presenting only while a value is moving.
 - **Liquid Glass**: GLES2 has no backdrop blur, so `pnpm assets` writes a 480 × 270 blurred copy
@@ -483,20 +486,13 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   edge (`Draw::Rim`) that is white (about 36%) at the top and faintly dark at the bottom. The top-bar icons, the
   settings sidebar and rows, context menus, alerts, keyboard, notices and companion dialogs use it; menus, alerts and Recents put the blurred
   copy behind the whole stage. Uploads made before this change have no blurred copy and fall back
-  to a dark translucent fill. App cards get a glassy rim that strengthens on focus. There is no
+  to a dark translucent fill. There is no
   real-time blur or refraction.
 - **Corners** are continuous (superellipse) as on tvOS: the rounded-rectangle distance in
   `paint.frag` uses a p = 3 norm in the corner, normalised by the radius so mediump floats cannot
   overflow, over a corner 1.2× the nominal radius so it reads as the same size; capsules and
   circles keep circular ends. App faces, glass, buttons and shadows share the shape. The cost is
   three `pow` calls per pixel of every rounded shape (unmeasured on Mali-class TVs).
-- **Focus tilt** (Settings › General, default On, off under Reduced motion): while the Magic
-  Remote pointer is over the focused card it tilts towards it, and a d-pad press tilts it briefly
-  (140 ms) towards the press. GLES2 has no transform primitive, so the tilt is parallax: the card
-  face moves up to 3 px, its logo up to 6 px more and its shadow 10 px the other way, and a soft
-  radial glint (`Draw::Glow`, one textured pass masked to the card) follows the tilt. Only the
-  focused card draws it, only while it is tilted; the tilt settles exactly, so a still pointer
-  and released keys stop redrawing. Hit regions never move.
 - **Notices**: a compact glass pill in Caption 1, centred with its bottom on the safe-area line
   (y 1020). It fades in and rises 10 px (240 ms; neither under Reduced motion), dismisses itself
   as before, and a new notice replaces the current one. It may cover part of the bottom card row
@@ -539,7 +535,7 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   it) and drawing (`Scene::text`, whose box grows around its vertical centre). The main screen
   still fits three rows: the third row's focused caption ends near y 993, inside the safe area.
 - **Jiggle**: while a favourite is being moved, every favourite wobbles a little, each out of
-  phase at about 3 Hz. As with the tilt there is no rotation primitive, so the face moves up to
+  phase at about 3 Hz. GLES2 has no rotation primitive, so the face moves up to
   about 2 px and its logo layer about 4 px more, which reads as a small rotation. Hit regions
   stay put; Reduced motion snaps it off, and frames redraw continuously only while move mode is
   active.
@@ -562,7 +558,7 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   continuously. There is no video. Scripts can start it with the `screensaver` action.
 - **Favorite badges** (Settings › General, default Off): a heart on pinned favourites. tvOS has no
   badges; the favourites block is first in the grid either way.
-- Tilt, glass and the second optical size are unverified on TV hardware.
+- The focus highlight, glass and the second optical size are unverified on TV hardware.
 
 ## Vector rendering
 

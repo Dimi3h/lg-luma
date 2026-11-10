@@ -43,7 +43,6 @@ pub const GRID_Y: f32 = 1080.
     - (VISIBLE_ROWS - 1) as f32 * CARD_ROW_GAP;
 const CARD_RADIUS: f32 = 18.;
 /// Focus grows a card by this share around its centre, and rows and buttons by the second.
-const CARD_LIFT: f32 = 0.10;
 pub const ROW_LIFT: f32 = 0.025;
 const BUTTON_LIFT: f32 = 0.06;
 /// Rounded rectangles for lists and panels (tvOS uses rounded rectangles, not pills, here).
@@ -366,6 +365,10 @@ impl Scene {
     }
     /// The tvOS focus shadow: small at rest, large and deep when lifted, so the rest of the
     /// screen appears farther away.
+    /// A card's static shadow: the same at rest and focused, since cards no longer lift.
+    fn resting_shadow(&mut self, rect: Rect, radius: f32) {
+        self.lift_shadow(rect, radius, 0.);
+    }
     fn lift_shadow(&mut self, rect: Rect, radius: f32, level: f32) {
         self.shadow(
             rect,
@@ -455,11 +458,6 @@ impl Scene {
                 | Draw::AppImage(_, rect, ..)
                 | Draw::Backdrop(_, rect, ..)
                 | Draw::Rim(rect, ..) => rect,
-                Draw::Glow(rect, _, center, ..) => {
-                    center[0] += dx;
-                    center[1] += dy;
-                    rect
-                }
                 Draw::Clip(_) | Draw::EdgeFade(_) => continue,
             };
             rect.x += dx;
@@ -480,8 +478,7 @@ impl Scene {
                 | Draw::Text(_, _, _, color, _)
                 | Draw::TintedImage(_, _, _, _, color)
                 | Draw::AppImage(_, _, _, color)
-                | Draw::Backdrop(_, _, _, color)
-                | Draw::Glow(_, _, _, _, color) => apply(color),
+                | Draw::Backdrop(_, _, _, color) => apply(color),
                 Draw::RoundedGradient(_, _, a, b) | Draw::Rim(_, _, _, a, b) => {
                     apply(a);
                     apply(b);
@@ -1389,19 +1386,18 @@ fn tile(
     } else {
         state.focus_level(&target)
     };
-    let tilt = card_tilt(state, &target, level);
-    // While a favourite is being moved, every favourite jiggles (tvOS): the same layer
-    // offsets as the tilt, oscillating, approximate a small rotation. Hit regions stay put.
+    // While a favourite is being moved, every favourite jiggles (tvOS): its face and logo
+    // move by slightly different offsets, approximating a small rotation. Nothing else moves:
+    // focus changes instantly and the focused card only brightens. Hit regions stay put.
     let jiggle = if pinned {
         jiggle(state, &app.id)
     } else {
         [0., 0.]
     };
-    let moved = [tilt[0] + jiggle[0], tilt[1] + jiggle[1]];
-    let drawn = offset(grow(rect, CARD_LIFT * level), moved, TILT_FACE);
-    let radius = CARD_RADIUS * drawn.h / rect.h;
+    let drawn = offset(rect, jiggle, JIGGLE_FACE);
+    let radius = CARD_RADIUS;
     if !unavailable {
-        out.lift_shadow(offset(drawn, tilt, -TILT_SHADOW), radius, level);
+        out.resting_shadow(drawn, radius);
     }
     let favorite_color = app_face_layered(
         out,
@@ -1410,10 +1406,9 @@ fn tile(
         drawn,
         state.preferences.language,
         radius,
-        [moved[0] * TILT_LAYER, moved[1] * TILT_LAYER],
+        [jiggle[0] * JIGGLE_LAYER, jiggle[1] * JIGGLE_LAYER],
     );
     card_glass(out, drawn, radius, level);
-    glint(out, drawn, radius, tilt);
     if pinned && state.preferences.favorite_badges {
         favorite_badge(out, assets, drawn, favorite_color);
     }
@@ -1461,23 +1456,27 @@ const CAPTION_GAP: f32 = 22.;
 /// A caption may run a little wider than its card, as on tvOS.
 const CARD_GAP_CAPTION: f32 = 36.;
 
-/// tvOS 26 app icons have a glassy edge: a light rim, brightest along the top, that
-/// strengthens as the card is focused and illuminated.
-/// The rim alone carries it, so the face needs no extra full-card pass. Resting cards have no
-/// rim at all (tvOS); it appears with the lift.
+/// The focused card's highlight: the card a few percent brighter (a soft white overlay) and a
+/// light 2.5 px rim. No lift, scale or tilt; resting cards draw neither.
 fn card_glass(out: &mut Scene, rect: Rect, radius: f32, level: f32) {
     if level <= 0. {
         return;
     }
     let level = level.min(1.);
+    out.shape(rect, radius, c(0xffffff, FOCUS_OVERLAY * level));
     out.draw.push(Draw::Rim(
         rect,
         radius,
-        1.5,
-        c(0xffffff, 0.5 * level),
-        c(0xffffff, 0.1 * level),
+        FOCUS_RIM,
+        c(0xffffff, 0.62 * level),
+        c(0xffffff, 0.38 * level),
     ));
 }
+
+/// How much brighter the focused card is: a white overlay of a few percent.
+pub const FOCUS_OVERLAY: f32 = 0.07;
+/// The focused card's light rim width, in logical pixels.
+pub const FOCUS_RIM: f32 = 2.5;
 
 /// A caption's box: centred beneath its card, but kept inside the safe area so the first and
 /// last cards' captions are not cut off at the screen edge.
@@ -1523,8 +1522,8 @@ fn app_face(
     app_face_layered(out, assets, app, rect, language, radius, [0., 0.])
 }
 
-/// `app_face` with its logo layer moved by `parallax` relative to the background, as tvOS
-/// app icons' layers separate when the focused icon tilts.
+/// `app_face` with its logo layer moved by `parallax` relative to the background: a jiggling
+/// favourite's layers separate slightly, approximating a small rotation.
 fn app_face_layered(
     out: &mut Scene,
     assets: &Assets,
@@ -1586,13 +1585,11 @@ fn app_face_layered(
     favorite_color
 }
 
-// How far a fully tilted card's layers move: the face, its logo on top, and the shadow
-// (opposite). Hit regions never move.
-const TILT_FACE: f32 = 3.;
-const TILT_LAYER: f32 = 6.;
-const TILT_SHADOW: f32 = 10.;
+// How far a jiggling favourite's layers move per unit of jiggle: the face, and its logo on
+// top. Hit regions never move.
+const JIGGLE_FACE: f32 = 3.;
+const JIGGLE_LAYER: f32 = 6.;
 
-/// The focused card's tilt, scaled by its lift; zero for every other card.
 /// A favourite's jiggle while move mode is active: a few hertz, each card out of phase, up to
 /// about 2 px for the face and 4 px more for its logo. Nothing under Reduced motion.
 pub fn jiggle(state: &State, id: &str) -> [f32; 2] {
@@ -1610,39 +1607,13 @@ pub fn jiggle(state: &State, id: &str) -> [f32; 2] {
     [0.7 * t.sin(), 0.45 * (1.3 * t).cos()]
 }
 
-fn card_tilt(state: &State, target: &Target, level: f32) -> [f32; 2] {
-    if state.focus != *target || level <= 0. {
-        return [0., 0.];
-    }
-    let [x, y] = state.motion.tilt();
-    let level = level.min(1.);
-    [x * level, y * level]
-}
-
-fn offset(rect: Rect, tilt: [f32; 2], distance: f32) -> Rect {
+fn offset(rect: Rect, by: [f32; 2], distance: f32) -> Rect {
     Rect::new(
-        rect.x + tilt[0] * distance,
-        rect.y + tilt[1] * distance,
+        rect.x + by[0] * distance,
+        rect.y + by[1] * distance,
         rect.w,
         rect.h,
     )
-}
-
-/// The specular glint on a tilted card: a soft highlight towards the tilt, masked to the card.
-/// Drawn only while the card is actually tilted, so a resting screen draws nothing extra.
-fn glint(out: &mut Scene, rect: Rect, radius: f32, tilt: [f32; 2]) {
-    let strength = tilt[0].abs().max(tilt[1].abs()).min(1.);
-    if strength < 0.01 {
-        return;
-    }
-    let (cx, cy) = rect.center();
-    out.draw.push(Draw::Glow(
-        rect,
-        radius,
-        [cx + tilt[0] * rect.w * 0.45, cy + tilt[1] * rect.h * 0.45],
-        rect.w * 1.2,
-        c(0xffffff, 0.3 * strength),
-    ));
 }
 
 fn brand_mark(out: &mut Scene, assets: &Assets, app: &App, rect: Rect, language: Language) {
@@ -3239,17 +3210,6 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                     false,
                 ),
                 (
-                    8,
-                    "focusTilt",
-                    "sparkles",
-                    Some(if state.preferences.focus_tilt {
-                        language.t("stateOn")
-                    } else {
-                        language.t("stateOff")
-                    }),
-                    false,
-                ),
-                (
                     10,
                     "favoriteBadges",
                     "heart",
@@ -3329,9 +3289,9 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                 } else {
                     state.focus_level(&target)
                 };
-                let drawn = grow(rect, CARD_LIFT * 0.8 * level);
-                let radius = CARD_RADIUS * drawn.h / rect.h;
-                out.lift_shadow(drawn, radius, level);
+                let drawn = rect;
+                let radius = CARD_RADIUS;
+                out.resting_shadow(drawn, radius);
                 out.image(
                     custom.map_or_else(
                         || assets.path(format!("thumbnails/{id}.jpg")),
@@ -4183,9 +4143,9 @@ fn options(out: &mut Scene, state: &State, assets: &Assets, id: &str, anchor: Op
         (card.x - 48. - width).max(SAFE_X)
     };
     let panel = Rect::new(x, card.y.clamp(144., 1020. - height), width, height);
-    // The selected card keeps its lifted, focused look; its hit region does not move.
-    let lifted = grow(card, CARD_LIFT);
-    let radius = CARD_RADIUS * lifted.h / card.h;
+    // The selected card keeps its focused highlight, in place.
+    let lifted = card;
+    let radius = CARD_RADIUS;
     if background {
         let path = state
             .wallpapers
@@ -4195,11 +4155,11 @@ fn options(out: &mut Scene, state: &State, assets: &Assets, id: &str, anchor: Op
                 || assets.path(format!("thumbnails/{id}.jpg")),
                 |item| item.thumbnail(),
             );
-        out.lift_shadow(lifted, radius, 1.);
+        out.resting_shadow(lifted, radius);
         out.image(path, lifted, radius, false);
         card_glass(out, lifted, radius, 1.);
     } else if let Some(app) = app.filter(|_| !shortcut) {
-        out.lift_shadow(lifted, radius, 1.);
+        out.resting_shadow(lifted, radius);
         let favorite_color = app_face(out, assets, app, lifted, language, radius);
         card_glass(out, lifted, radius, 1.);
         if favorite && state.preferences.favorite_badges {

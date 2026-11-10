@@ -86,8 +86,7 @@ pub fn bounds(command: &Draw) -> Option<Rect> {
         | Draw::TintedImage(_, rect, ..)
         | Draw::AppImage(_, rect, ..)
         | Draw::Backdrop(_, rect, ..)
-        | Draw::Rim(rect, ..)
-        | Draw::Glow(rect, ..) => Some(rect.inset(-1.)),
+        | Draw::Rim(rect, ..) => Some(rect.inset(-1.)),
         Draw::Shadow(rect, _, blur, _) => Some(rect.inset(-blur - 1.)),
         // Glyphs may extend past their layout box: redraw the full width of the line.
         Draw::Text(_, rect, style, ..) => Some(Rect::new(
@@ -137,9 +136,6 @@ fn same(a: &Draw, b: &Draw) -> bool {
         }
         (Draw::Rim(r1, a1, w1, t1, b1), Draw::Rim(r2, a2, w2, t2, b2)) => {
             rect(r1, r2) && a1 == a2 && w1 == w2 && t1 == t2 && b1 == b2
-        }
-        (Draw::Glow(r1, a1, p1, s1, t1), Draw::Glow(r2, a2, p2, s2, t2)) => {
-            rect(r1, r2) && a1 == a2 && p1 == p2 && s1 == s2 && t1 == t2
         }
         (Draw::Clip(c1), Draw::Clip(c2)) => match (c1, c2) {
             (Some(r1), Some(r2)) => rect(r1, r2),

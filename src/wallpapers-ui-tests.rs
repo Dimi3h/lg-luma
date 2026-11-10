@@ -638,7 +638,7 @@ fn catalog_updates_keep_the_focused_image_and_pointer_geometry_stationary() {
 }
 
 #[test]
-fn background_popup_is_modal_lifts_the_same_thumbnail_and_restores_its_parent() {
+fn background_popup_is_modal_keeps_the_same_thumbnail_and_restores_its_parent() {
     let mut state = ready();
     state.open(crate::state::Page::Settings);
     state.section = 1;
@@ -668,16 +668,11 @@ fn background_popup_is_modal_lifts_the_same_thumbnail_and_restores_its_parent() 
             Target::DeleteBackground
         ]
     );
-    // The popup keeps the thumbnail lifted around its own centre.
-    let (cx, cy) = before.center();
-    assert!(
-        popup
-            .draw
-            .iter()
-            .any(|draw| matches!(draw, Draw::Image(_, rect, ..)
-        if (rect.center().0 - cx).abs() < 0.01 && (rect.center().1 - cy).abs() < 0.01
-            && rect.w > before.w && (rect.w / rect.h - before.w / before.h).abs() < 0.01))
-    );
+    // The popup keeps the same thumbnail in place, unscaled: cards no longer lift.
+    assert!(popup.draw.iter().any(
+        |draw| matches!(draw, Draw::Image(_, rect, ..)
+            if rect.x == before.x && rect.y == before.y && rect.w == before.w && rect.h == before.h)
+    ));
     state.direction(Direction::Down, &popup.controls);
     assert_eq!(state.focus, Target::NightBackground);
     state.direction(Direction::Down, &popup.controls);

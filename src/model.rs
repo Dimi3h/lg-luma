@@ -278,8 +278,6 @@ pub struct Preferences {
     pub show_inputs: bool,
     /// Heart badges on pinned favourites (tvOS has none, so off by default).
     pub favorite_badges: bool,
-    /// The focused card tilts towards the pointer or a d-pad press, with a moving highlight.
-    pub focus_tilt: bool,
     /// The focused first-row app's artwork as a soft wash behind the top shelf.
     pub app_artwork: bool,
     /// Minutes without input before the screensaver starts while Luma is in front; 0 is Off.
@@ -339,7 +337,6 @@ impl Default for Preferences {
             show_app_names: true,
             show_inputs: false,
             favorite_badges: false,
-            focus_tilt: true,
             app_artwork: true,
             screensaver_minutes: 10,
             screensaver_clock: true,

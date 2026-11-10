@@ -3434,20 +3434,18 @@ fn update_card_shows_progress_restores_retry_and_ignores_presses_while_busy() {
 }
 
 #[test]
-fn badge_and_tilt_preferences_default_and_toggle_from_general() {
-    // Older preference files gain the defaults: no badges (tvOS has none), tilt on. A file still
-    // carrying the removed Sounds preference loads and drops it.
-    let old: Preferences =
-        serde_json::from_value(json!({"favorites": ["netflix"], "sounds": true})).unwrap();
+fn badge_preference_defaults_and_toggles_from_general() {
+    // Older preference files gain the default: no badges (tvOS has none). Files still carrying
+    // the removed Sounds or Focus tilt preferences load and drop them.
+    let old: Preferences = serde_json::from_value(
+        json!({"favorites": ["netflix"], "sounds": true, "focus_tilt": true}),
+    )
+    .unwrap();
     assert!(!old.favorite_badges);
-    assert!(old.focus_tilt);
-    assert!(
-        !serde_json::to_value(&old)
-            .unwrap()
-            .as_object()
-            .unwrap()
-            .contains_key("sounds")
-    );
+    let saved = serde_json::to_value(&old).unwrap();
+    let saved = saved.as_object().unwrap();
+    assert!(!saved.contains_key("sounds"));
+    assert!(!saved.contains_key("focus_tilt"));
     let mut state = ready();
     let hearts = |state: &State| {
         scene(state)
@@ -3458,36 +3456,27 @@ fn badge_and_tilt_preferences_default_and_toggle_from_general() {
     };
     assert_eq!(hearts(&state), 0);
     state.open(Page::Settings);
-    // The removed Sounds row (Setting(9)) never comes back.
-    assert!(
-        !controls(&state)
-            .iter()
-            .any(|c| c.target == Target::Setting(9))
-    );
-    for (index, toggled) in [8, 10].into_iter().zip([
-        |p: &Preferences| !p.focus_tilt,
-        |p: &Preferences| p.favorite_badges,
-    ]) {
+    // The removed Sounds (Setting(9)) and Focus tilt (Setting(8)) rows never come back.
+    for removed in [8, 9] {
         assert!(
-            controls(&state)
+            !controls(&state)
                 .iter()
-                .any(|c| c.target == Target::Setting(index))
+                .any(|c| c.target == Target::Setting(removed))
         );
-        state.focus = Target::Setting(index);
-        assert_eq!(state.activate(), vec![Effect::Save]);
-        assert!(toggled(&state.preferences), "Setting({index})");
     }
+    assert!(
+        controls(&state)
+            .iter()
+            .any(|c| c.target == Target::Setting(10))
+    );
+    state.focus = Target::Setting(10);
+    assert_eq!(state.activate(), vec![Effect::Save]);
+    assert!(state.preferences.favorite_badges);
     state.open(Page::Home);
     assert!(
         hearts(&state) > 0,
         "Badges mark the pinned favourites when switched on"
     );
-    // Tilt is inert when switched off or when motion is reduced.
-    assert!(!state.tilt_enabled());
-    state.preferences.focus_tilt = true;
-    assert!(state.tilt_enabled());
-    state.preferences.reduced_motion = true;
-    assert!(!state.tilt_enabled());
 }
 
 #[test]
@@ -4173,4 +4162,49 @@ fn startup_diagnostics_are_written_as_json_next_to_the_preferences() {
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(read, facts, "Overwritten, not appended");
     std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn focused_card_only_brightens_in_place_and_focus_moves_instantly() {
+    use crate::renderer::Draw;
+    let mut state = ready();
+    state.open(Page::Home);
+    state.sync_motion();
+    let netflix = Target::App("netflix".into());
+    assert_eq!(state.focus, netflix);
+    let card = |state: &State, target: &Target| {
+        controls(state)
+            .into_iter()
+            .find(|control| control.target == *target)
+            .unwrap()
+            .rect
+    };
+    use crate::state::Rect;
+    let same = |a: Rect, b: Rect| a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h;
+    let highlight = |state: &State, rect: Rect| {
+        let drawn = scene(state).draw;
+        let rim = drawn.iter().any(|draw| {
+            matches!(draw, Draw::Rim(r, _, width, ..) if same(*r, rect) && *width == view::FOCUS_RIM)
+        });
+        let overlay = drawn.iter().any(|draw| {
+            matches!(draw, Draw::Shape(r, _, _, color)
+                if same(*r, rect) && *color == [1., 1., 1., view::FOCUS_OVERLAY])
+        });
+        (rim, overlay)
+    };
+    let first = card(&state, &netflix);
+    assert_eq!(highlight(&state, first), (true, true));
+    // Nothing is drawn larger than the card: no lift or scale.
+    assert!(!scene(&state).draw.iter().any(|draw| matches!(draw,
+        Draw::Rim(r, ..) if r.w > first.w + 0.01 && (r.center().0 - first.center().0).abs() < 1.)));
+    // Moving focus highlights the next card in the very next frame and clears the old one.
+    let all = controls(&state);
+    state.direction(Direction::Right, &all);
+    state.sync_motion();
+    let next = state.focus.clone();
+    assert!(matches!(next, Target::App(_)) && next != netflix);
+    assert_eq!(state.focus_level(&next), 1.);
+    assert_eq!(state.focus_level(&netflix), 0.);
+    assert_eq!(highlight(&state, card(&state, &next)), (true, true));
+    assert_eq!(highlight(&state, first), (false, false));
 }

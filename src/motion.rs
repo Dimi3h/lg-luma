@@ -5,8 +5,8 @@
 //! about 200 ms); everything else approaches its target with a critically damped exponential.
 //! All of it is driven by the frame loop's `Instant`, snaps when motion is reduced, and stops
 //! exactly so idle frames stop redrawing.
-use crate::state::{Direction, Page, Rect, Subpage, Target};
-use std::time::{Duration, Instant};
+use crate::state::{Page, Subpage, Target};
+use std::time::Instant;
 
 /// About 96% of the way after 200 ms (losing focus).
 const FOCUS_RATE: f32 = 16.;
@@ -24,6 +24,12 @@ const SMALL_FREQUENCY: f32 = 55.;
 /// Losing focus, they fade in about 120 ms.
 const SMALL_RATE: f32 = 40.;
 
+/// App and wallpaper cards change focus instantly: no lift, spring or fade between cards, only
+/// a highlight.
+pub fn instant(target: &Target) -> bool {
+    matches!(target, Target::App(_) | Target::Background(_))
+}
+
 /// Controls small enough that the cards' 200 ms lift feels sluggish on them.
 pub fn small(target: &Target) -> bool {
     matches!(
@@ -36,10 +42,6 @@ pub fn small(target: &Target) -> bool {
     )
 }
 
-/// The tilt follows its target in about 120 ms.
-const TILT_RATE: f32 = 25.;
-/// A d-pad press tilts the focused card towards the press for this long.
-const NUDGE: Duration = Duration::from_millis(140);
 /// About 96% of the way after 250 ms.
 const SCROLL_RATE: f32 = 13.;
 /// Page switches fade the new page in over this many seconds.
@@ -62,11 +64,6 @@ pub struct Motion {
     /// Focus level and its velocity per element.
     levels: Vec<(Target, f32, f32)>,
     scroll: Option<f32>,
-    /// The focused card's tilt, -1..1 on each axis, towards the pointer or the last press.
-    tilt: [f32; 2],
-    nudge: Option<([f32; 2], Instant)>,
-    /// The focused card's unscaled rectangle, from the last composed scene.
-    focus_rect: Option<Rect>,
     context: Option<Context>,
     page_since: Option<Instant>,
     active: bool,
@@ -81,10 +78,6 @@ pub struct Inputs<'a> {
     pub reduced: bool,
     /// Wheel scrolling and pointer hover keep display and hit regions identical.
     pub pointer: bool,
-    /// Whether the focused card may tilt (Focus tilt on and motion not reduced).
-    pub tilt: bool,
-    /// The Magic Remote pointer's logical position, while it is shown.
-    pub pointer_at: Option<(f32, f32)>,
 }
 
 /// Advances an underdamped spring towards 1 in small steps; snaps once it has settled.
@@ -137,9 +130,13 @@ impl Motion {
             let start = if input.reduced { 1. } else { 0. };
             self.levels.push((input.focus.clone(), start, 0.));
         }
-        // Small controls change visibly in the very frame focus moves, before the next tick.
-        for (target, level, _) in &mut self.levels {
-            if small(target) {
+        // Small controls change visibly in the very frame focus moves, before the next tick;
+        // app cards change completely.
+        for (target, level, velocity) in &mut self.levels {
+            if instant(target) {
+                *level = if target == input.focus { 1. } else { 0. };
+                *velocity = 0.;
+            } else if small(target) {
                 if target == input.focus {
                     *level = level.max(SMALL_START);
                 } else {
@@ -154,7 +151,6 @@ impl Motion {
                 level.2 = 0.;
             }
         }
-        self.focus_rect = None;
         self.active = true;
     }
 
@@ -168,7 +164,7 @@ impl Motion {
         let mut changed = false;
         for (target, level, velocity) in &mut self.levels {
             let goal = if target == input.focus { 1. } else { 0. };
-            if input.reduced {
+            if input.reduced || instant(target) {
                 changed |= *level != goal;
                 *level = goal;
                 *velocity = 0.;
@@ -186,38 +182,6 @@ impl Motion {
         }
         self.levels
             .retain(|(target, level, _)| *level > 0. || target == input.focus);
-
-        // Tilt towards the pointer while it is over the focused card, or briefly towards a
-        // d-pad press. It settles exactly, so a still pointer stops redrawing.
-        let goal = if !input.tilt {
-            self.nudge = None;
-            [0., 0.]
-        } else if let (Some((x, y)), Some(rect)) = (input.pointer_at, self.focus_rect)
-            && input.pointer
-            && rect.contains(x, y)
-        {
-            let (cx, cy) = rect.center();
-            [
-                ((x - cx) / (rect.w / 2.)).clamp(-1., 1.),
-                ((y - cy) / (rect.h / 2.)).clamp(-1., 1.),
-            ]
-        } else if let Some((direction, since)) = self.nudge
-            && now.duration_since(since) < NUDGE
-        {
-            direction
-        } else {
-            self.nudge = None;
-            [0., 0.]
-        };
-        for (tilt, goal) in self.tilt.iter_mut().zip(goal) {
-            if input.reduced || !input.tilt {
-                changed |= *tilt != 0.;
-                *tilt = 0.;
-            } else {
-                changed |= approach(tilt, goal, TILT_RATE, dt, 0.01);
-            }
-        }
-        changed |= self.nudge.is_some();
 
         let context = Context {
             page: input.page,
@@ -251,31 +215,6 @@ impl Motion {
         }
         self.active = changed;
         changed
-    }
-
-    /// Records the focused card's resting rectangle for pointer tilt (from the composed scene).
-    pub fn set_focus_rect(&mut self, rect: Option<Rect>) {
-        self.focus_rect = rect;
-    }
-
-    /// Tilts the focused card briefly towards a d-pad press (ignored when tilt is off).
-    pub fn nudge(&mut self, direction: Direction, enabled: bool) {
-        if !enabled {
-            return;
-        }
-        let vector = match direction {
-            Direction::Up => [0., -1.],
-            Direction::Down => [0., 1.],
-            Direction::Left => [-1., 0.],
-            Direction::Right => [1., 0.],
-        };
-        self.nudge = Some((vector, Instant::now()));
-        self.active = true;
-    }
-
-    /// The focused card's tilt, -1..1 on each axis (0 at rest).
-    pub fn tilt(&self) -> [f32; 2] {
-        self.tilt
     }
 
     pub fn animating(&self) -> bool {
@@ -321,8 +260,6 @@ mod tests {
             scroll: 0.,
             reduced,
             pointer: false,
-            tilt: !reduced,
-            pointer_at: None,
         }
     }
 
@@ -330,8 +267,8 @@ mod tests {
     fn focus_lifts_and_settles_then_stops_animating() {
         let mut motion = Motion::default();
         let none = None;
-        let a = Target::App("a".into());
-        let b = Target::App("b".into());
+        let a = Target::Setting(0);
+        let b = Target::Setting(1);
         let start = Instant::now();
         motion.advance(&input(&a, &none, false), start);
         motion.sync(&input(&b, &none, false));
@@ -381,9 +318,10 @@ mod tests {
 
     #[test]
     fn focus_overshoots_slightly_then_settles_within_a_quarter_second() {
+        // Rows and buttons keep the spring; app cards change instantly.
         let mut motion = Motion::default();
         let none = None;
-        let a = Target::App("a".into());
+        let a = Target::Setting(0);
         let start = Instant::now();
         motion.advance(&input(&a, &none, false), start);
         let mut peak: f32 = 0.;
@@ -430,38 +368,13 @@ mod tests {
         }
         let settled = settled.expect("small controls settle");
         assert!(settled <= 144, "settled after {settled} ms");
-        // Cards keep their slower lift: nothing visible before the first tick.
+        // App cards change completely in that frame, and the card they leave at once.
         motion.sync(&input(&card, &none, false));
-        assert_eq!(motion.focus_level(&card, &card), 0.);
-    }
-
-    #[test]
-    fn tilt_follows_the_pointer_and_is_inert_when_off_or_reduced() {
-        let none = None;
-        let a = Target::App("a".into());
-        for (tilt, reduced, moves) in [
-            (true, false, true),
-            (false, false, false),
-            (true, true, false),
-        ] {
-            let mut motion = Motion::default();
-            let start = Instant::now();
-            let mut values = input(&a, &none, reduced);
-            values.tilt = tilt && !reduced;
-            values.pointer = true;
-            values.pointer_at = Some((230., 120.));
-            motion.advance(&values, start);
-            motion.set_focus_rect(Some(Rect::new(0., 0., 260., 156.)));
-            motion.nudge(Direction::Left, values.tilt);
-            for step in 1..30 {
-                motion.advance(&values, start + Duration::from_millis(16 * step));
-            }
-            let [x, y] = motion.tilt();
-            assert_eq!(x > 0.5 && y > 0., moves, "tilt {tilt} reduced {reduced}");
-            if !moves {
-                assert_eq!(motion.tilt(), [0., 0.]);
-                assert!(!motion.advance(&values, start + Duration::from_secs(1)));
-            }
-        }
+        assert_eq!(motion.focus_level(&card, &card), 1.);
+        assert_eq!(motion.focus_level(&control, &card), 1. - SMALL_START);
+        let other = Target::App("b".into());
+        motion.sync(&input(&other, &none, false));
+        assert_eq!(motion.focus_level(&card, &other), 0.);
+        assert_eq!(motion.focus_level(&other, &other), 1.);
     }
 }

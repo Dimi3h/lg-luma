@@ -460,7 +460,6 @@ fn compose(state: &mut State, assets: &view::Assets, now: OffsetDateTime) -> vie
         state.sync_motion();
         scene = view::scene(state, assets, now);
     }
-    state.note_focus_rect(&scene.controls);
     scene
 }
 
@@ -1527,9 +1526,6 @@ fn run() -> Result<(), String> {
                     if let Some(target) = hovered.clone() {
                         state.pointer_focus(target);
                     }
-                    // The focused card tilts towards the pointer (drawing only); the motion
-                    // tick redraws while that tilt is still moving.
-                    state.pointer_at = pointer_position(&window, x, y);
                     if press
                         .as_ref()
                         .is_some_and(|p| p.pointer && hovered.as_ref() != Some(&p.target))
