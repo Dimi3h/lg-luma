@@ -216,12 +216,12 @@ fn the_main_grid_scrolls_vertically_and_nothing_is_hit_beneath_the_clock() {
         Some(Target::App("sample".into()))
     );
     assert!(state.hit_test(&cards, 100., 1080.).is_none());
-    // The grid keeps its focused caption inside the 60 px bottom safe area.
+    // The grid scrolls until its last row ends at the bottom margin.
     state.scroll = 0.;
     assert!(state.wheel_scroll(&cards, Some((100., 600.)), 0, -100));
     let viewport = state.content_viewport();
-    let limit = cards[0].rect.y + cards[0].rect.h
-        - (viewport.y + viewport.h - crate::view::CAPTION_SPACE - 60.);
+    let limit =
+        cards[0].rect.y + cards[0].rect.h - (viewport.y + viewport.h - crate::view::SCREEN_MARGIN);
     assert_eq!(state.scroll, limit);
 }
 
@@ -317,7 +317,7 @@ fn the_shelf_scrolls_away_only_past_three_rows_and_returns_with_the_first() {
         .find(|control| control.target == grid[19])
         .unwrap()
         .rect;
-    assert!(row.y + row.h + view::CAPTION_SPACE <= 1020. + 0.01);
+    assert!(row.y + row.h <= 1080. - view::SCREEN_MARGIN + 0.01);
     assert!(row.y >= crate::state::GRID_TOP_LIMIT);
     state.focus = grid[1].clone();
     state.reveal_focus(&controls(&state));
@@ -356,19 +356,18 @@ fn eighteen_cards_fit_in_three_rows_beneath_a_compact_shelf_without_scrolling() 
     assert_eq!(cards.len(), 18);
     let first = cards.iter().map(|rect| rect.y).fold(f32::MAX, f32::min);
     let last = cards.iter().map(|rect| rect.y + rect.h).fold(0., f32::max);
-    // Inside the 80 × 60 safe area, including the lift and the focused caption.
     assert!(
         cards
             .iter()
             .all(|rect| rect.x >= 80. && rect.x + rect.w <= 1840.)
     );
-    assert!(
-        last + view::CAPTION_SPACE <= 1020.,
-        "Last row ends at {last}"
-    );
+    // The third row ends as far above the bottom as the clock's digits start below the top.
+    assert_eq!(1080. - last, view::SCREEN_MARGIN, "Last row ends at {last}");
     assert_eq!(first, view::grid_y(&state));
-    // The HIG row gap: 100 px between rows.
-    assert_eq!(view::ROW_PITCH - view::CARD_HEIGHT, 100.);
+    // A tighter row gap than the HIG's 100 px, still holding the focused caption.
+    let gap = view::ROW_PITCH - view::CARD_HEIGHT;
+    assert!((72. ..=80.).contains(&gap));
+    assert!(gap >= view::CAPTION_SPACE);
     // The shelf sits directly beneath the clock line: date on it, greeting and weather below.
     // The test scene renders at the Unix epoch (midnight).
     let greeting = state.preferences.language.greeting(0, "");
@@ -3805,7 +3804,8 @@ fn larger_text_scales_body_styles_keeps_titles_and_still_fits_three_rows() {
             _ => None,
         })
         .fold(0., f32::max);
-    assert!(caption <= 1020., "Lowest text ends at {caption}");
+    // The last row's focused caption may reach into the bottom margin, but stays on screen.
+    assert!(caption <= 1080., "Lowest text ends at {caption}");
     state.focus = last;
     state.reveal_focus(&controls(&state));
     assert_eq!(state.scroll, 0.);

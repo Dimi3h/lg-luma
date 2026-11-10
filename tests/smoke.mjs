@@ -500,8 +500,8 @@ try {
     preferences,
     JSON.stringify({ favorites: edgeFavorites, show_weather: false }),
   );
-  // Second row, first column: the grid's seventh card (y 484 beneath the greeting).
-  const secondRow = await scenario('grid-second-row-click', 'home,click:210:560');
+  // Second row, first column: the grid's seventh card (y 628 to 784).
+  const secondRow = await scenario('grid-second-row-click', 'home,click:210:700');
   assert.deepEqual(secondRow.focus, { App: edgeFavorites[6] });
   assert.equal(secondRow.scroll, 0, 'Clicking a card must not move it');
   const thirdRow = await scenario('grid-third-row', 'home,down,down');

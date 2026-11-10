@@ -174,11 +174,15 @@ Back from Greeting restores its Widgets row; App names returns to General. Input
 also uses **Clear name**.
 Choice checkmarks identify saved values, while the bright row fill identifies only the current focus.
 
-Luma has one main screen, as the tvOS Home Screen: a compact top shelf (the clock with the date on
-the same line, the greeting and one row of weather directly beneath) and under it one six-column
-grid of every app. Three rows of cards fit beneath the shelf inside the 80 × 60 safe area (the
-first row at y 266 with greeting and weather shown, the focused caption of the third ending at
-988), so up to 18 cards need no scrolling. Hiding the greeting or weather moves the grid up. There is no tab bar and no
+Luma has one main screen, as the tvOS Home Screen: a top shelf (the clock with the date on the
+same line, then the greeting and one row of weather) and under it one six-column grid of every
+app. One constant, `SCREEN_MARGIN` (64 px), sets the vertical rhythm: the clock's digits start
+that far below the top of the screen and the third card row ends that far above the bottom. Rows
+are 76 px apart (tighter than the HIG's 100; the focused caption still fits between them), so
+the grid starts at y 396 and up to 18 cards need no scrolling. The shelf takes the space left
+above the grid, starting 28 px below the clock line. Hiding the greeting or weather moves the
+weather up but leaves the grid at the bottom margin. The third row's focused caption reaches into
+that margin (it ends near y 1070), as tvOS captions do. There is no tab bar and no
 TV-settings button (the remote's own Settings button remains). The grid starts with the
 pinned favourites in their saved order, then every other visible app by title, and ends with a
 **Settings** card that opens Settings full screen. Pinning an app moves it into the
@@ -427,7 +431,7 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
 `src/view.rs`; motion lives in `src/motion.rs`.
 
 - **Layout**: an 80 × 60 safe area; six columns of 260 × 156 (5:3) cards with 40 between them and
-  100 between rows (pitch 300 × 256), holding every app and Settings beneath the compact
+  76 between rows (pitch 300 × 232; the HIG's 100 was more space than wanted), holding every app and Settings beneath the compact
   top shelf; optional input cards form a row above the apps and count towards the three rows that
   fit without scrolling.
 - **Type**: the tvOS text styles with Inter instead of SF Pro. The bundled Inter 4.1 subset keeps

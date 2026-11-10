@@ -933,8 +933,9 @@ impl State {
                     SETTINGS_BOTTOM_PADDING
                 }
             } else {
-                // Room for the focused caption inside the 60 px bottom safe area.
-                crate::view::CAPTION_SPACE + 60.
+                // The third row ends at the bottom margin; the last row's focused caption may
+                // reach into that margin, as on tvOS.
+                crate::view::SCREEN_MARGIN
             }
     }
 

@@ -25,7 +25,22 @@ pub const SAFE_X: f32 = 80.;
 pub const CARD_WIDTH: f32 = 260.;
 pub const CARD_HEIGHT: f32 = 156.;
 pub const CARD_PITCH: f32 = 300.;
-pub const ROW_PITCH: f32 = CARD_HEIGHT + 100.;
+/// Space between card rows: tighter than the HIG's 100 px; the focused caption (22 + 32 px)
+/// still fits in it, as on tvOS.
+pub const CARD_ROW_GAP: f32 = 76.;
+pub const ROW_PITCH: f32 = CARD_HEIGHT + CARD_ROW_GAP;
+/// The main screen's vertical rhythm: the clock's digits start this far below the top of the
+/// screen, and the third card row ends this far above its bottom.
+pub const SCREEN_MARGIN: f32 = 64.;
+/// From the top of the clock's 36 px text box to the top of its digits (Inter at 29 px).
+const CLOCK_CAP_INSET: f32 = 7.;
+/// Rows of cards on the main screen before it scrolls.
+pub const VISIBLE_ROWS: usize = 3;
+/// The first card row: three rows end exactly `SCREEN_MARGIN` above the bottom.
+pub const GRID_Y: f32 = 1080.
+    - SCREEN_MARGIN
+    - VISIBLE_ROWS as f32 * CARD_HEIGHT
+    - (VISIBLE_ROWS - 1) as f32 * CARD_ROW_GAP;
 const CARD_RADIUS: f32 = 18.;
 /// Focus grows a card by this share around its centre, and rows and buttons by the second.
 const CARD_LIFT: f32 = 0.10;
@@ -982,7 +997,7 @@ fn light_appearance(out: &mut Scene, from: usize) {
 
 /// The clock's style and line; on the main screen the date follows it on the same line.
 const CLOCK_STYLE: TextStyle = BODY.weight(550);
-const CLOCK_Y: f32 = HEADER.y + (HEADER.h - 36.) / 2.;
+pub const CLOCK_Y: f32 = SCREEN_MARGIN - CLOCK_CAP_INSET;
 
 fn header(out: &mut Scene, state: &State, assets: &Assets, now: OffsetDateTime) {
     let clock = state.preferences.language.clock(
@@ -1767,36 +1782,19 @@ fn brand_mark(out: &mut Scene, assets: &Assets, app: &App, rect: Rect, language:
     }
 }
 
-/// The compact top shelf: the date shares the clock's line, and the greeting and one row of
-/// weather sit directly beneath it, so three rows of cards fit on the screen without scrolling.
-pub const SHELF_TOP: f32 = 108.;
+/// The top shelf fills what the three card rows leave: the date shares the clock's line, and
+/// the greeting and one row of weather follow after a little whitespace.
+pub const SHELF_TOP: f32 = CLOCK_Y + 36. + 28.;
 pub const GREETING_HEIGHT: f32 = 68. + 6.;
 pub const WEATHER_ROW_HEIGHT: f32 = 38.;
 const GREETING_WIDTH: f32 = 1500.;
-/// Space between the shelf and the first card row (room for the lifted card).
-const SHELF_GAP: f32 = 46.;
-/// The first card row when the shelf is empty: clear of the clock line and a lifted card.
-const GRID_MIN_Y: f32 = 150.;
 /// The shelf has faded out once the page has scrolled one row.
 const SHELF_FADE: f32 = ROW_PITCH;
 
-/// Logical top of the first card row (inputs when shown, otherwise the apps), right beneath
-/// whatever the shelf shows.
-pub fn grid_y(state: &State) -> f32 {
-    let shelf = if state.preferences.show_greeting {
-        GREETING_HEIGHT
-    } else {
-        0.
-    } + if state.preferences.show_weather {
-        WEATHER_ROW_HEIGHT
-    } else {
-        0.
-    };
-    if shelf > 0. {
-        SHELF_TOP + shelf + SHELF_GAP
-    } else {
-        GRID_MIN_Y
-    }
+/// Logical top of the first card row (inputs when shown, then the apps). The grid is anchored
+/// to the bottom margin, so hiding shelf widgets leaves it where it is.
+pub fn grid_y(_state: &State) -> f32 {
+    GRID_Y
 }
 
 /// Logical (unscrolled) top of the grid's first row.
@@ -5034,7 +5032,7 @@ mod tests {
     }
 
     #[test]
-    fn hidden_home_widgets_collapse_the_shelf_and_the_grid_follows() {
+    fn hidden_home_widgets_collapse_the_shelf_and_the_grid_keeps_the_bottom_margin() {
         let assets = assets();
         let mut state = State::new(Preferences::default());
         state.set_inventory(demo_inventory(), None);
@@ -5062,7 +5060,7 @@ mod tests {
         let mut rendered = Scene::new();
         home(&mut rendered, &state, &assets, OffsetDateTime::UNIX_EPOCH);
         assert_eq!(first_card(&rendered).y, original_card.y);
-        // Without the greeting, the weather and the grid move up by its height.
+        // Without the greeting the weather moves up; the grid stays at the bottom margin.
         state.preferences.show_date = true;
         state.preferences.show_greeting = false;
         let mut rendered = Scene::new();
@@ -5070,7 +5068,7 @@ mod tests {
         assert!(
             (weather_y(&rendered).unwrap() - (original_weather - GREETING_HEIGHT)).abs() < 0.001
         );
-        assert_eq!(first_card(&rendered).y, original_card.y - GREETING_HEIGHT);
+        assert_eq!(first_card(&rendered).y, original_card.y);
         let date = state.preferences.language.date(OffsetDateTime::UNIX_EPOCH);
         let date_y = rendered
             .draw
@@ -5084,11 +5082,11 @@ mod tests {
             date_y < HEADER.y + HEADER.h,
             "The date sits on the clock's line"
         );
-        // With an empty shelf the grid sits just below the clock.
+        // With an empty shelf the grid still ends at the bottom margin.
         state.preferences.show_weather = false;
         let mut rendered = Scene::new();
         home(&mut rendered, &state, &assets, OffsetDateTime::UNIX_EPOCH);
         assert_eq!(weather_y(&rendered), None);
-        assert_eq!(first_card(&rendered).y, GRID_MIN_Y);
+        assert_eq!(first_card(&rendered).y, GRID_Y);
     }
 }

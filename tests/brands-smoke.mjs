@@ -70,8 +70,8 @@ try {
     assert.equal(report.capture.glyph_failures, 0, `Invalid caption for ${logo}`);
     assert.ok(report.capture.vector_meshes > 0);
     const input = await sharp(screenshot)
-      // The first card: x 80, y 228 beneath the greeting (weather off), with lift margin.
-      .extract({ left: 69, top: 217, width: 282, height: 238 })
+      // The first card: x 80, y 396 (three rows end at the bottom margin), with lift margin.
+      .extract({ left: 69, top: 385, width: 282, height: 238 })
       .png()
       .toBuffer();
     cards.push({ input, left: (index % 6) * 282, top: Math.floor(index / 6) * 238 });
