@@ -4242,3 +4242,62 @@ fn settings_focus_changes_in_the_first_frame_and_never_moves_afterwards() {
     // The very next scene shows the new value.
     assert_eq!(count_on(&state), before + 1);
 }
+
+#[test]
+fn auto_inputs_follow_hdmi_plug_in_not_the_eim_connected_flag() {
+    // The B4's reply with every source in standby: eim still says `connected` for ports with a
+    // cable, but `hdmiPlugIn` (the +5 V cable detect) is false. Auto follows `hdmiPlugIn`
+    // (upstream #27), so the top bar shows no input glyph, in Dark and Light alike.
+    let reply = json!([
+        {"appId":"com.webos.app.hdmi1","id":"HDMI_1","port":1,"connected":true,
+         "hdmiPlugIn":false,"hdmiSignalExist":false},
+        {"appId":"com.webos.app.hdmi2","id":"HDMI_2","port":2,"connected":true,
+         "hdmiPlugIn":false,"hdmiSignalExist":false},
+        {"appId":"com.webos.app.hdmi3","id":"HDMI_3","port":3,"connected":false,
+         "hdmiPlugIn":false,"hdmiSignalExist":false},
+        {"appId":"com.webos.app.hdmi4","id":"HDMI_4","port":4,"connected":false,
+         "hdmiPlugIn":false,"hdmiSignalExist":false}
+    ]);
+    let mut state = ready();
+    state.preferences.show_inputs = true;
+    state.preferences.input_modes.clear();
+    state.set_inputs(normalize_inputs(&reply).unwrap());
+    assert_eq!(state.inventory.inputs.len(), 4);
+    assert!(state.home_inputs().is_empty());
+    assert_eq!(state.top_bar(), [Target::StoreIcon, Target::SettingsIcon]);
+    // A source that drives the cable (as during the round-8 capture) shows up in Auto…
+    let mut powered = reply.clone();
+    powered[0]["hdmiPlugIn"] = json!(true);
+    state.set_inputs(normalize_inputs(&powered).unwrap());
+    assert_eq!(
+        state.top_bar()[0],
+        Target::Input("com.webos.app.hdmi1".into())
+    );
+    // …and "On" keeps an input in the bar whatever the cable reports.
+    state.set_inputs(normalize_inputs(&reply).unwrap());
+    state
+        .preferences
+        .input_modes
+        .insert("com.webos.app.hdmi2".into(), InputMode::On);
+    assert_eq!(
+        state.top_bar()[0],
+        Target::Input("com.webos.app.hdmi2".into())
+    );
+    // In Light appearance the glyph is drawn in dark ink, never white on the light scrim
+    // (dimmed, as in Dark, while its cable reports nothing).
+    state.open(Page::Home);
+    state.preferences.appearance = crate::model::Appearance::Light;
+    let glyph = scene(&state)
+        .draw
+        .iter()
+        .find_map(|draw| match draw {
+            crate::renderer::Draw::TintedImage(path, _, _, _, color)
+                if path.contains("ui-icons/input-") =>
+            {
+                Some(*color)
+            }
+            _ => None,
+        })
+        .expect("the input glyph is drawn");
+    assert!(glyph[0] < 0.3 && glyph[3] >= 0.38, "{glyph:?}");
+}
