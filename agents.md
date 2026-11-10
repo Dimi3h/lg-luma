@@ -64,10 +64,12 @@ indices, including offscreen rows, so the shelf and top-bar icons cannot steal m
 navigation. Back restores setting subpage parents and supports SDL-webOS Back. OK finishes
 move mode without launching.
 
-Vector icon/logo assets are standalone SVGs compiled to `.lvec` at build time. Font outlines
-are tessellated only as needed; text runs use bounded GPU caches, Inter only (no CJK fallback)
-and no glyph bitmap atlas. Text AA prefers MSAA of intact outlines, with a narrow fringe fallback; keep physical
-origin/baseline snapping and logical 1920×1080 layout. `--resolution 4k` is experimental, not a
+Vector icon/logo assets are standalone SVGs compiled to `.lvec` at build time. Text uses a CPU
+glyph atlas: only needed Inter glyphs are rasterised (256 coverage levels) on the glyph worker
+thread, never the SDL thread, kept in a bounded CPU cache and packed into one bounded
+single-channel atlas texture; the SDL thread only uploads and draws one quad per glyph. Inter
+only (no CJK fallback). Vector logos/shapes request 4× MSAA and use their analytic edge ramp
+only when MSAA is refused. Keep pixel-snapped glyph origins/baselines and logical 1920×1080 layout. `--resolution 4k` is experimental, not a
 shipping-default claim. Profiles count presentations; ordinary `--frames` is event-loop iterations.
 
 Weather uses ureq/rustls, fixed Open-Meteo origins, bounded replies/timeouts, no proxy/redirects,

@@ -7,6 +7,8 @@ use lyon_tessellation::{
 };
 use std::collections::BTreeMap;
 
+pub mod raster;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Vertex {
     pub position: Point,

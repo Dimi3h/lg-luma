@@ -5,6 +5,9 @@ attribute float a_coverage;
 uniform vec4 u_transform;
 uniform vec2 u_pixel_scale;
 uniform vec4 u_tint;
+// 1 on single-sample targets (the analytic boundary ramp); 0 with MSAA, which then draws the
+// exact outline: fringe triangles collapse to nothing and no ramp can overlap at a seam.
+uniform float u_fringe;
 varying PAINT_PRECISION vec4 v_color;
 varying PAINT_PRECISION float v_coverage;
 varying PAINT_PRECISION float v_logical_y;
@@ -14,9 +17,9 @@ void main() {
     // wide at every drawable density. Interior triangle edges have no fringe.
     vec2 direction = a_offset / max(abs(u_transform.xy), vec2(0.000001));
     vec2 offset = direction / max(length(direction), 0.000001) * length(a_offset);
-    position += offset / u_pixel_scale;
+    position += offset * u_fringe / u_pixel_scale;
     gl_Position = vec4(position.x / 960.0 - 1.0, 1.0 - position.y / 540.0, 0.0, 1.0);
     v_color = a_color * u_tint;
-    v_coverage = a_coverage;
+    v_coverage = mix(1.0, a_coverage, step(0.001, u_fringe));
     v_logical_y = position.y;
 }

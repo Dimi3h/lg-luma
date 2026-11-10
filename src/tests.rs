@@ -1138,8 +1138,6 @@ fn system_category_owns_refresh_and_quit_and_restores_sidebar_focus() {
     assert_eq!(state.focus, Target::Setting(3));
     assert_eq!(state.activate(), vec![Effect::Reload]);
     state.direction(Direction::Down, &controls(&state));
-    assert_eq!(state.focus, Target::Setting(7));
-    state.direction(Direction::Down, &controls(&state));
     assert_eq!(state.focus, Target::Setting(5));
     assert_eq!(state.activate(), vec![Effect::Quit]);
     state.back();
@@ -1150,61 +1148,28 @@ fn system_category_owns_refresh_and_quit_and_restores_sidebar_focus() {
 }
 
 #[test]
-fn text_rendering_preferences_default_to_analytic_and_recover_invalid_values() {
-    use crate::text_rendering::TextRendering;
-    for value in [
-        json!({}),
-        json!({"text_rendering": "unknown"}),
-        json!({"text_rendering": null}),
-        json!({"text_rendering": 4}),
-    ] {
-        let mut value = value;
-        value["greeting_name"] = json!("Ana");
-        let preferences: Preferences = serde_json::from_value(value).unwrap();
-        assert_eq!(preferences.text_rendering, TextRendering::Analytic);
+fn the_removed_text_rendering_choice_loads_and_leaves_no_system_row() {
+    // Text has one path now (the CPU glyph atlas); a saved choice is ignored and dropped.
+    for value in ["msaa", "analytic"] {
+        let preferences: Preferences =
+            serde_json::from_value(json!({"text_rendering": value, "greeting_name": "Ana"}))
+                .unwrap();
         assert_eq!(preferences.greeting_name, "Ana");
+        let saved = serde_json::to_value(&preferences).unwrap();
+        assert!(!saved.as_object().unwrap().contains_key("text_rendering"));
     }
-    // A saved MSAA choice stays.
-    let saved: Preferences = serde_json::from_value(json!({"text_rendering": "msaa"})).unwrap();
-    assert_eq!(saved.text_rendering, TextRendering::Msaa);
-}
-
-#[test]
-fn text_rendering_choices_persist_and_back_restores_the_system_row() {
-    use crate::{state::Subpage, text_rendering::TextRendering};
     let mut state = ready();
     state.open(crate::state::Page::Settings);
     state.section = crate::state::SYSTEM_SECTION;
-    state.focus = Target::Setting(7);
-    state.direction(Direction::Right, &controls(&state));
-    assert_eq!(state.subpage, Some(Subpage::TextRendering));
-    // Analytic, the default, is selected.
-    assert_eq!(state.focus, Target::Choice(1));
-    assert!(scene(&state).draw.iter().any(|draw| matches!(
-        draw,
-        crate::renderer::Draw::Text(label, ..) if label == "Restart Luma to apply changes."
-    )));
-    assert_eq!(state.activate(), vec![Effect::Save]);
-    assert_eq!(state.preferences.text_rendering, TextRendering::Analytic);
-    assert_eq!(state.focus, Target::Setting(7));
-    assert!(state.subpage.is_none());
-    let saved = serde_json::to_value(&state.preferences).unwrap();
-    assert_eq!(saved["text_rendering"], "analytic");
-    let mut restored = State::new(serde_json::from_value(saved).unwrap());
-    restored.open(crate::state::Page::Settings);
-    restored.section = crate::state::SYSTEM_SECTION;
-    restored.focus = Target::Setting(7);
-    restored.activate();
-    assert_eq!(restored.focus, Target::Choice(1));
-    restored.direction(Direction::Down, &controls(&restored));
-    assert_eq!(restored.focus, Target::Choice(0));
-    restored.back();
-    assert_eq!(restored.focus, Target::Setting(7));
-    assert_eq!(restored.preferences.text_rendering, TextRendering::Analytic);
-    restored.activate();
-    restored.direction(Direction::Up, &controls(&restored));
-    assert_eq!(restored.activate(), vec![Effect::Save]);
-    assert_eq!(restored.preferences.text_rendering, TextRendering::Msaa);
+    let rows: Vec<_> = controls(&state)
+        .into_iter()
+        .filter_map(|control| match control.target {
+            Target::Setting(index) => Some(index),
+            _ => None,
+        })
+        .collect();
+    assert!(!rows.contains(&7), "{rows:?}");
+    assert!(rows.contains(&3) && rows.contains(&5), "{rows:?}");
 }
 
 #[test]
@@ -4145,21 +4110,11 @@ fn notices_are_a_small_pill_centred_above_the_bottom_safe_area() {
 }
 
 #[test]
-fn analytic_text_uses_a_one_pixel_ramp_and_boosts_light_text_coverage() {
-    use crate::renderer::{ANALYTIC_FRINGE, coverage_exponent};
-    // Coverage runs over one physical pixel, centred on the outline, as a box filter would.
-    assert_eq!(ANALYTIC_FRINGE, 1.);
-    // Light text on dark backgrounds gets a coverage exponent below 1; dark text stays linear.
-    assert!(coverage_exponent([0.96, 0.96, 0.96, 1.]) < 1.);
-    assert_eq!(coverage_exponent([0.08, 0.08, 0.09, 1.]), 1.);
-}
-
-#[test]
 fn startup_diagnostics_are_written_as_json_next_to_the_preferences() {
     let directory = std::env::temp_dir().join(format!("luma-diagnostics-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
     let path = directory.join("luma-diagnostics.json");
-    let facts = json!({"text_rendering": "msaa", "obtained_samples": 4, "density": 1.0});
+    let facts = json!({"text_rendering": "cpu glyph atlas", "obtained_samples": 4, "density": 1.0});
     crate::diagnostics::write_startup(&path, &facts).unwrap();
     crate::diagnostics::write_startup(&path, &facts).unwrap();
     let read: serde_json::Value =

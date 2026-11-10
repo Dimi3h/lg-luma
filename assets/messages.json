@@ -127,22 +127,6 @@
     "en": "Upload session ended",
     "nl": "Uploadsessie beëindigd"
   },
-  "textRendering": {
-    "en": "Text rendering",
-    "nl": "Tekstweergave"
-  },
-  "textRenderingMsaa": {
-    "en": "MSAA",
-    "nl": "MSAA"
-  },
-  "textRenderingAnalytic": {
-    "en": "Analytic (default)",
-    "nl": "Analytisch (standaard)"
-  },
-  "textRenderingRestart": {
-    "en": "Restart Luma to apply changes.",
-    "nl": "Start Luma opnieuw op om de wijzigingen toe te passen."
-  },
   "recentEmpty": {
     "en": "No recent apps",
     "nl": "Geen recente apps"

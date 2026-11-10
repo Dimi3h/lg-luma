@@ -313,9 +313,6 @@ pub struct Preferences {
     pub temperature_unit: Unit,
     #[serde(deserialize_with = "crate::i18n::deserialize_language")]
     pub language: Language,
-    /// Applied at launch because MSAA is selected when SDL creates the GL window.
-    #[serde(deserialize_with = "crate::text_rendering::deserialize")]
-    pub text_rendering: crate::text_rendering::TextRendering,
     #[serde(deserialize_with = "crate::wallpaper_cycle::deserialize")]
     pub wallpaper_cycle: bool,
     pub wallpaper_gradient: bool,
@@ -354,7 +351,6 @@ impl Default for Preferences {
             weather_location: None,
             temperature_unit: Unit::Celsius,
             language: Language::En,
-            text_rendering: crate::text_rendering::TextRendering::default(),
             wallpaper_cycle: false,
             wallpaper_gradient: true,
             wallpaper_changed: 0,

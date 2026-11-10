@@ -48,7 +48,8 @@ try {
       'Visible vector text must remain valid across cache reuse',
     );
     assert.equal(render.last_presented.glyph_failures, 0);
-    assert.equal(render.capture.font_antialiasing, 'vector grayscale coverage');
+    assert.equal(render.capture.font_antialiasing, 'cpu glyph atlas, 256-level coverage');
+    assert.equal(render.capture.pending_glyphs, 0, 'Captures wait for every glyph');
     assert.equal(render.capture.missing_glyphs, 0);
     assert.equal(render.capture.missing_images, 0);
     state.render = render;
@@ -150,7 +151,7 @@ try {
   assert.deepEqual(hidden.focus, { App: 'youtube.leanback.v4' });
   assert.ok(!hidden.apps.includes('netflix'), 'Hidden apps leave the grid');
   // Reload from disk and show the hidden Netflix again from Settings › General › Hidden apps.
-  const hiddenAppsPage = 'settings,enter,down,down,down,down,down,down,enter';
+  const hiddenAppsPage = 'settings,enter,down,down,down,down,down,enter';
   const hiddenList = await scenario('hidden-apps', hiddenAppsPage);
   assert.equal(hiddenList.subpage, 'HiddenApps');
   assert.deepEqual(hiddenList.focus, { Choice: 0 });
@@ -260,8 +261,9 @@ try {
   );
   assert.ok(two.render.capture.cached_glyphs > 0);
   assert.ok(two.render.capture.cached_text_runs > 0);
-  assert.ok(two.render.capture.text_geometry_bytes > 0);
-  assert.ok(two.render.capture.text_triangles > 0);
+  assert.ok(two.render.capture.glyph_bitmap_bytes > 0);
+  assert.ok(two.render.capture.atlas_size >= 1024);
+  assert.ok(two.render.capture.text_quads > 0);
   assert.equal(
     two.render.drawable_is_4k,
     two.render.drawable.width >= 3840 && two.render.drawable.height >= 2160,
@@ -371,12 +373,16 @@ try {
   const clockFocus = await scenario('clock-format-focus', `${clockEditor},enter,down`);
   assert.equal(clockFocus.subpage, 'ClockFormat');
   assert.deepEqual(clockFocus.focus, { Choice: 1 });
-  const system = await scenario('system-settings', 'settings,down,down,down,right,down,down,down');
+  const system = await scenario('system-settings', 'settings,down,down,down,right,down,down');
   assert.deepEqual(system.focus, { Setting: 5 });
   assert.ok(system.ui_text.includes('Refresh apps & inputs'));
   assert.ok(!system.ui_text.includes('Luma update'));
   assert.ok(system.ui_text.includes('Quit app'));
-  assert.ok(system.ui_text.includes('Text rendering'));
+  // Text has one path (the CPU glyph atlas); the Text rendering choice is gone.
+  assert.ok(!system.ui_text.includes('Text rendering'));
+  assert.equal(system.render.text_rendering.path, 'cpu glyph atlas');
+  assert.deepEqual(system.render.text_rendering.requested_samples, [4, 2, 0]);
+  assert.ok(system.render.text_rendering.first_frame.glyphs > 0);
   const updatePreview = await scenario('update-preview', 'settings,down,down,down,right', [
     '--test-update-version',
     '99.0.0',
@@ -406,28 +412,14 @@ try {
   assert.ok(latestPreview.ui_text.includes('Check again'));
   assert.ok(latestPreview.ui_text.includes(`Current version: ${currentVersion}`));
   assert.ok(!latestPreview.ui_text.some((label) => label.startsWith('Luma v')));
-  const textOptions = 'settings,down,down,down,right,down,down,enter';
-  const textRendering = await scenario('text-rendering-options', textOptions);
-  assert.equal(textRendering.subpage, 'TextRendering');
-  // Analytic is the default: its one-pixel ramp beats 4x MSAA at a TV's density of 1.
-  assert.deepEqual(textRendering.focus, { Choice: 1 });
-  assert.ok(textRendering.ui_text.includes('MSAA'));
-  assert.ok(textRendering.ui_text.includes('Analytic (default)'));
-  assert.ok(textRendering.ui_text.includes('Restart Luma to apply changes.'));
-  const msaaSaved = await scenario('text-rendering-msaa-saved', `${textOptions},up,enter`);
-  assert.equal(msaaSaved.preferences.text_rendering, 'msaa');
-  assert.deepEqual(msaaSaved.focus, { Setting: 7 });
-  assert.equal(msaaSaved.render.text_rendering.mode, 'analytic', 'Mode changes apply next launch');
-  const msaa = await scenario('text-rendering-msaa', 'home');
-  assert.equal(msaa.render.text_rendering.mode, 'msaa');
-  assert.equal(msaa.render.text_rendering.embolden, 0);
-  const analyticSaved = await scenario('text-rendering-saved', `${textOptions},down,enter`);
-  assert.equal(analyticSaved.preferences.text_rendering, 'analytic');
-  assert.equal(analyticSaved.render.text_rendering.mode, 'msaa', 'Mode changes apply next launch');
-  const analytic = await scenario('text-rendering-analytic', 'home');
-  assert.equal(analytic.render.text_rendering.mode, 'analytic');
-  assert.equal(analytic.render.text_rendering.embolden, 0.25);
-  assert.equal(analytic.render.last_presented.multisample_samples, 0);
+  // LUMA_MSAA=0 forces a single-sample window: vectors use their analytic ramp, and text
+  // (which never depends on MSAA) still draws from the atlas.
+  process.env.LUMA_MSAA = '0';
+  const singleSample = await scenario('single-sample', 'home');
+  delete process.env.LUMA_MSAA;
+  assert.deepEqual(singleSample.render.text_rendering.requested_samples, [0]);
+  assert.equal(singleSample.render.last_presented.multisample_samples, 0);
+  assert.ok(singleSample.render.last_presented.text_quads > 0);
   // Companion HTTP writes are covered by loopback Rust tests. Seed its persisted result
   // here to render the TV's read-only detail/removal flow without a TV keyboard editor.
   const beforeShortcut = JSON.parse(await fs.readFile(preferences, 'utf8'));

@@ -6,7 +6,7 @@
 Cargo.toml / Cargo.lock       Rust workspace and pinned dependencies
 src/                         Rust launcher, platform adapter and GLES2 shaders
 assets/                      Editable SVGs, fonts, wallpapers, translations and artwork metadata
-vector-geometry/             Shared fill tessellation and vector boundary coverage
+vector-geometry/             Shared fill tessellation, vector boundary coverage, glyph rasteriser
 tools/vector-assets/         Host-only SVG compiler
 tools/                       Asset preparation, SDK/runtime setup, packaging and release feed
 tests/                       Desktop rendering and mocked HTTP smoke scripts
@@ -562,25 +562,17 @@ including the supplied PlayStation/Apple TV marks. `assets/logos/` holds origina
 the shared lyon tessellator to emit `.lvec` geometry. The format contains positions, edge offsets,
 vertex colors and coverage; holes, round strokes and the bundled gradients are preserved.
 Gradient colors are adaptively sampled at build time. The TV uploads each mesh lazily once and
-draws with a texture-free GLES2 shader. No SVG parser runs on the TV. The shared tessellator also
-handles font outlines. Installed app PNG/JPEG/WebP artwork, wallpaper photos, tile-background
+draws with a texture-free GLES2 shader. No SVG parser runs on the TV. Installed app PNG/JPEG/WebP artwork, wallpaper photos, tile-background
 images and the webOS installation icon remain raster assets. See [assets.md](assets.md) for licenses.
 
-Text defaults to the analytic path: a single-sample window with the one-pixel edge ramp
-described below. **Settings → System → Text rendering** offers **MSAA** and **Analytic
-(default)**. The `text_rendering` preference (`msaa` or `analytic`) is saved immediately and
-applies when Luma next starts because SDL selects MSAA when it creates the window. Missing or
-invalid preferences use Analytic; a saved `msaa` stays. MSAA requests 4× with 2×/single-sample
-fallbacks and no emboldening. The setting shows a restart reminder.
-
-Analytic mode uses a single-sample window and analytic text/logo edge filters. Text up to 16
-physical pixels is emboldened by 0.25 px per edge, fading out by 28 px. The choice is visual:
-analytic rendering was preferred on a contributor's webOS 5 TV and, after its ramp was widened
-to one pixel, on an LG B4 (Mali-G57, which grants 4× MSAA: four coverage levels per pixel look
-coarser at density 1), while MSAA was preferred in earlier manual Mali-G52 TV comparisons. `LUMA_MSAA=4` or `0` overrides the saved mode and its default
-emboldening. `LUMA_EMBOLDEN` overrides the strength independently. Diagnostics report the
-startup `text_rendering` configuration, and `last_presented.multisample_samples` reports the
-actual window's samples. Offscreen captures can still be single-sample.
+Luma requests 4× MSAA for its window (2× and single-sample as fallbacks if EGL refuses a
+configuration). Under MSAA, vector logos and icons draw their exact outline: the shader zeroes
+the boundary offsets (`u_fringe`), so fringe triangles collapse and no one-pixel ramp can
+overlap a neighbour's and show a seam. Only when the GPU grants no samples do they fall back to
+the analytic one-pixel ramp. Text never depends on MSAA (see [Text](#text) below).
+`LUMA_MSAA=0` forces a single-sample window to check that fallback. Diagnostics report the
+samples requested and obtained, and `last_presented.multisample_samples` the actual window's;
+offscreen captures can still be single-sample.
 
 Shape edges use a one-drawable-pixel box filter centred on the edge, and rectangles (and logo
 placement) snap to whole drawable pixels. A straight edge is then a single step, and a one-pixel
@@ -647,45 +639,62 @@ navigation pointer. Both are original Luma vector artwork. The focused card's ca
 names are visible. `Brand::artwork_size()` sets optical sizing per brand, keeping heavy wordmarks
 such as Hulu, Joyn and Plex closer to the visual weight of Apple TV, YouTube, Das Erste and ARTE.
 
-Text reads the bundled TTF's advances, kerning and line metrics lazily. Only needed glyph outlines
-are tessellated in font-em coordinates. Complete text runs are cached in static GPU buffers,
-independent of position/color/drawable density, avoiding a draw call per letter. Only Inter
-ships (no CJK fallback font, since the UI is English and Dutch); there are no glyph bitmap atlases
-or full-font mesh exports.
+### Text
 
-MSAA mode requests 4× MSAA, with 2×/single-sample fallbacks if EGL rejects a configuration.
-Analytic mode requests a single-sample window. Multisampled text draws
-intact glyph fills without inward offsets/fringe triangles, which can cross on very thin
-small-text strokes. Single-sample targets (Analytic, or MSAA when the GPU grants no samples)
-draw a one-physical-pixel coverage ramp centred on the outline (`ANALYTIC_FRINGE`), as a box
-filter would; the earlier half-pixel ramp stepped visibly on curves in density-1 desktop
-captures (the TV comparison is still open). Light
-text there has its coverage raised to the power 0.7, which offsets the thinning of light-on-dark
-edges when blending in sRGB; dark text stays linear. Glyph outlines are flattened to
-`FLATTENING_EM` (0.15 px at 256 px/em), about 0.05 physical px for focused Title text at density
-1, so curve segments are far below a pixel. Boundary offsets are mitred at most 2× (`MITRE_LIMIT`), so a vertex
-at a sharp notch or crotch moves at most one pixel instead of reaching across it. Inter keeps
-overlapping contours (an "n" is a stem plus an overlapping arch), and Lyon's fill mesh then has
-T-junctions where they meet; vertices on those are pinned (their fill is not pulled inward), so
-the ramp cannot open a seam inside the letter. `luma_vector_geometry::fringe_report` and
-`coverage_error` rasterise a mesh in software as the shader draws it; tests use them on Title
-"n", "m", "e" and others (when `pnpm assets` has generated the fonts) and on synthetic overlaps
-and notches. What remains at an "n" shoulder is Inter Display's own narrow notch between stem
-and arch, drawn at its true, sub-pixel width. Glyph origins/baselines are pixel-aligned per
-drawable axis. There is no LCD subpixel rendering, font
-hinting or complex-script shaping. Inspect `multisample_samples` and `font_antialiasing`:
-offscreen captures can be single-sample while the actual window uses MSAA.
+Text reads the bundled TTF's advances, kerning and line metrics lazily on the SDL thread and lays
+runs out in logical units; laid-out runs (glyph indices and pen positions, no geometry) are cached
+up to 512 entries. Only Inter ships (no CJK fallback font, since the UI is English and Dutch); a
+missing character draws Inter's missing-glyph box. There is no LCD subpixel rendering, font
+hinting or complex-script shaping.
+
+Glyphs are rasterised on the CPU by a dedicated worker thread (`luma-glyphs`,
+`src/glyph_atlas.rs`), which opens its own copy of each font instance on first use. The rasteriser
+(`luma_vector_geometry::raster`) samples each pixel row with 32 sub-scanlines; on each, the true
+non-zero winding rule gives the spans inside the outline and each span adds its exact horizontal
+share to the pixels it covers, quantised to 256 levels. Inter keeps overlapping contours (an "n"
+is a stem plus an overlapping arch); the winding rule fills them as one shape, so there is no
+seam where they meet and no double coverage where their edges coincide inside a pixel (an
+edge-area accumulator would show up to 0.5 too much there). The error is at most 1/64 for
+horizontal edges and smaller for slanted ones. Sizes are quantised to a quarter physical pixel.
+
+Finished bitmaps go into a CPU cache (8 MiB/8192 entries, least recently used first out) and are
+packed into one single-channel atlas texture (`GL_LUMINANCE` on GLES 2, `GL_RED` on desktop):
+1024² (1 MiB), growing once to 2048² if a single frame needs more. Shelf packing leaves a cleared
+one-texel border around every glyph. Nothing is freed individually: when the atlas fills, it is
+cleared and the frame is built again, repacking the current glyphs from their CPU copies (uploads
+only). The SDL thread only uploads (`glTexSubImage2D`) and draws. Each glyph is one textured quad
+whose origin and baseline snap to a whole physical pixel, so its bitmap lands 1:1 on the
+drawable; consecutive text with the same clip and fade is one draw call.
+
+Coverage blends in sRGB, which thins light-on-dark edges. `glyph.vert` derives an exponent from
+the text colour's luminance: light text has its coverage raised to the power 0.7 (about 1/1.43,
+`LIGHT_TEXT_COVERAGE_EXPONENT`), dark text stays linear, and mid tones blend between the two.
+
+A frame that needs a glyph the worker has not finished waits up to 4 ms for it, then draws without
+it (or with a packed size of the same glyph scaled, as during an animated size change); when it
+arrives the loop redraws in full. The first frame and screenshots wait up to 3 s, so no text pops
+in at launch. Idle page preparation requests the other pages' glyphs without waiting. Measured on
+a desktop release build (Apple silicon): the first main screen needs 66 glyphs, rasterised in
+about 1.8 ms on the worker, with 0.06–0.5 ms on the SDL thread for uploads and waiting; the first
+General page needs 76 glyphs in about 2.1 ms, with up to 2 ms on the SDL thread. Each start writes
+its own figures to `first_frame_text` in `luma-diagnostics.json`; TV figures are unmeasured.
+
+`raster::reference_coverage` point-samples an outline 16 × 16 per pixel; tests compare the
+rasteriser with it on synthetic overlaps, curves and partial pixels, and on Inter's "n", "m", "e",
+"G", "o", "a", "s", "g", "H" and "8" at 29, 57 and 152 px (when `pnpm assets` has generated the
+fonts): fully covered pixels must be opaque (no seam), uncovered ones empty (no spike), and edges
+within the samplings' error.
 
 webOS discards stderr, so Luma also writes its startup facts to `luma-diagnostics.json` next to
-the preferences file, replacing it at every start and drawable change: the text mode and
-emboldening, the MSAA sample counts requested and obtained (and any refused), the analytic ramp
-width in use, the drawable size and density, the GL vendor, renderer and version strings, the SDL
-video driver and the partial-redraw mode. Read it over SSH to see what the TV actually granted.
+the preferences file, replacing it at every start and drawable change: the text path, the MSAA
+sample counts requested and obtained (and any refused), how vector edges are drawn, the first
+frame's glyph atlas fill (glyphs, worker milliseconds, SDL-thread milliseconds, uploads), the
+drawable size and density, the GL vendor, renderer and version strings, the SDL video driver and
+the partial-redraw mode. Read it over SSH to see what the TV actually granted.
 
-Glyph geometry has an 8 MiB/4096-entry CPU cache target and text runs a 32 MiB/512-entry GPU
-target. Eviction preserves the current frame, which can temporarily exceed those targets.
-Raster artwork has a 48 MiB cache budget. Diagnostics include geometry bytes, triangles, draw
-calls and missing/failed artwork/glyphs. Idle screens draw on demand; VSync paces animation.
+Raster artwork has a 48 MiB cache budget. Diagnostics include atlas and bitmap bytes, glyph
+uploads and pending glyphs, text quads, draw calls and missing/failed artwork/glyphs. Idle screens
+draw on demand; VSync paces animation.
 
 ## Resolution and profiling
 
@@ -805,8 +814,8 @@ beneath the outgoing interface rather than over it, so they fold in while both f
 
 ### Idle preparation
 
-The first visit to a page pays for laying out its text, outlining new glyphs, loading logo meshes
-and uploading icons. After each inventory, once the screen has been still for 1.5 s, Luma builds
+The first visit to a page pays for laying out its text, rasterising new glyphs, loading logo
+meshes and uploading icons. After each inventory, once the screen has been still for 1.5 s, Luma builds
 the other pages' scenes without drawing them (`Renderer::prepare`), one page per idle wake; the TV
 log reports each (`Luma prewarm: …`). The script action `prewarm` triggers it at once, and the
 profiling timeline records first-use work per frame (`glyph_ms`, `vector_ms`, `image_ms`).

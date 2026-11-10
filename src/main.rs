@@ -11,6 +11,7 @@ mod damage;
 mod diagnostics;
 mod egl_damage;
 mod font;
+mod glyph_atlas;
 mod i18n;
 #[path = "input-refresh.rs"]
 mod input_refresh;
@@ -27,7 +28,6 @@ mod scroll_preview;
 mod sdl_events;
 mod state;
 mod storage;
-mod text_rendering;
 #[path = "tile-editor.rs"]
 mod tile_editor;
 mod update;
@@ -794,17 +794,15 @@ fn run() -> Result<(), String> {
     };
     let mut opened = None;
     let mut failures = Vec::new();
-    // MSAA is the default on TV and desktop. The System setting is applied only at launch.
-    let text_config = text_rendering::Configuration::new(
-        state.preferences.text_rendering,
-        std::env::var("LUMA_MSAA").ok().as_deref(),
-        std::env::var("LUMA_EMBOLDEN").ok().as_deref(),
-    );
-    eprintln!(
-        "Luma text rendering: {:?}, embolden {} px",
-        text_config.mode, text_config.embolden
-    );
-    for &samples in text_config.sample_counts {
+    // Vector logos and shapes use 4x MSAA where the GPU grants it, else their analytic edge.
+    // Text never depends on it (CPU glyph atlas). LUMA_MSAA=0 forces single-sample to check
+    // the fallback.
+    let sample_counts: &[u8] = if std::env::var("LUMA_MSAA").as_deref() == Ok("0") {
+        &[0]
+    } else {
+        &[4, 2, 0]
+    };
+    for &samples in sample_counts {
         attributes.set_multisample_buffers(u8::from(samples > 0));
         attributes.set_multisample_samples(samples);
         match create_window() {
@@ -827,8 +825,7 @@ fn run() -> Result<(), String> {
     if let Err(error) = video.gl_set_swap_interval(1) {
         eprintln!("VSync: {error}");
     }
-    let mut renderer =
-        renderer::Renderer::new(&assets.root.join("font.ttf"), webos, text_config.embolden)?;
+    let mut renderer = renderer::Renderer::new(&assets.root.join("font.ttf"), webos)?;
     startup_stage("renderer");
     // Redraw only what changed since the back buffer's frame (LUMA_PARTIAL=0 draws in full).
     let partial = (std::env::var("LUMA_PARTIAL").as_deref() != Ok("0"))
@@ -846,18 +843,18 @@ fn run() -> Result<(), String> {
     let startup_facts = serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "video_driver": video.current_video_driver(),
-        "text_rendering": text_config.mode,
-        "embolden_px": text_config.embolden,
-        "requested_samples": text_config.sample_counts,
+        "text_rendering": "cpu glyph atlas",
+        "requested_samples": sample_counts,
         "obtained_samples": samples,
         "msaa_failures": failures,
-        "analytic_fringe_px": if samples > 1 { 0. } else { renderer::ANALYTIC_FRINGE },
+        "vector_edges": if samples > 1 { "msaa" } else { "analytic ramp" },
         "gl": renderer.info,
         "partial_redraw": partial
             .as_ref()
             .map_or("off", egl_damage::PartialUpdate::describe),
     });
     let mut damage_tracker = damage::Tracker::default();
+    let mut first_text = serde_json::Value::Null;
     // Pages to prepare while the screen is idle (text, logos, icons), after each inventory.
     let mut prewarm: Vec<state::Page> = Vec::new();
     let mut prewarm_now = false;
@@ -1084,6 +1081,12 @@ fn run() -> Result<(), String> {
             }
         }
         state.dirty |= assets.artwork.poll();
+        // Glyphs the last frame lacked have been rasterised: draw it again, in full (the draw
+        // list itself has not changed, so damage tracking alone would skip them).
+        if renderer.poll_glyphs() {
+            state.dirty = true;
+            damage_tracker.reset();
+        }
         let unix = state::unix_now();
         let startup_cycle = wallpaper_cycle::startup_due(
             state.preferences.wallpaper_cycle,
@@ -1842,16 +1845,18 @@ fn run() -> Result<(), String> {
                 let swap_ms = swap_started.elapsed().as_secs_f64() * 1000.;
                 if presented == 0 {
                     startup_stage("first frame");
-                    if webos {
-                        let stats = renderer.stats();
-                        eprintln!(
-                            "Luma vector text: {} glyphs, {} text runs, {} KiB glyph geometry, {} KiB GPU text",
-                            stats.cached_glyphs,
-                            stats.cached_text_runs,
-                            stats.glyph_geometry_bytes / 1024,
-                            stats.text_geometry_bytes / 1024,
-                        );
-                    }
+                    // The atlas fill's startup cost: rasterisation on the glyph worker, and
+                    // what the SDL thread spent uploading and waiting for it.
+                    let stats = renderer.stats();
+                    first_text = serde_json::json!({
+                        "glyphs": renderer.glyphs_rasterised,
+                        "worker_raster_ms": renderer.glyph_raster_ms,
+                        "sdl_thread_ms": stats.glyph_ms,
+                        "uploads": stats.glyph_uploads,
+                        "atlas_size": stats.atlas_size,
+                        "text_runs": stats.cached_text_runs,
+                    });
+                    eprintln!("Luma glyph atlas, first frame: {first_text}");
                 }
                 presented += 1;
                 last_present = Instant::now();
@@ -1877,6 +1882,7 @@ fn run() -> Result<(), String> {
                     let mut facts = startup_facts.clone();
                     facts["drawable"] = serde_json::json!([width, height]);
                     facts["density"] = serde_json::json!(drawable.scale());
+                    facts["first_frame_text"] = first_text.clone();
                     if let Err(error) = diagnostics::write_startup(&diagnostics_path, &facts) {
                         eprintln!("Luma diagnostics file: {error}");
                     }
@@ -1948,6 +1954,7 @@ fn run() -> Result<(), String> {
             || back_button.press.is_some()
             || options.frames.is_some()
             || assets.artwork.pending()
+            || renderer.glyphs_pending()
         {
             8
         } else if !prewarm.is_empty() {
@@ -1988,7 +1995,14 @@ fn run() -> Result<(), String> {
             "display_mode": display_mode,
             "drawable_is_4k": Size::new(dw, dh).is_4k(), "presented_frames": presented,
             "graphics": renderer.info, "last_presented": renderer.stats(), "capture": captured,
-            "text_rendering": text_config,
+            "text_rendering": serde_json::json!({
+                "path": "cpu glyph atlas",
+                "requested_samples": sample_counts,
+                "obtained_samples": samples,
+                "glyphs_rasterised": renderer.glyphs_rasterised,
+                "worker_raster_ms": renderer.glyph_raster_ms,
+                "first_frame": first_text,
+            }),
             "profile": options.profile_frames.map(|_| profile.summary()),
             "partial_redraw": partial.as_ref().map(egl_damage::PartialUpdate::describe),
             "redrawn_fraction_mean": redrawn_total / presented.max(1) as f64,

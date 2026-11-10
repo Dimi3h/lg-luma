@@ -1,7 +1,8 @@
-//! A small GLES2-compatible GPU painter. Rust owns vector glyphs and the draw list;
-//! SDL only supplies the context. No browser, LVGL or Qt runtime.
+//! A small GLES2-compatible GPU painter. Rust owns the glyph atlas, vectors and the draw
+//! list; SDL only supplies the context. No browser, LVGL or Qt runtime.
 use crate::{
     font::Font,
+    glyph_atlas::{self, Atlas, Bitmaps, GlyphKey, Slot},
     raster::{Size, Viewport},
     state::Rect,
     vector,
@@ -18,25 +19,21 @@ use std::{
 
 pub type Color = [f32; 4];
 pub const WHITE: Color = [0.96, 0.96, 0.96, 1.];
-/// Width of the analytic (single-sample) text edge ramp, in physical pixels: coverage runs from
-/// 1 half a pixel inside the outline to 0 half a pixel outside it, as a box filter would. A
-/// narrower ramp steps visibly on curves and diagonals at a TV's density of 1.
-pub const ANALYTIC_FRINGE: f32 = 1.;
-/// Coverage exponent for light text in the analytic path. Blending in sRGB thins light-on-dark
-/// edges; raising coverage to this power (below 1) restores their perceived weight.
+/// Coverage exponent for light text. The GPU blends in sRGB, which thins light-on-dark edges;
+/// raising coverage to this power (about 1/1.43) restores their perceived weight. Dark text
+/// keeps linear coverage, and mid tones blend between the two (`glyph.vert`).
 pub const LIGHT_TEXT_COVERAGE_EXPONENT: f32 = 0.7;
-
-/// The analytic path's coverage exponent for text of this tint (1 leaves coverage linear).
-pub fn coverage_exponent(tint: Color) -> f32 {
-    let luminance = 0.2126 * tint[0] + 0.7152 * tint[1] + 0.0722 * tint[2];
-    if luminance > 0.5 {
-        LIGHT_TEXT_COVERAGE_EXPONENT
-    } else {
-        1.
-    }
-}
-const GLYPH_GEOMETRY_BUDGET: usize = 8 * 1024 * 1024;
-const TEXT_GEOMETRY_BUDGET: usize = 32 * 1024 * 1024;
+/// Laid-out text runs kept between frames (glyph positions only; bitmaps live in the atlas).
+const TEXT_RUNS: usize = 512;
+/// The glyph atlas: single-channel, starting at 1024² (1 MiB) and growing once to 2048².
+const ATLAS_SIZE: u32 = 1024;
+const ATLAS_MAX_SIZE: u32 = 2048;
+/// How long an ordinary frame waits for glyphs still being rasterised before drawing without
+/// them (they appear in a following frame); the first frame and captures wait longer.
+const GLYPH_WAIT: std::time::Duration = std::time::Duration::from_millis(4);
+const GLYPH_WAIT_FIRST: std::time::Duration = std::time::Duration::from_secs(3);
+/// `GL_LUMINANCE`, GLES 2's single-channel texture format (absent from the core bindings).
+const LUMINANCE: GLenum = 0x1909;
 const TEXTURE_BUDGET: usize = 48 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug)]
@@ -109,11 +106,6 @@ impl Drop for Texture {
     }
 }
 
-struct Glyph {
-    geometry: Vec<luma_vector_geometry::Vertex>,
-    frame: u64,
-}
-
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct TextKey {
     text: String,
@@ -123,11 +115,19 @@ struct TextKey {
     flags: u8,
 }
 
+/// A laid-out text run: each glyph's font, index and pen position relative to the run's box.
 struct TextRun {
-    mesh: Option<vector::Mesh>,
+    glyphs: Vec<Placed>,
+    size: f32,
     missing_glyphs: usize,
-    failures: usize,
     frame: u64,
+}
+
+struct Placed {
+    font: u16,
+    glyph: u16,
+    x: f32,
+    baseline: f32,
 }
 
 #[derive(Clone, Serialize)]
@@ -148,19 +148,26 @@ pub struct RenderStats {
     pub multisample_samples: u32,
     pub max_logical_font_px: f32,
     pub max_physical_font_px: f32,
+    /// Glyphs packed in the atlas, and its side in texels.
     pub cached_glyphs: usize,
-    pub glyph_tessellations: usize,
-    /// Milliseconds this frame spent on first-use work: glyph outlines, logo meshes, images.
+    pub atlas_size: u32,
+    /// Glyph bitmaps uploaded to the atlas this frame.
+    pub glyph_uploads: usize,
+    /// Glyphs this frame needed that the worker had not finished (drawn in a later frame).
+    pub pending_glyphs: usize,
+    /// Milliseconds the SDL thread spent this frame on glyph uploads and waiting for the
+    /// rasteriser; the rasterisation itself runs on the glyph worker.
     pub glyph_ms: f64,
     pub vector_load_ms: f64,
     pub image_load_ms: f64,
     pub glyph_failures: usize,
     pub missing_glyphs: usize,
     pub missing_images: usize,
-    pub glyph_geometry_bytes: usize,
+    /// CPU copies of rasterised glyphs, and the atlas texture's size.
+    pub glyph_bitmap_bytes: usize,
+    pub atlas_bytes: usize,
     pub cached_text_runs: usize,
-    pub text_geometry_bytes: usize,
-    pub text_triangles: usize,
+    pub text_quads: usize,
     pub artwork_bytes: usize,
     pub vector_meshes: usize,
     pub vector_bytes: usize,
@@ -176,22 +183,24 @@ impl RenderStats {
         Self {
             target,
             viewport: Viewport::new(target),
-            font_antialiasing: "vector grayscale coverage",
+            font_antialiasing: "cpu glyph atlas, 256-level coverage",
             multisample_samples: 0,
             max_logical_font_px: 0.,
             max_physical_font_px: 0.,
             cached_glyphs: 0,
-            glyph_tessellations: 0,
+            atlas_size: 0,
+            glyph_uploads: 0,
+            pending_glyphs: 0,
             glyph_ms: 0.,
             vector_load_ms: 0.,
             image_load_ms: 0.,
             glyph_failures: 0,
             missing_glyphs: 0,
             missing_images: 0,
-            glyph_geometry_bytes: 0,
+            glyph_bitmap_bytes: 0,
+            atlas_bytes: 0,
             cached_text_runs: 0,
-            text_geometry_bytes: 0,
-            text_triangles: 0,
+            text_quads: 0,
             artwork_bytes: 0,
             vector_meshes: 0,
             vector_bytes: 0,
@@ -216,11 +225,8 @@ enum BatchKind {
         rect: Rect,
         tint: Color,
     },
-    Text {
-        key: TextKey,
-        origin: [f32; 2],
-        tint: Color,
-    },
+    /// Glyph quads in `glyph_vertices`, all from the atlas.
+    Glyphs { start: usize, count: usize },
 }
 
 struct Batch {
@@ -323,13 +329,6 @@ fn profile_skip(command: &Draw) -> bool {
     skip.iter().any(|entry| entry == kind || entry == "all")
 }
 
-/// Stem emboldening for small text, in physical pixels per edge: thin stems get an opaque
-/// core instead of only grey edge pixels, which a TV's 2x scale-up would soften further.
-/// Full strength up to 16 physical pixels, none from 28. Zero in the default MSAA mode.
-fn embolden(physical_size: f32, strength: f32) -> f32 {
-    strength * ((28. - physical_size) / 12.).clamp(0., 1.)
-}
-
 fn snap_rect(rect: Rect, scale: f32) -> Rect {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if !*ENABLED.get_or_init(|| std::env::var("LUMA_SNAP").as_deref() != Ok("0")) {
@@ -347,16 +346,30 @@ fn snap_rect(rect: Rect, scale: f32) -> Rect {
 pub struct Renderer {
     program: GLuint,
     vector_program: GLuint,
-    text_program: GLuint,
-    text_embolden: f32,
+    glyph_program: GLuint,
     buffer: GLuint,
+    glyph_buffer: GLuint,
     vao: GLuint,
     white: Texture,
     font_directory: PathBuf,
     fonts: HashMap<u16, Font>,
     failed_fonts: HashSet<u16>,
-    glyphs: HashMap<(char, u16), Glyph>,
     text_runs: HashMap<TextKey, TextRun>,
+    glyph_worker: glyph_atlas::Worker,
+    glyph_bitmaps: Bitmaps,
+    atlas: Atlas,
+    atlas_texture: Texture,
+    gles: bool,
+    /// The atlas filled up while building this frame: clear or grow it and build again.
+    atlas_full: bool,
+    /// Glyphs the last drawn frame lacked; their arrival needs a redraw.
+    awaited: HashSet<GlyphKey>,
+    glyph_vertices: Vec<f32>,
+    /// Until the first frame is drawn, frames wait for every glyph (no text pops in).
+    first_frame: bool,
+    /// Rasterisation time reported by the worker, and glyphs, since the last reset.
+    pub glyph_raster_ms: f64,
+    pub glyphs_rasterised: usize,
     textures: HashMap<String, Option<Texture>>,
     vectors: HashMap<String, Option<vector::Mesh>>,
     artwork_variants: HashMap<String, String>,
@@ -371,7 +384,7 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new(font: &Path, gles: bool, text_embolden: f32) -> Result<Self, String> {
+    pub fn new(font: &Path, gles: bool) -> Result<Self, String> {
         let directory = font.parent().ok_or("Invalid font path")?;
         let mut fonts = HashMap::new();
         // Open only the common face; the other weights and optical sizes stay lazy.
@@ -423,10 +436,10 @@ impl Renderer {
                 return Err(error);
             }
         };
-        let text_program = match link(
-            &(vertex_prefix + include_str!("shaders/text.vert")),
-            &(fragment_prefix + include_str!("shaders/vector.frag")),
-            &[c"a_position", c"a_offset", c"a_origin", c"a_coverage"],
+        let glyph_program = match link(
+            &(vertex_prefix + include_str!("shaders/glyph.vert")),
+            &(fragment_prefix + include_str!("shaders/glyph.frag")),
+            &[c"a_position", c"a_uv", c"a_color"],
         ) {
             Ok(program) => program,
             Err(error) => {
@@ -438,6 +451,7 @@ impl Renderer {
             }
         };
         let mut buffer = 0;
+        let mut glyph_buffer = 0;
         let mut vao = 0;
         unsafe {
             if !gles {
@@ -445,6 +459,7 @@ impl Renderer {
                 gl::BindVertexArray(vao);
             }
             gl::GenBuffers(1, &mut buffer);
+            gl::GenBuffers(1, &mut glyph_buffer);
             gl::Enable(gl::BLEND);
             // Preserve an opaque destination alpha. Using BlendFunc for both
             // channels makes translucent UI darken again in PNG/window compositing.
@@ -458,19 +473,30 @@ impl Renderer {
             gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
         }
         let white = texture(1, 1, &[255; 4]);
+        let max_atlas = (max_texture_size.max(0) as u32).clamp(ATLAS_SIZE, ATLAS_MAX_SIZE);
         Ok(Self {
             program,
             vector_program,
-            text_program,
-            text_embolden,
+            glyph_program,
             buffer,
+            glyph_buffer,
             vao,
             white,
             font_directory: directory.into(),
             fonts,
             failed_fonts: HashSet::new(),
-            glyphs: HashMap::new(),
             text_runs: HashMap::new(),
+            glyph_worker: glyph_atlas::Worker::new(directory.into(), load_font),
+            glyph_bitmaps: Bitmaps::default(),
+            atlas: Atlas::new(ATLAS_SIZE, max_atlas),
+            atlas_texture: atlas_texture(ATLAS_SIZE, gles),
+            gles,
+            atlas_full: false,
+            awaited: HashSet::new(),
+            glyph_vertices: Vec::with_capacity(16384),
+            first_frame: true,
+            glyph_raster_ms: 0.,
+            glyphs_rasterised: 0,
             textures: HashMap::new(),
             vectors: HashMap::new(),
             artwork_variants: HashMap::new(),
@@ -511,50 +537,85 @@ impl Renderer {
         }
     }
 
-    fn glyph(&mut self, c: char, font: u16) -> Result<&[luma_vector_geometry::Vertex], String> {
-        let key = (c, font);
-        if !self.glyphs.contains_key(&key) {
-            let started = Instant::now();
-            let geometry = self.fonts[&font].geometry(c)?;
-            self.stats.glyph_ms += started.elapsed().as_secs_f64() * 1000.;
-            self.glyphs.insert(
-                key,
-                Glyph {
-                    geometry,
-                    frame: self.frame,
-                },
-            );
-            self.stats.glyph_tessellations += 1;
+    /// The atlas slot to draw a glyph from: packed already, packed now from its CPU copy, or,
+    /// while the worker still rasterises it (requested here), another packed size of the same
+    /// glyph to stand in scaled. `None` draws nothing yet.
+    fn glyph_slot(&mut self, key: GlyphKey) -> Option<(GlyphKey, Slot)> {
+        let frame = self.frame;
+        if let Some(slot) = self.atlas.get(&key, frame) {
+            return Some((key, slot));
         }
-        let glyph = self.glyphs.get_mut(&key).unwrap();
-        glyph.frame = self.frame;
-        Ok(&glyph.geometry)
+        if let Some(coverage) = self.glyph_bitmaps.get(&key, frame) {
+            let Some(slot) = self.atlas.insert(key, &coverage, frame) else {
+                self.atlas_full = true;
+                return None;
+            };
+            self.upload_glyph(slot, &coverage);
+            return Some((key, slot));
+        }
+        self.glyph_worker.request(key);
+        self.awaited.insert(key);
+        self.stats.pending_glyphs += 1;
+        self.atlas.stand_in(&key, frame)
     }
 
-    fn trim_text_geometry(&mut self) {
-        let glyph_bytes =
-            |glyph: &Glyph| glyph.geometry.len() * size_of::<luma_vector_geometry::Vertex>();
-        let mut bytes: usize = self.glyphs.values().map(glyph_bytes).sum();
-        if bytes > GLYPH_GEOMETRY_BUDGET || self.glyphs.len() > 4096 {
-            let mut old: Vec<_> = self
-                .glyphs
-                .iter()
-                .filter(|(_, glyph)| glyph.frame != self.frame)
-                .map(|(key, glyph)| (*key, glyph.frame))
-                .collect();
-            old.sort_by_key(|(_, frame)| *frame);
-            for (key, _) in old {
-                if bytes <= GLYPH_GEOMETRY_BUDGET && self.glyphs.len() <= 4096 {
-                    break;
-                }
-                if let Some(glyph) = self.glyphs.remove(&key) {
-                    bytes -= glyph_bytes(&glyph);
-                }
-            }
+    /// Uploads a glyph with a cleared one-texel border, so linear filtering at its edges never
+    /// reads what an earlier packing left there.
+    fn upload_glyph(&mut self, slot: Slot, coverage: &luma_vector_geometry::raster::Coverage) {
+        if slot.width == 0 || slot.height == 0 {
+            return;
         }
-        let run_bytes = |run: &TextRun| run.mesh.as_ref().map_or(0, |mesh| mesh.bytes);
-        let mut bytes: usize = self.text_runs.values().map(run_bytes).sum();
-        if bytes > TEXT_GEOMETRY_BUDGET || self.text_runs.len() > 512 {
+        let started = Instant::now();
+        let (w, h) = (slot.width as usize, slot.height as usize);
+        let mut padded = vec![0u8; (w + 2) * (h + 2)];
+        for (row, line) in coverage.data.chunks_exact(w).enumerate() {
+            padded[(row + 1) * (w + 2) + 1..][..w].copy_from_slice(line);
+        }
+        unsafe {
+            gl::BindTexture(gl::TEXTURE_2D, self.atlas_texture.id);
+            gl::TexSubImage2D(
+                gl::TEXTURE_2D,
+                0,
+                slot.x as i32 - 1,
+                slot.y as i32 - 1,
+                w as i32 + 2,
+                h as i32 + 2,
+                atlas_format(self.gles),
+                gl::UNSIGNED_BYTE,
+                padded.as_ptr().cast(),
+            );
+        }
+        self.stats.glyph_uploads += 1;
+        self.stats.glyph_ms += started.elapsed().as_secs_f64() * 1000.;
+    }
+
+    /// Takes finished glyphs from the worker into the CPU cache. True when one that the last
+    /// drawn frame lacked has arrived (that frame needs drawing again, in full).
+    fn accept(&mut self, results: Vec<glyph_atlas::Rasterised>) -> bool {
+        let mut needed = false;
+        for result in results {
+            self.glyph_raster_ms += result.ms;
+            self.glyphs_rasterised += 1;
+            needed |= self.awaited.remove(&result.key);
+            self.glyph_bitmaps
+                .insert(result.key, result.coverage, self.frame);
+        }
+        needed
+    }
+
+    /// Collects glyphs the worker has finished (call once per loop iteration).
+    pub fn poll_glyphs(&mut self) -> bool {
+        let results = self.glyph_worker.receive(None);
+        self.accept(results)
+    }
+
+    /// Whether glyphs are still being rasterised (the loop should wake soon to poll).
+    pub fn glyphs_pending(&self) -> bool {
+        self.glyph_worker.pending() > 0
+    }
+
+    fn trim_text(&mut self) {
+        if self.text_runs.len() > TEXT_RUNS {
             let mut old: Vec<_> = self
                 .text_runs
                 .iter()
@@ -562,19 +623,17 @@ impl Renderer {
                 .map(|(key, run)| (key.clone(), run.frame))
                 .collect();
             old.sort_by_key(|(_, frame)| *frame);
-            for (key, _) in old {
-                if bytes <= TEXT_GEOMETRY_BUDGET && self.text_runs.len() <= 512 {
-                    break;
-                }
-                if let Some(run) = self.text_runs.remove(&key) {
-                    bytes -= run_bytes(&run);
-                }
+            let excess = self.text_runs.len() - TEXT_RUNS;
+            for (key, _) in old.into_iter().take(excess) {
+                self.text_runs.remove(&key);
             }
         }
-        self.stats.cached_glyphs = self.glyphs.len();
-        self.stats.glyph_geometry_bytes = self.glyphs.values().map(glyph_bytes).sum();
+        self.glyph_bitmaps.trim(self.frame);
+        self.stats.cached_glyphs = self.atlas.len();
+        self.stats.atlas_size = self.atlas.packer.size;
+        self.stats.atlas_bytes = (self.atlas.packer.size as usize).pow(2);
+        self.stats.glyph_bitmap_bytes = self.glyph_bitmaps.bytes();
         self.stats.cached_text_runs = self.text_runs.len();
-        self.stats.text_geometry_bytes = self.text_runs.values().map(run_bytes).sum();
     }
 
     fn quad(
@@ -717,8 +776,8 @@ impl Renderer {
     }
 
     fn text(&mut self, text: &str, rect: Rect, style: TextStyle, color: Color, centered: bool) {
-        // Layout remains logical. Reuse the same run geometry at every density;
-        // its shader snaps insertion origins and computes pixel-sized coverage.
+        // Layout is logical and cached per run; glyph bitmaps come from the atlas at the
+        // drawable's physical size.
         let size_f = style.size;
         let viewport = self.stats.viewport;
         self.stats.max_logical_font_px = self.stats.max_logical_font_px.max(size_f);
@@ -740,7 +799,6 @@ impl Renderer {
         {
             return;
         }
-        let origin = [rect.x, rect.y];
         let key = TextKey {
             text: text.into(),
             weight: style.weight,
@@ -751,22 +809,109 @@ impl Renderer {
                 rect.w.to_bits(),
                 rect.h.to_bits(),
             ],
-            flags: u8::from(style.align_right)
-                | (u8::from(centered) << 1)
-                | (u8::from(self.stats.multisample_samples > 1) << 2),
+            flags: u8::from(style.align_right) | (u8::from(centered) << 1),
         };
-        if self.text_runs.contains_key(&key) {
-            self.submit_text(key, origin, color);
+        if !self.text_runs.contains_key(&key) {
+            let Some(run) = self.layout(text, rect.w, rect.h, style, centered) else {
+                return;
+            };
+            self.text_runs.insert(key.clone(), run);
+        }
+        let run = self.text_runs.get_mut(&key).unwrap();
+        run.frame = self.frame;
+        self.stats.missing_glyphs += run.missing_glyphs;
+        // Glyph origins snap to physical pixels, so every bitmap lands 1:1 on the grid.
+        let (sx, sy) = (
+            viewport.width as f32 / 1920.,
+            viewport.height as f32 / 1080.,
+        );
+        let physical = run.size * sy;
+        let glyphs: Vec<_> = run
+            .glyphs
+            .iter()
+            .map(|glyph| {
+                (
+                    GlyphKey::new(glyph.font, glyph.glyph, physical),
+                    ((rect.x + glyph.x) * sx).round(),
+                    ((rect.y + glyph.baseline) * sy).round(),
+                )
+            })
+            .collect();
+        let start = self.glyph_vertices.len() / 8;
+        for (key, x, y) in glyphs {
+            let Some((drawn, slot)) = self.glyph_slot(key) else {
+                continue;
+            };
+            if slot.width == 0 || slot.height == 0 {
+                continue;
+            }
+            // 1 except for a stand-in of another size, drawn scaled until this one arrives.
+            let scale = key.px() / drawn.px();
+            let x0 = (x + slot.left as f32 * scale) / sx;
+            let y0 = (y + slot.top as f32 * scale) / sy;
+            let x1 = x0 + slot.width as f32 * scale / sx;
+            let y1 = y0 + slot.height as f32 * scale / sy;
+            let texels = self.atlas.packer.size as f32;
+            let (u0, v0) = (slot.x as f32 / texels, slot.y as f32 / texels);
+            let (u1, v1) = (
+                (slot.x + slot.width) as f32 / texels,
+                (slot.y + slot.height) as f32 / texels,
+            );
+            for (px, py, u, v) in [
+                (x0, y0, u0, v0),
+                (x1, y0, u1, v0),
+                (x0, y1, u0, v1),
+                (x1, y0, u1, v0),
+                (x1, y1, u1, v1),
+                (x0, y1, u0, v1),
+            ] {
+                self.glyph_vertices
+                    .extend_from_slice(&[px, py, u, v, color[0], color[1], color[2], color[3]]);
+            }
+            self.stats.text_quads += 1;
+        }
+        let count = self.glyph_vertices.len() / 8 - start;
+        if count == 0 {
             return;
         }
-        let rect = Rect::new(0., 0., rect.w, rect.h);
+        // Consecutive text with the same clip and fade is one draw call.
+        if let Some(Batch {
+            kind: BatchKind::Glyphs { start: s, count: c },
+            clip,
+            fade,
+        }) = self.batches.last_mut()
+            && *s + *c == start
+            && same_clip(*clip, self.clip)
+            && *fade == self.fade
+        {
+            *c += count;
+            return;
+        }
+        self.batches.push(Batch {
+            kind: BatchKind::Glyphs { start, count },
+            clip: self.clip,
+            fade: self.fade,
+        });
+    }
+
+    /// Lays a text run out in logical units: line breaking, alignment and kerning.
+    fn layout(
+        &mut self,
+        text: &str,
+        width: f32,
+        height: f32,
+        style: TextStyle,
+        centered: bool,
+    ) -> Option<TextRun> {
+        let size_f = style.size;
+        let rect = Rect::new(0., 0., width, height);
         let font_id = style.weight + if style.size >= 32. { 1000 } else { 0 };
         if !self.ensure_font(font_id) {
             self.stats.glyph_failures += text.chars().count();
-            return;
+            return None;
         }
-        // Only Inter ships (English and Dutch UI); characters it lacks, such as CJK in an app
-        // title, draw as its missing-glyph box rather than loading a fallback font.
+        // Only Inter ships; characters it lacks, such as CJK in an app title, draw as its
+        // missing-glyph box rather than loading a fallback font.
         let fonts = &self.fonts;
         let font = &fonts[&font_id];
         let line_height = size_f * style.line_height;
@@ -778,7 +923,7 @@ impl Renderer {
             if c == '\n' {
                 0.
             } else {
-                fonts[&font_id].metrics(c, size_f).advance_width + tracking
+                font.metrics(c, size_f).advance_width + tracking
             }
         };
         let mut lines: Vec<String> = Vec::new();
@@ -812,7 +957,8 @@ impl Renderer {
         if !line.is_empty() {
             lines.push(line.trim_end().into());
         }
-        let mut placed = Vec::new();
+        let mut glyphs = Vec::new();
+        let mut missing_glyphs = 0;
         for (index, line) in lines.iter().enumerate() {
             let top = rect.y + index as f32 * line_height;
             if index > 0 && top + line_height > rect.y + rect.h + 1. {
@@ -842,85 +988,28 @@ impl Renderer {
                 if let Some(previous) = previous {
                     x += font.horizontal_kern(previous, c, size_f).unwrap_or(0.);
                 }
-                placed.push((c, x, top + baseline, font_id));
+                let glyph = font.lookup_glyph_index(c);
+                if glyph == 0 && !c.is_whitespace() {
+                    missing_glyphs += 1;
+                }
+                if !c.is_whitespace() {
+                    glyphs.push(Placed {
+                        font: font_id,
+                        glyph,
+                        x,
+                        baseline: top + baseline,
+                    });
+                }
                 x += advance(c);
                 previous = Some(c);
             }
         }
-        let mut vertices = Vec::new();
-        let mut missing_glyphs = 0;
-        let mut failures = 0;
-        let multisampled = self.stats.multisample_samples > 1;
-        for (c, x, baseline, selected) in placed {
-            if self.fonts[&selected].lookup_glyph_index(c) == 0 && !c.is_whitespace() {
-                missing_glyphs += 1;
-            }
-            match self.glyph(c, selected) {
-                Ok(geometry) => {
-                    for triangle in geometry.chunks_exact(3) {
-                        // True sample coverage needs only the original fill.
-                        // Exclude the boundary fringe, not just its alpha.
-                        if multisampled && triangle.iter().any(|vertex| vertex.coverage < 1.) {
-                            continue;
-                        }
-                        for vertex in triangle {
-                            vertices.extend_from_slice(&[
-                                vertex.position.x * size_f,
-                                vertex.position.y * size_f,
-                                if multisampled { 0. } else { vertex.offset[0] },
-                                if multisampled { 0. } else { vertex.offset[1] },
-                                x,
-                                baseline,
-                                0.,
-                                0.,
-                                vertex.coverage,
-                            ]);
-                        }
-                    }
-                }
-                Err(error) => {
-                    eprintln!("Luma glyph {c:?}: {error}");
-                    failures += 1;
-                }
-            }
-        }
-        let mesh = if vertices.is_empty() {
-            None
-        } else {
-            match vector::Mesh::upload(1., 1., &vertices) {
-                Ok(mesh) => Some(mesh),
-                Err(error) => {
-                    eprintln!("Luma text: {error}");
-                    failures += 1;
-                    None
-                }
-            }
-        };
-        self.text_runs.insert(
-            key.clone(),
-            TextRun {
-                mesh,
-                missing_glyphs,
-                failures,
-                frame: self.frame,
-            },
-        );
-        self.submit_text(key, origin, color);
-    }
-
-    fn submit_text(&mut self, key: TextKey, origin: [f32; 2], tint: Color) {
-        let run = self.text_runs.get_mut(&key).unwrap();
-        run.frame = self.frame;
-        self.stats.missing_glyphs += run.missing_glyphs;
-        self.stats.glyph_failures += run.failures;
-        if let Some(mesh) = &run.mesh {
-            self.stats.text_triangles += mesh.vertices as usize / 3;
-            self.batches.push(Batch {
-                kind: BatchKind::Text { key, origin, tint },
-                clip: self.clip,
-                fade: self.fade,
-            });
-        }
+        Some(TextRun {
+            glyphs,
+            size: size_f,
+            missing_glyphs,
+            frame: self.frame,
+        })
     }
 
     fn image(&mut self, path: &str, rect: Rect, radius: f32, contain: bool, tint: Color) {
@@ -1173,29 +1262,83 @@ impl Renderer {
         )
     }
 
-    /// Prepares first-use work for a scene without drawing it (text layout and glyph
-    /// outlines, logo meshes, images), e.g. another page while the screen is idle, so its
-    /// first appearance does not pay for it. The visible frame's statistics stay unchanged.
+    /// Prepares first-use work for a scene without drawing it (text layout, logo meshes,
+    /// images, and glyphs requested from the worker without waiting), e.g. another page while
+    /// the screen is idle, so its first appearance does not pay for it. The visible frame's
+    /// statistics stay unchanged.
     pub fn prepare(&mut self, commands: &[Draw], width: u32, height: u32) {
         let stats = self.stats.clone();
-        self.build(commands, width, height, None);
+        let awaited = std::mem::take(&mut self.awaited);
+        self.build(commands, width, height, None, None);
         self.vertices.clear();
+        self.glyph_vertices.clear();
         self.batches.clear();
         self.stats = stats;
+        self.awaited = awaited;
+    }
+
+    /// Builds the frame. A full atlas is grown (once) or cleared and the frame built again
+    /// from the glyphs' CPU copies; with `wait`, glyphs still being rasterised are waited for
+    /// up to that long and the frame built again with them.
+    fn build(
+        &mut self,
+        commands: &[Draw],
+        width: u32,
+        height: u32,
+        area: Option<Rect>,
+        wait: Option<std::time::Duration>,
+    ) {
+        let mut waited = 0.;
+        let deadline = wait.map(|wait| Instant::now() + wait);
+        for _ in 0..4 {
+            self.build_once(commands, width, height, area);
+            if self.atlas_full {
+                if !(self.atlas.all_used_in(self.frame) && self.grow_atlas()) {
+                    self.atlas.clear();
+                }
+                continue;
+            }
+            let Some(deadline) = deadline.filter(|_| !self.awaited.is_empty()) else {
+                break;
+            };
+            let started = Instant::now();
+            let mut arrived = false;
+            while !self.awaited.is_empty() {
+                let now = Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                let results = self.glyph_worker.receive(Some(deadline - now));
+                arrived |= self.accept(results);
+            }
+            waited += started.elapsed().as_secs_f64() * 1000.;
+            if !arrived {
+                break;
+            }
+        }
+        self.stats.glyph_ms += waited;
+    }
+
+    fn grow_atlas(&mut self) -> bool {
+        if !self.atlas.grow() {
+            return false;
+        }
+        self.atlas_texture = atlas_texture(self.atlas.packer.size, self.gles);
+        true
     }
 
     /// Lays out the scene into vertices and batches; commands entirely outside `area` are
     /// skipped.
-    fn build(&mut self, commands: &[Draw], width: u32, height: u32, area: Option<Rect>) {
+    fn build_once(&mut self, commands: &[Draw], width: u32, height: u32, area: Option<Rect>) {
         self.stats = RenderStats::new(Size::new(width, height));
+        self.atlas_full = false;
+        self.awaited.clear();
+        self.glyph_vertices.clear();
         // Captures can bind a single-sample FBO even when the actual TV window
         // is multisampled, so query the active target rather than assume.
         let mut samples = 0;
         unsafe { gl::GetIntegerv(gl::SAMPLES, &mut samples) };
         self.stats.multisample_samples = samples.max(0) as u32;
-        if samples > 1 {
-            self.stats.font_antialiasing = "multisample vector coverage";
-        }
         self.frame += 1;
         self.vertices.clear();
         self.batches.clear();
@@ -1295,9 +1438,27 @@ impl Renderer {
     /// are cleared and drawn; commands entirely outside them are skipped, and the rest of the
     /// back buffer keeps its earlier contents.
     pub fn render(&mut self, commands: &[Draw], width: u32, height: u32, damage: Option<[i32; 4]>) {
+        // Until the first frame is shown, wait for all its glyphs: no text pops in at launch.
+        let wait = if self.first_frame {
+            GLYPH_WAIT_FIRST
+        } else {
+            GLYPH_WAIT
+        };
+        self.render_waiting(commands, width, height, damage, wait);
+        self.first_frame = false;
+    }
+
+    fn render_waiting(
+        &mut self,
+        commands: &[Draw],
+        width: u32,
+        height: u32,
+        damage: Option<[i32; 4]>,
+        wait: std::time::Duration,
+    ) {
         let area = damage.map(|pixels| Self::damage_area(pixels, width, height));
         let started = Instant::now();
-        self.build(commands, width, height, area);
+        self.build(commands, width, height, area, Some(wait));
         let Viewport {
             x: vx,
             y: vy,
@@ -1333,6 +1494,25 @@ impl Renderer {
                 self.vertices.as_ptr().cast(),
                 gl::DYNAMIC_DRAW,
             );
+            if !self.glyph_vertices.is_empty() {
+                gl::BindBuffer(gl::ARRAY_BUFFER, self.glyph_buffer);
+                gl::BufferData(
+                    gl::ARRAY_BUFFER,
+                    (self.glyph_vertices.len() * size_of::<f32>()) as isize,
+                    self.glyph_vertices.as_ptr().cast(),
+                    gl::DYNAMIC_DRAW,
+                );
+                gl::UseProgram(self.glyph_program);
+                gl::Uniform1i(
+                    gl::GetUniformLocation(self.glyph_program, c"u_atlas".as_ptr()),
+                    0,
+                );
+                gl::Uniform1f(
+                    gl::GetUniformLocation(self.glyph_program, c"u_light_exponent".as_ptr()),
+                    LIGHT_TEXT_COVERAGE_EXPONENT,
+                );
+                gl::BindBuffer(gl::ARRAY_BUFFER, self.buffer);
+            }
             gl::UseProgram(self.program);
             // One drawable pixel in logical units: the paint shader's edge filter width.
             gl::Uniform1f(
@@ -1351,7 +1531,7 @@ impl Renderer {
                     // The same cheap alpha mask applies to shapes, textures,
                     // icons and text; the unmasked wallpaper remains beneath.
                     let fade = batch.fade.unwrap_or([0.; 4]);
-                    for program in [self.program, self.vector_program, self.text_program] {
+                    for program in [self.program, self.vector_program, self.glyph_program] {
                         gl::UseProgram(program);
                         gl::Uniform4f(
                             gl::GetUniformLocation(program, c"u_edge_fade".as_ptr()),
@@ -1425,27 +1605,32 @@ impl Renderer {
                             continue;
                         };
                         self.draw_mesh(
-                            self.vector_program,
                             mesh,
                             [rect.w / mesh.width, rect.h / mesh.height, rect.x, rect.y],
                             *tint,
-                            0.,
                         );
                         paint_bound = false;
                     }
-                    BatchKind::Text { key, origin, tint } => {
-                        let Some(mesh) = self.text_runs.get(key).and_then(|run| run.mesh.as_ref())
-                        else {
-                            continue;
-                        };
-                        let size = f32::from_bits(key.layout[0]) * vh as f32 / 1080.;
-                        self.draw_mesh(
-                            self.text_program,
-                            mesh,
-                            [1., 1., origin[0], origin[1]],
-                            *tint,
-                            embolden(size, self.text_embolden),
-                        );
+                    BatchKind::Glyphs { start, count } => {
+                        gl::UseProgram(self.glyph_program);
+                        gl::BindBuffer(gl::ARRAY_BUFFER, self.glyph_buffer);
+                        gl::DisableVertexAttribArray(3);
+                        gl::DisableVertexAttribArray(4);
+                        let mut offset = 0;
+                        for (index, size) in [2, 2, 4].into_iter().enumerate() {
+                            gl::EnableVertexAttribArray(index as u32);
+                            gl::VertexAttribPointer(
+                                index as u32,
+                                size,
+                                gl::FLOAT,
+                                gl::FALSE,
+                                32,
+                                (offset * size_of::<f32>()) as *const _,
+                            );
+                            offset += size as usize;
+                        }
+                        gl::BindTexture(gl::TEXTURE_2D, self.atlas_texture.id);
+                        gl::DrawArrays(gl::TRIANGLES, *start as i32, *count as i32);
                         paint_bound = false;
                     }
                 }
@@ -1479,7 +1664,7 @@ impl Renderer {
                 }
             }
         }
-        self.trim_text_geometry();
+        self.trim_text();
         self.stats.vector_meshes = self.vectors.values().flatten().count();
         self.stats.vector_bytes = self.vectors.values().flatten().map(|mesh| mesh.bytes).sum();
         self.stats.artwork_bytes = bytes + self.stats.vector_bytes;
@@ -1487,36 +1672,21 @@ impl Renderer {
         self.stats.cpu_submission_ms = started.elapsed().as_secs_f64() * 1000.;
     }
 
-    fn draw_mesh(
-        &self,
-        program: GLuint,
-        mesh: &vector::Mesh,
-        transform: [f32; 4],
-        tint: Color,
-        embolden: f32,
-    ) {
+    /// Draws a vector logo or icon: the exact outline under MSAA, else with its analytic
+    /// one-pixel boundary ramp.
+    fn draw_mesh(&self, mesh: &vector::Mesh, transform: [f32; 4], tint: Color) {
         let viewport = self.stats.viewport;
+        let program = self.vector_program;
         unsafe {
             gl::UseProgram(program);
-            if program == self.text_program {
-                let analytic = self.stats.multisample_samples <= 1;
-                gl::Uniform1f(
-                    gl::GetUniformLocation(program, c"u_fringe".as_ptr()),
-                    if analytic { ANALYTIC_FRINGE } else { 0. },
-                );
-                gl::Uniform1f(
-                    gl::GetUniformLocation(program, c"u_coverage_exponent".as_ptr()),
-                    if analytic {
-                        coverage_exponent(tint)
-                    } else {
-                        1.
-                    },
-                );
-                gl::Uniform1f(
-                    gl::GetUniformLocation(program, c"u_embolden".as_ptr()),
-                    embolden,
-                );
-            }
+            gl::Uniform1f(
+                gl::GetUniformLocation(program, c"u_fringe".as_ptr()),
+                if self.stats.multisample_samples > 1 {
+                    0.
+                } else {
+                    1.
+                },
+            );
             gl::BindBuffer(gl::ARRAY_BUFFER, mesh.buffer);
             gl::DisableVertexAttribArray(4);
             let mut offset = 0;
@@ -1613,7 +1783,8 @@ impl Renderer {
                 return Err("Screenshot framebuffer is incomplete".into());
             }
         }
-        self.render(commands, size.width, size.height, None);
+        // A capture waits for every glyph, as the first frame does.
+        self.render_waiting(commands, size.width, size.height, None, GLYPH_WAIT_FIRST);
         let stats = self.stats.clone();
         let result = self.screenshot(path, size.width, size.height);
         unsafe {
@@ -1736,13 +1907,61 @@ impl Drop for Renderer {
     fn drop(&mut self) {
         unsafe {
             gl::DeleteBuffers(1, &self.buffer);
+            gl::DeleteBuffers(1, &self.glyph_buffer);
             gl::DeleteProgram(self.program);
             gl::DeleteProgram(self.vector_program);
-            gl::DeleteProgram(self.text_program);
+            gl::DeleteProgram(self.glyph_program);
             if self.vao != 0 {
                 gl::DeleteVertexArrays(1, &self.vao);
             }
         }
+    }
+}
+
+fn atlas_format(gles: bool) -> GLenum {
+    if gles { LUMINANCE } else { gl::RED }
+}
+
+/// The glyph atlas: one coverage channel, cleared, linearly filtered for scaled stand-ins.
+fn atlas_texture(size: u32, gles: bool) -> Texture {
+    let mut id = 0;
+    let zeros = vec![0u8; size as usize * size as usize];
+    unsafe {
+        gl::GenTextures(1, &mut id);
+        gl::BindTexture(gl::TEXTURE_2D, id);
+        gl::TexImage2D(
+            gl::TEXTURE_2D,
+            0,
+            if gles { LUMINANCE } else { gl::R8 } as i32,
+            size as i32,
+            size as i32,
+            0,
+            atlas_format(gles),
+            gl::UNSIGNED_BYTE,
+            zeros.as_ptr().cast(),
+        );
+        for (name, value) in [
+            (gl::TEXTURE_MIN_FILTER, gl::LINEAR),
+            (gl::TEXTURE_MAG_FILTER, gl::LINEAR),
+            (gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE),
+            (gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE),
+        ] {
+            gl::TexParameteri(gl::TEXTURE_2D, name, value as i32);
+        }
+    }
+    Texture {
+        id,
+        width: size,
+        height: size,
+        frame: 0,
+    }
+}
+
+fn same_clip(a: Option<Rect>, b: Option<Rect>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h,
+        (None, None) => true,
+        _ => false,
     }
 }
 

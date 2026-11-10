@@ -2767,7 +2767,6 @@ fn settings_path(state: &State) -> Vec<&str> {
         Some(Subpage::Inputs) => vec![language.t("inputs")],
         Some(Subpage::Clock) => vec![language.t("clock")],
         Some(Subpage::Language) => vec![language.t("language")],
-        Some(Subpage::TextRendering) => vec![language.t("textRendering")],
         Some(Subpage::HiddenApps) => vec![language.t("hiddenApps")],
         Some(Subpage::Screensaver) => vec![language.t("screensaver")],
         Some(Subpage::Appearance) => vec![language.t("appearance")],
@@ -3085,16 +3084,6 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                     .collect();
                 return screensaver_choices(out, state, assets, labels, start);
             }
-            Subpage::TextRendering => crate::text_rendering::TextRendering::ALL
-                .into_iter()
-                .map(|mode| {
-                    (
-                        language.t(mode.label_key()),
-                        Some(language.t("textRenderingRestart")),
-                        mode == state.preferences.text_rendering,
-                    )
-                })
-                .collect(),
         };
         for (index, (title, description, selected)) in options.into_iter().enumerate() {
             let h = if description.is_some() {
@@ -3364,13 +3353,6 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                     "refresh",
                     None,
                     false,
-                ),
-                (
-                    7,
-                    language.t("textRendering"),
-                    "type",
-                    Some(language.t(state.preferences.text_rendering.label_key())),
-                    true,
                 ),
                 (5, language.t("quitApp"), "power", None, false),
             ]

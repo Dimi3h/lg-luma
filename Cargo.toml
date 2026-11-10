@@ -38,8 +38,11 @@ lto = "thin"
 strip = true
 codegen-units = 1
 
-# Keep on-demand glyph geometry responsive in desktop debug previews.
+# Keep on-demand glyph rasterisation responsive in desktop debug previews.
 [profile.dev.package.lyon_tessellation]
+opt-level = 3
+
+[profile.dev.package.luma-vector-geometry]
 opt-level = 3
 
 [profile.dev.package.ttf-parser]

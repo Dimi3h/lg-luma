@@ -3,7 +3,6 @@ use crate::model::{
     App, BACKGROUNDS, CUSTOM_TILE_PREFIX, CustomTile, INPUT_NAME_LIMIT, InputMode, Inventory,
     Preferences, clean_input_name,
 };
-use crate::text_rendering::TextRendering;
 use crate::weather::{self, Unit};
 use serde::Serialize;
 use std::time::{Duration, Instant};
@@ -188,7 +187,6 @@ pub enum Subpage {
     WeatherLocation,
     Temperature,
     Language,
-    TextRendering,
     /// Settings › General › Hidden apps: hidden apps as rows, OK shows one again.
     HiddenApps,
     /// Settings › General › Screensaver: Off or the idle minutes.
@@ -1327,7 +1325,6 @@ impl State {
                 Target::WeatherTemperature
             }
             Some(Subpage::Language) => Target::Setting(4),
-            Some(Subpage::TextRendering) => Target::Setting(7),
             Some(Subpage::HiddenApps) => Target::Setting(11),
             Some(Subpage::Screensaver) => Target::Setting(12),
             Some(Subpage::Appearance) => Target::Setting(14),
@@ -1436,12 +1433,7 @@ impl State {
             }
             if let Target::Choice(index) = self.focus {
                 let count = match self.subpage {
-                    Some(
-                        Subpage::ClockFormat
-                        | Subpage::TimeFormat
-                        | Subpage::Temperature
-                        | Subpage::TextRendering,
-                    ) => 2,
+                    Some(Subpage::ClockFormat | Subpage::TimeFormat | Subpage::Temperature) => 2,
                     Some(Subpage::Language) => Language::ALL.len(),
                     // Without hidden apps the empty state holds focus.
                     Some(Subpage::HiddenApps) => self.hidden_apps().len().max(1),
@@ -1535,7 +1527,7 @@ impl State {
             }
             if matches!(
                 self.focus,
-                Target::Setting(1 | 4 | 7 | 11 | 12 | 14 | 15)
+                Target::Setting(1 | 4 | 11 | 12 | 14 | 15)
                     | Target::Widget(_)
                     | Target::InputMode(_)
                     | Target::WeatherLocation
@@ -2567,15 +2559,6 @@ impl State {
                         return vec![];
                     }
                     5 => return vec![Effect::Quit],
-                    7 => {
-                        self.subpage = Some(Subpage::TextRendering);
-                        self.focus = Target::Choice(self.preferences.text_rendering.index());
-                        self.scroll = 0.;
-                        if !self.preferences.reduced_motion {
-                            self.panel_started = Some(Instant::now());
-                        }
-                        return vec![];
-                    }
                     _ => return vec![Effect::Reload],
                 }
                 return vec![Effect::Save];
@@ -2711,13 +2694,6 @@ impl State {
                                 .format("appRestored", &[("app", &title)]),
                         );
                         return vec![Effect::Save];
-                    }
-                    Some(Subpage::TextRendering) => {
-                        let mode = TextRendering::ALL[index.min(TextRendering::ALL.len() - 1)];
-                        if mode != self.preferences.text_rendering {
-                            self.preferences.text_rendering = mode;
-                            self.notify(self.preferences.language.t("textRenderingRestart"));
-                        }
                     }
                     Some(
                         Subpage::WeatherLocation
