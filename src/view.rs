@@ -1021,11 +1021,14 @@ fn screensaver(state: &State, assets: &Assets, now: OffsetDateTime, seed: u64, s
     let time = language.clock(now, state.preferences.uses_24_hour(), false);
     let date = state.preferences.date_format.format_inline(language, now);
     let block = screensaver_block(assets, &time, &date, seed, step);
+    // Around each jump the block fades out and in again; only its opacity changes.
+    let alpha = state.screensaver_alpha();
+    let faded = |color: Color| [color[0], color[1], color[2], color[3] * alpha];
     out.text(
         time,
         Rect::new(block.x, block.y, block.w, SCREENSAVER_TIME_H),
         SCREENSAVER_TIME,
-        SCREENSAVER_TIME_COLOR,
+        faded(SCREENSAVER_TIME_COLOR),
         false,
     );
     out.text(
@@ -1037,7 +1040,7 @@ fn screensaver(state: &State, assets: &Assets, now: OffsetDateTime, seed: u64, s
             SCREENSAVER_DATE_H,
         ),
         CALLOUT,
-        SCREENSAVER_DATE_COLOR,
+        faded(SCREENSAVER_DATE_COLOR),
         false,
     );
     out

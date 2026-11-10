@@ -560,8 +560,11 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   beneath it in Callout in a dimmer grey (#7c7c7c), in the clock and date formats from Settings
   (24-hour and a lowercase date in Dutch). Nothing else is drawn. Against burn-in the block jumps
   every 5 s (`SCREENSAVER_STEP`) to a new pseudo-random place that keeps it whole inside the
-  80 × 60 safe area; there is no sliding or fading, and frames are drawn only at a jump or when
-  the minute changes. It replaces the whole scene, so nothing behind it is reachable; any key or
+  80 × 60 safe area. Around each jump it fades out at the old place and in at the new one
+  (`SCREENSAVER_FADE`, 350 ms each, smoothstep ease-in-out): only its opacity changes, never
+  above the resting grey, and it never slides. Frames are drawn only during those two fades and
+  when the minute changes; in between the loop sleeps until the next fade-out is due. Under
+  Reduced motion the clock just jumps. It replaces the whole scene, so nothing behind it is reachable; any key or
   pointer movement only ends it. Hidden or unfocused, the timer does not run, and returning to
   Luma restarts it. The former Screensaver clock toggle and the wallpaper slideshow are gone.
   Scripts can start it with the `screensaver` action.

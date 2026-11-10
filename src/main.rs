@@ -2079,6 +2079,10 @@ fn run() -> Result<(), String> {
         } else {
             100
         };
+        // The screensaver clock's next fade-out starts on time, not at the next idle wake.
+        let timeout = state
+            .screensaver_wake()
+            .map_or(timeout, |wait| timeout.min(wait.as_millis() as u32));
         queued_event = sdl_events::wait(&mut events, timeout, webos);
     }
     if text_active {
