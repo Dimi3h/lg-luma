@@ -24,7 +24,7 @@ Restyle the launcher after current Apple tvOS (tvOS 26/27, Liquid Glass) and tur
 - **Typography and corners**: Inter Display (from the bundled Inter's optical-size axis) for large titles, lighter tracking, the date in sentence case, and continuous (superellipse) corners. Resting cards have no rim; it appears with the lift.
 - **Layout and type** follow the tvOS guidelines: 80 × 60 safe area, 260 × 156 cards with 40/76 spacing, and the tvOS text styles from Title 2 down to Caption 2, with nothing smaller.
 - **Liquid Glass-style panels** (a lighter, more saturated blurred background, a soft top highlight and a thin bright top edge) for the top-bar icons, the settings sidebar and rows, context menus, alerts, keyboard and notices. Bundled backgrounds and new uploads get a small blurred copy for this; older uploads use a translucent fallback.
-- **Settings**: a glass sidebar with a title, rounded rows, and the section and subpage path as a title line above the content.
+- **Settings**: a glass sidebar with a title, rounded rows, and the section and subpage path as a title line above the content. Long lists fade out above the bottom safe-area line and scroll so the focused and last rows stay inside it.
 - **Overlays**: the options popup becomes a context menu beside the lifted card, deletion a centred alert with side-by-side buttons, notices a banner that slides down at the top, and Recent apps a single row of cards with the focused one titled.
 
 - **Dutch clock and date**: Dutch defaults to a 24-hour clock until a format is chosen in Settings (an explicit choice is kept), and the date after the clock is lowercase as in Dutch ("maandag 9 november").

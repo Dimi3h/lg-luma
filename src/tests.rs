@@ -2716,7 +2716,7 @@ fn shortcut_list_scroll_and_pointer_focus_preserve_control_positions() {
 
 #[test]
 fn settings_lists_keep_bottom_padding_for_remote_and_wheel_scrolling() {
-    use crate::state::{SETTINGS_LIST_BOTTOM_PADDING, Subpage};
+    use crate::state::{SETTINGS_LIST_FADE, SETTINGS_SAFE_BOTTOM, Subpage};
     for backgrounds in [false, true] {
         let mut state = ready();
         state.preferences.reduced_motion = true;
@@ -2746,8 +2746,7 @@ fn settings_lists_keep_bottom_padding_for_remote_and_wheel_scrolling() {
         };
         state.focus = last.clone();
         state.reveal_focus(&controls(&state));
-        let bottom =
-            state.content_viewport().y + state.content_viewport().h - SETTINGS_LIST_BOTTOM_PADDING;
+        let bottom = SETTINGS_SAFE_BOTTOM - SETTINGS_LIST_FADE;
         let rect = controls(&state)
             .into_iter()
             .find(|c| c.target == last)
@@ -2778,7 +2777,7 @@ fn language_list_scrolls_under_fixed_ui_and_fades_beneath_the_title_line() {
     state.subpage = Some(Subpage::Language);
     state.scroll = 180.;
     let rendered = scene(&state);
-    // No clipping or side fades; only a top fade so rows disappear beneath the title line.
+    // No clipping or side fades: rows fade beneath the title line and above the bottom safe line.
     assert!(
         !rendered
             .draw
@@ -2787,7 +2786,8 @@ fn language_list_scrolls_under_fixed_ui_and_fades_beneath_the_title_line() {
     );
     assert!(rendered.draw.iter().any(|draw| matches!(
         draw,
-        Draw::EdgeFade(Some(fade)) if fade[1] <= view::SETTINGS_TOP && fade[2] >= 1080.
+        Draw::EdgeFade(Some(fade)) if fade[1] <= view::SETTINGS_TOP
+            && fade[3] == crate::state::SETTINGS_SAFE_BOTTOM
     )));
     let first = rendered
         .controls
@@ -4045,4 +4045,49 @@ fn the_top_bar_keeps_settings_without_the_app_store_and_icons_are_clickable() {
     state.pointer_focus(Target::SettingsIcon);
     state.activate();
     assert_eq!(state.page, Page::Settings);
+}
+
+#[test]
+fn every_settings_list_keeps_its_last_row_inside_the_safe_area_and_fades_at_the_bottom() {
+    use crate::renderer::Draw;
+    use crate::state::{SETTINGS_LIST_FADE, SETTINGS_SAFE_BOTTOM};
+    let mut state = ready();
+    state.preferences.reduced_motion = true;
+    state.open(Page::Settings);
+    state.activate();
+    // General is the longest list: walk down to its last row.
+    let mut previous = None;
+    while previous.as_ref() != Some(&state.focus) {
+        previous = Some(state.focus.clone());
+        state.direction(Direction::Down, &controls(&state));
+        let rect = controls(&state)
+            .into_iter()
+            .find(|c| c.target == state.focus)
+            .unwrap()
+            .rect;
+        assert!(
+            rect.y + rect.h <= SETTINGS_SAFE_BOTTOM - SETTINGS_LIST_FADE + 0.01,
+            "{:?} ends at {}",
+            state.focus,
+            rect.y + rect.h
+        );
+    }
+    assert!(state.scroll > 0., "General is longer than the screen");
+    let last = controls(&state)
+        .into_iter()
+        .filter(|c| matches!(c.target, Target::Setting(_)))
+        .map(|c| c.rect.y + c.rect.h)
+        .fold(0., f32::max);
+    assert!(last <= SETTINGS_SAFE_BOTTOM);
+    // Wheel scrolling stops with the last row above the fade, too.
+    state.wheel_scroll(&controls(&state), Some((1000., 600.)), 0, -1000);
+    let last = controls(&state)
+        .into_iter()
+        .filter(|c| matches!(c.target, Target::Setting(_)))
+        .map(|c| c.rect.y + c.rect.h)
+        .fold(0., f32::max);
+    assert!((last - (SETTINGS_SAFE_BOTTOM - SETTINGS_LIST_FADE)).abs() < 0.01);
+    // Rows below fade out before the safe-area line instead of being cut at the screen edge.
+    assert!(scene(&state).draw.iter().any(|draw| matches!(draw,
+        Draw::EdgeFade(Some(fade)) if fade[3] == SETTINGS_SAFE_BOTTOM && fade[2] < fade[3])));
 }

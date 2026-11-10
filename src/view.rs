@@ -2806,12 +2806,13 @@ fn location_settings(out: &mut Scene, state: &State, assets: &Assets) {
 }
 
 fn settings(out: &mut Scene, state: &State, assets: &Assets) {
-    // Lists scroll beneath the title line and fade out just above the first row.
+    // Lists scroll beneath the title line and fade out just above the first row, and fade out
+    // again towards the bottom safe-area line, so no row is cut at the screen edge.
     out.draw.push(Draw::EdgeFade(Some([
         SETTINGS_TOP - 36.,
         SETTINGS_TOP - 10.,
-        1090.,
-        1100.,
+        crate::state::SETTINGS_SAFE_BOTTOM - crate::state::SETTINGS_LIST_FADE,
+        crate::state::SETTINGS_SAFE_BOTTOM,
     ])));
     let start = out.draw.len();
     settings_content(out, state, assets);

@@ -11,8 +11,10 @@ use std::time::{Duration, Instant};
 pub const WIDGETS_SECTION: usize = 2;
 pub const SYSTEM_SECTION: usize = 3;
 pub const SECTION_COUNT: usize = 4;
-pub const SETTINGS_BOTTOM_PADDING: f32 = 64.;
-pub const SETTINGS_LIST_BOTTOM_PADDING: f32 = 48.;
+/// Every Settings list ends at the bottom safe-area line and fades out over this distance above
+/// it; focused rows (and the last row, scrolled fully in) stay above the fade.
+pub const SETTINGS_SAFE_BOTTOM: f32 = 1080. - 60.;
+pub const SETTINGS_LIST_FADE: f32 = 52.;
 /// The main screen's grid: six tvOS columns.
 pub const APPS_COLUMNS: usize = 6;
 /// Automatic inventory retries before the error shows: with the 6.5 s Luna timeout about 50 s.
@@ -919,20 +921,15 @@ impl State {
 
     fn scroll_bottom(&self) -> f32 {
         let viewport = self.content_viewport();
-        viewport.y + viewport.h
-            - if self.page == Page::Settings {
-                if self.subpage == Some(Subpage::Language)
-                    || (self.section == 1 && self.subpage.is_none())
-                {
-                    SETTINGS_LIST_BOTTOM_PADDING
-                } else {
-                    SETTINGS_BOTTOM_PADDING
-                }
-            } else {
-                // The third row ends at the bottom margin; the last row's focused caption may
-                // reach into that margin, as on tvOS.
-                crate::view::SCREEN_MARGIN
-            }
+        if self.page == Page::Settings {
+            // The same for every page and subpage, so new rows are covered as well.
+            return SETTINGS_SAFE_BOTTOM - SETTINGS_LIST_FADE;
+        }
+        viewport.y + viewport.h - {
+            // The third row ends at the bottom margin; the last row's focused caption may
+            // reach into that margin, as on tvOS.
+            crate::view::SCREEN_MARGIN
+        }
     }
 
     pub fn backgrounds_viewport(&self) -> Rect {

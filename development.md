@@ -150,9 +150,11 @@ in Widgets. Input visibility/naming choices return to Inputs, then its Widgets r
 **Widgets → Inputs → Show widget** (`show_inputs`, default Off) adds the visible inputs as a row of
 5:3 cards under the top shelf, above the apps. Off, inputs stay available on the TV remote and
 in the Inputs subpage, which keeps per-input visibility and names.
-Existing greeting, weather, shortcut and input preferences are unchanged. Scrollable Settings lists
-reserve 64 logical pixels below their last item for both remote focus and wheel scrolling,
-with a tighter 48-pixel spacing for Languages and Backgrounds.
+Existing greeting, weather, shortcut and input preferences are unchanged. Every Settings list
+(pages, subpages and the Background gallery alike) fades out over 52 px above the bottom
+safe-area line (y 1020) instead of being cut at the screen edge, and remote focus and wheel
+scrolling keep the focused row, and the last row when scrolled to the end, above that fade. The
+bound lives in one place (`SETTINGS_SAFE_BOTTOM`/`SETTINGS_LIST_FADE`), so new rows need no work.
 **Widgets → Greeting → Show widget** is the first row and hides only the greeting text, preserving the saved name,
 date and weather. Weather moves up beneath the clock line when the greeting is hidden, and the
 grid follows it. It defaults to enabled for existing and new installations.
