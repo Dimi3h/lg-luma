@@ -1,5 +1,12 @@
 # lg-luma
 
+## 2.18.2
+
+### Patch Changes
+
+- 74a5b5e: Moving apps is now the same for every app: the grid holds all apps in your own order, saved once on the first run from your former favourites (first, in their order) followed by every other app by title, with newly installed apps added at the end. Hold OK (or press the menu key) on any app and choose **Move**, the new first item of its menu: the arrows move it one slot at a time (Up/Down by a whole row) and OK or Back keeps the order. With the Magic Remote, hold the pointer button on an app to pick it up, drag it onto another app's place and let go; releasing without moving opens its options. The favourites block, pinning and the Favorite badges setting are gone; saved files with them still load.
+- 778d4b5: The clock screensaver no longer jumps abruptly: every 5 seconds the clock fades out at its old place and in at the new one (350 ms each, eased; just opacity, no sliding, never brighter than its resting grey). Under Reduced motion it still jumps instantly. The background stays pure black, and frames are drawn only during the fades and at minute changes.
+
 ## 2.18.1
 
 ### Patch Changes
