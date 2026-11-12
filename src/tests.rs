@@ -3739,8 +3739,10 @@ fn move_mode_draws_no_jiggle_or_arrows_and_never_animates() {
         .find(|c| c.target == Target::App("netflix".into()))
         .unwrap()
         .rect;
+    // The rim is drawn on the focused card's static size step around its slot.
     assert!(frame.draw.iter().any(|draw| matches!(draw,
-        Draw::Rim(rect, _, width, ..) if *width > view::FOCUS_RIM && rect.x == netflix.x && rect.y == netflix.y)));
+        Draw::Rim(rect, _, width, ..) if *width > view::FOCUS_RIM
+            && rect.x <= netflix.x && rect.x > netflix.x - 8. && rect.y <= netflix.y && rect.y > netflix.y - 8.)));
     for control in &before {
         if let Some(other) = frame.controls.iter().find(|c| c.target == control.target) {
             assert_eq!(
@@ -3769,6 +3771,9 @@ fn the_grid_stays_unchanged_until_move_is_chosen() {
     state.back();
     assert_eq!(card_faces(&state), faces);
     // A pointer hold that has not moved yet changes nothing either; releasing opens the menu.
+    // (Pointing at YouTube focuses it, which gives it the focus size step.)
+    state.focus = Target::App("youtube.leanback.v4".into());
+    let faces = card_faces(&state);
     let rect = controls(&state)
         .into_iter()
         .find(|c| c.target == Target::App("youtube.leanback.v4".into()))
@@ -4061,24 +4066,39 @@ fn focused_card_only_brightens_in_place_and_focus_moves_instantly() {
             .rect
     };
     use crate::state::Rect;
-    let same = |a: Rect, b: Rect| a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h;
+    // The focused card is drawn one static size step larger around its centre (style C).
+    let grown = |rect: Rect| {
+        let (dx, dy) = (
+            rect.w * view::FOCUS_GROW / 2.,
+            rect.h * view::FOCUS_GROW / 2.,
+        );
+        Rect::new(rect.x - dx, rect.y - dy, rect.w + 2. * dx, rect.h + 2. * dy)
+    };
+    let same = |a: Rect, b: Rect| {
+        (a.x - b.x).abs() < 0.01
+            && (a.y - b.y).abs() < 0.01
+            && (a.w - b.w).abs() < 0.01
+            && (a.h - b.h).abs() < 0.01
+    };
     let highlight = |state: &State, rect: Rect| {
         let drawn = scene(state).draw;
         let rim = drawn.iter().any(|draw| {
-            matches!(draw, Draw::Rim(r, _, width, ..) if same(*r, rect) && *width == view::FOCUS_RIM)
+            matches!(draw, Draw::Rim(r, _, width, ..)
+                if same(*r, grown(rect)) && *width == view::FOCUS_RIM_OUTER)
         });
         let overlay = drawn.iter().any(|draw| {
             matches!(draw, Draw::Shape(r, _, _, color)
-                if same(*r, rect) && *color == [1., 1., 1., view::FOCUS_OVERLAY])
+                if same(*r, grown(rect)) && *color == [1., 1., 1., 0.12])
         });
         (rim, overlay)
     };
     let first = card(&state, &netflix);
     assert_eq!(highlight(&state, first), (true, true));
-    // Nothing is drawn larger than the card: no lift or scale.
+    // Nothing is drawn larger than the size step: no lift or animation.
     assert!(!scene(&state).draw.iter().any(|draw| matches!(draw,
-        Draw::Rim(r, ..) if r.w > first.w + 0.01 && (r.center().0 - first.center().0).abs() < 1.)));
-    // Moving focus highlights the next card in the very next frame and clears the old one.
+        Draw::Rim(r, ..) if r.w > grown(first).w + 0.01 && (r.center().0 - first.center().0).abs() < 1.)));
+    // Moving focus highlights the next card in the very next frame and clears the old one;
+    // hit regions never change.
     let all = controls(&state);
     state.direction(Direction::Right, &all);
     state.sync_motion();
@@ -4088,6 +4108,7 @@ fn focused_card_only_brightens_in_place_and_focus_moves_instantly() {
     assert_eq!(state.focus_level(&netflix), 0.);
     assert_eq!(highlight(&state, card(&state, &next)), (true, true));
     assert_eq!(highlight(&state, first), (false, false));
+    assert!(same(card(&state, &netflix), first));
 }
 
 #[test]
@@ -4648,4 +4669,83 @@ fn removed_settings_still_load_from_old_preference_files_and_their_rows_are_gone
         })
         .collect();
     assert_eq!(rows, [0, 1, 4, 11, 14, 12]);
+}
+
+#[test]
+fn focused_cards_grow_within_the_screen_margin_with_a_dual_tone_rim_in_both_appearances() {
+    use crate::renderer::Draw;
+    use crate::state::Rect;
+    assert_eq!(view::FOCUS_STYLE, view::FocusStyle::C);
+    for light in [false, true] {
+        let mut state = ready();
+        if light {
+            state.preferences.appearance = crate::model::Appearance::Light;
+        }
+        state.open(Page::Home);
+        state.sync_motion();
+        // Every card of the three visible rows, edge columns included.
+        let cards: Vec<_> = controls(&state)
+            .into_iter()
+            .filter(|c| matches!(c.target, Target::App(_)))
+            .take(3 * crate::state::APPS_COLUMNS)
+            .collect();
+        assert_eq!(cards.len(), 18);
+        for card in cards {
+            state.focus = card.target.clone();
+            state.sync_motion();
+            let frame = scene(&state);
+            // The hit region is the resting card's; nothing moved.
+            let hit = frame
+                .controls
+                .iter()
+                .find(|c| c.target == card.target)
+                .unwrap()
+                .rect;
+            assert_eq!(
+                (hit.x, hit.y, hit.w, hit.h),
+                (card.rect.x, card.rect.y, card.rect.w, card.rect.h)
+            );
+            let outer = frame
+                .draw
+                .iter()
+                .find_map(|draw| match draw {
+                    Draw::Rim(r, _, width, top, _)
+                        if *width == view::FOCUS_RIM_OUTER
+                            && top[0] == 0.
+                            && (r.w - card.rect.w * (1. + view::FOCUS_GROW)).abs() < 0.01 =>
+                    {
+                        Some(*r)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("no dual-tone rim on {:?}", card.target));
+            // The near-white inner rim sits just inside the dark line, also in Light appearance.
+            assert!(frame.draw.iter().any(|draw| matches!(draw,
+                Draw::Rim(r, _, width, top, _) if *width == view::FOCUS_RIM_INNER
+                    && top[0] == 1. && (r.x - outer.x - view::FOCUS_RIM_OUTER).abs() < 0.01)));
+            let m = view::SCREEN_MARGIN;
+            let inside = |r: Rect| {
+                r.x >= m - 0.01 && r.x + r.w <= 1920. - m + 0.01 && r.y + r.h <= 1080. - m + 0.01
+            };
+            assert!(inside(outer), "{:?} grows to {outer:?}", card.target);
+            // The grown card still covers its resting card (it never moves away from it).
+            assert!(outer.x <= hit.x && outer.x + outer.w >= hit.x + hit.w);
+            assert!(outer.y <= hit.y + 0.01 && outer.y + outer.h >= hit.y + hit.h - 0.01);
+            // The caption stays inside the screen margin horizontally.
+            let caption = frame
+                .draw
+                .iter()
+                .find_map(|draw| match draw {
+                    Draw::Text(_, r, ..) if r.y > hit.y + hit.h && r.y < hit.y + hit.h + 40. => {
+                        Some(*r)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert!(
+                caption.x >= m && caption.x + caption.w <= 1920. - m,
+                "{caption:?}"
+            );
+        }
+    }
 }

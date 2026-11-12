@@ -468,9 +468,15 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   smallest text anywhere).
 - **Focus** is static on app and wallpaper cards, everywhere in Settings and in every overlay
   (the context menu, alerts, the keyboard, Recents): it changes in the
-  first frame after the key, with no lift, scale, spring, tilt or fade on the item itself. The
-  focused card is a few percent brighter (a 7% white overlay) with a light 2.5 px rim, and its
-  title appears beneath it; every card keeps the same small resting shadow. In Settings the
+  first frame after the key, with no lift, spring, tilt or fade on the item itself. A focused
+  app or wallpaper card (focus style C, `view::FOCUS_STYLE`) is 12% brighter, drawn one static 5%
+  size step larger around its centre with a deep drop shadow, and outlined by a dual-tone rim: a
+  3 px near-white rim inside a 1.5 px line of 65% black, the same in Dark and Light appearance,
+  so one of the two contrasts with any card colour and any wallpaper. The step never animates,
+  never moves the hit region, and does not change while a card is pressed; a grown card that
+  would cross the 64 px screen margin (the third row's bottom edge) is shifted back inside it.
+  Its title appears beneath it; resting cards keep the same small resting shadow.
+  `LUMA_FOCUS_VARIANT=Current|A|B|C` renders the earlier variants for comparison. In Settings the
   focused sidebar entry, row, choice, button or key turns opaque white with dark labels and its
   shadow at once, at its own rectangle (`Scene::lift` is 0 there and in overlays), and holding OK
   keeps that look (the release acts in the same frame). A focused list row is drawn above its
