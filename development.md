@@ -590,6 +590,13 @@ are supported; runtime SVG parsing is not required. Source files are limited to 
 stay on the SDL thread and share the existing 48 MiB texture cache. Pending/unavailable icons do
 not block input, and failures are cached until inventory is refreshed.
 
+Installed artwork is fitted like a curated logo. The worker samples the card colour from the
+icon's opaque edges, then trims what differs from it by too little to be logo (transparent
+margins and flat padding in that colour) with a small margin, and the renderer scales the trimmed
+logo to one optical area on the 260 × 156 card (about 46 % × 51 % of it, capped at 66 % of the
+width and 60 % of the height). A small square icon and a wide wordmark therefore carry similar
+visual weight, on a card filled with their own edge colour, not a restyled one.
+
 Inventory also refreshes at startup and whenever the window becomes visible. Decoded icons are
 keyed by app ID, version and icon paths, so those refreshes keep them and retry only previous
 failures; an updated app has a new version and is read again. **Refresh apps** (or desktop F5)
@@ -605,7 +612,7 @@ require collecting artwork or changing JSON.
 
 ### Curated brand cards and the desktop demo
 
-`src/branding.rs` contains the exact app-ID allowlist for 38 curated brand and utility cards. Titles and
+`src/branding.rs` contains the exact app-ID allowlist for 42 curated brand and utility cards. Titles and
 partial ID matches do not select vector overrides. In particular, Amazon Alexa retains its own
 installed icon rather than receiving Prime Video branding. NOW / Now TV recognizes `now.tv`
 and `nowtv`; WOW, Sky Q and the separate Hong Kong Now TV service are not treated as aliases.
@@ -618,7 +625,7 @@ The aliases include developer fixtures and community webOS inventories, includin
 and the [UK streaming catalogue](https://github.com/tjeffree/webOS-Streaming-Aggregator/blob/main/frontend/src/services/appCatalog.js).
 These sources do not establish that every alias is available on every region/firmware combination.
 
-Every curated logo has an app in `demo_inventory()`, including all 27 expanded streaming/music
+Every curated logo has an app in `demo_inventory()`, including all 29 expanded streaming/music
 brands. Open them with `pnpm dev --script home` and scroll the grid. A unit check
 keeps the SVG directory, curated catalogue and demo inventory aligned. `pnpm test:brands` renders
 every card through the actual desktop renderer and writes `.build/brands-gallery.png` for visual

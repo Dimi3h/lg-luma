@@ -1214,10 +1214,9 @@ impl Renderer {
             return;
         };
         texture.frame = self.frame;
-        let scale =
-            (rect.w * 0.68 / texture.width as f32).min(rect.h * 0.68 / texture.height as f32);
-        let w = texture.width as f32 * scale;
-        let h = texture.height as f32 * scale;
+        // Trimmed TV artwork, all at the same optical size (`app_artwork::fit`).
+        let (w, h) =
+            crate::app_artwork::fit(texture.width as f32, texture.height as f32, rect.w, rect.h);
         let id = texture.id;
         self.gradient_quad(
             rect,

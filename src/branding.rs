@@ -30,6 +30,9 @@ impl Brand {
             "hbo-max" | "bbc-iplayer" | "crunchyroll" | "twitch" | "dazn" | "paramount-plus"
             | "channel-4" | "wavve" => (0.70, 64.),
             "now-tv" => (0.70, 52.),
+            // A square mark, sized to the optical weight of the wordmarks.
+            "stremio" => (0.40, 76.),
+            "vtm-go" => (0.62, 56.),
             "live-tv" | "browser" => (0.62, 68.),
             _ => (0.70, 56.),
         }
@@ -139,6 +142,8 @@ pub const BRANDS: &[Brand] = &[
     video("filmin", "Filmin", &["filmin"]),
     video("nrk-tv", "NRK TV", &["no.nrk.webos.smarttv"]),
     video("tv2-play", "TV 2 Play", &["tv2sumo"]),
+    video("stremio", "Stremio", &["io.strem.tv"]),
+    video("vtm-go", "VTM GO", &["be.vtmgo.app"]),
 ];
 
 pub fn for_app(id: &str) -> Option<&'static Brand> {

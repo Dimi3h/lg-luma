@@ -124,14 +124,87 @@ fn decode(bytes: &[u8]) -> Option<Artwork> {
     limits.max_image_height = Some(2048);
     limits.max_alloc = Some(32 * 1024 * 1024);
     reader.limits(limits);
-    let image = reader.decode().ok()?;
-    let pixels = thumbnail(image.into_rgba8());
-    let backdrop = backdrop(&pixels);
+    let image = reader.decode().ok()?.into_rgba8();
+    // The card colour comes from the icon's own edges; the logo is then trimmed out of its
+    // transparent or flat-coloured margins at full resolution, so every card can show its logo
+    // at the same optical size (`fit`) and as sharp as the source allows.
+    let preview = thumbnail(image.clone());
+    let backdrop = backdrop(&preview);
+    let pixels = match content_box(&preview, backdrop[0]) {
+        Some([x0, y0, x1, y1]) => {
+            let (fx, fy) = (
+                image.width() as f32 / preview.width() as f32,
+                image.height() as f32 / preview.height() as f32,
+            );
+            let pad = ((x1 - x0).max(y1 - y0) as f32 * 0.04).max(2.);
+            let left = ((x0 as f32 - pad) * fx).floor().max(0.) as u32;
+            let top = ((y0 as f32 - pad) * fy).floor().max(0.) as u32;
+            let right = (((x1 as f32 + pad) * fx).ceil() as u32).min(image.width());
+            let bottom = (((y1 as f32 + pad) * fy).ceil() as u32).min(image.height());
+            let cropped =
+                image::imageops::crop_imm(&image, left, top, right - left, bottom - top).to_image();
+            thumbnail(cropped)
+        }
+        None => preview,
+    };
     Some(Artwork {
         key: String::new(),
         pixels,
         backdrop,
     })
+}
+
+/// The logo's bounding box in `image`: pixels that are neither transparent nor (when opaque)
+/// close to the card colour `card` taken from the icon's edges. Rows and columns need a few such
+/// pixels so compression noise does not count. `None` when nothing stands out (a flat icon)
+/// or the logo already fills the icon.
+pub fn content_box(image: &RgbaImage, card: [u8; 3]) -> Option<[u32; 4]> {
+    let (width, height) = image.dimensions();
+    let differs = |pixel: &image::Rgba<u8>| {
+        if pixel[3] < 32 {
+            return false;
+        }
+        if pixel[3] < 200 {
+            return true;
+        }
+        let distance: u32 = (0..3)
+            .map(|channel| (pixel[channel] as i32 - card[channel] as i32).unsigned_abs())
+            .sum();
+        distance > 48
+    };
+    let mut rows = vec![0u32; height as usize];
+    let mut columns = vec![0u32; width as usize];
+    for (x, y, pixel) in image.enumerate_pixels() {
+        if differs(pixel) {
+            rows[y as usize] += 1;
+            columns[x as usize] += 1;
+        }
+    }
+    let span = |counts: &[u32]| {
+        let first = counts.iter().position(|count| *count >= 2)?;
+        let last = counts.iter().rposition(|count| *count >= 2)?;
+        Some((first as u32, last as u32 + 1))
+    };
+    let (x0, x1) = span(&columns)?;
+    let (y0, y1) = span(&rows)?;
+    let whole = x0 == 0 && y0 == 0 && x1 == width && y1 == height;
+    (!whole && x1 - x0 >= 4 && y1 - y0 >= 4).then_some([x0, y0, x1, y1])
+}
+
+/// The size to draw trimmed TV artwork of `width` × `height` on a `card_w` × `card_h` card:
+/// every logo gets the same optical area (a box about 46% × 51% of the card), capped at 66% of
+/// the card's width and 60% of its height, so a square mark and a long wordmark look equally
+/// large.
+pub fn fit(width: f32, height: f32, card_w: f32, card_h: f32) -> (f32, f32) {
+    if width <= 0. || height <= 0. {
+        return (0., 0.);
+    }
+    let area = (card_w * 0.46) * (card_h * 0.51);
+    let scale = (area / (width * height))
+        .sqrt()
+        .min(card_w * 0.66 / width)
+        .min(card_h * 0.6 / height);
+    (width * scale, height * scale)
 }
 
 /// Scales with premultiplied alpha, so the colour of transparent pixels (often black) never

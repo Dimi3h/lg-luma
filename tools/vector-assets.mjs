@@ -50,6 +50,7 @@ export async function generateVectorAssets() {
         'skyshowtime',
         'movistar-plus',
         'nrk-tv',
+        'stremio',
       ].includes(name),
       light_ink: expanded && !['live-tv', 'browser'].includes(name),
       trim: expanded,
