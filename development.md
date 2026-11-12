@@ -1051,8 +1051,7 @@ How it works, mirroring the Home manifest method:
 - `luma-helper screensaver enable` stages `/var/lib/luma-screensaver/app`: **copies** of the
   packaged `screensaver/index.html` and `inter-clock.ttf` (never links into the package) and a
   manifest with LG's id, title, version and icon but `"type": "web"`, `"main": "index.html"`,
-  `"defaultWindowType": "screenSaver"`, `"visible": false`, `"noSplashOnLaunch": true` and
-  `"handlesRelaunch": true`. It bind-mounts the stage over
+  `"defaultWindowType": "screenSaver"` and `"visible": false` (see the field set below). It bind-mounts the stage over
   `/usr/palm/applications/com.webos.app.screensaver`, then blocks and releases the app so SAM
   rereads the manifest, and waits until `getAppInfo` reports the web app. Any failure after the
   mount unmounts and makes SAM read LG's manifest again.
@@ -1074,9 +1073,16 @@ How it works, mirroring the Home manifest method:
   The time is 24-hour; the date follows `navigator.language` (Dutch lowercase, otherwise English).
 - webOS 5/6/24 are refused: their SAM cannot reread a system app's manifest (no
   `releaseBlockSystemApp` on 24), and the Flutter screensaver has no executable to replace.
-- The staged manifest is LG's own with only `type`, `main`, the screen-saver window fields and
-  `visible` changed; keys naming Flutter are dropped, and the files LG's fields name (icons) are
-  copied into the stage.
+- The staged manifest copies the field set of LG's own screen-saver web app on webOS 25,
+  `com.webos.app.videoads` (`type: web`, `main: index.html`, `icon: icon.png`, `visible: false`,
+  `defaultWindowType: screenSaver`, `noSplashOnLaunch`, `spinnerOnLaunch: false`,
+  `trustLevel: trusted`, `uiRevision: 2`, `accessibility`, `requiredPermissions: ["all"]`), with
+  the id, version, vendor and title of LG's screensaver. SAM's
+  `/etc/palm/schemas/sam/ApplicationDescription.schema` requires `id`, `main`, `icon`, `type` and
+  `title`; the first build had no `icon` field, which is the likely reason SAM dropped the app on
+  its rescan. The stage carries LG's `icon.png` (LG's manifest names none), or Luma's app icon.
+  Before SAM is touched, the helper validates the staged manifest (required fields, enumerated
+  values) and that `index.html` and the icon exist, and refuses otherwise.
 - After the release, SAM rescans and can briefly not know the app ("Invalid appId"); the helper
   keeps asking for 15 s instead of failing at the first refusal.
 - **Failure:** if SAM does not register the staged app, the helper unmounts and makes SAM read

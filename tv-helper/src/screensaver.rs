@@ -52,59 +52,74 @@ pub fn supported(release: &str) -> Result<()> {
     }
 }
 
-/// The staged manifest: LG's own manifest with only what makes it Luma's page changed (type,
-/// main file and the screen-saver window). Keys naming Flutter, which only LG's Flutter build
-/// reads, are dropped; every other field (icons, permissions, window options) stays as LG wrote
-/// it, and the files those fields name are copied into the stage.
+/// The staged manifest, modelled field for field on LG's own screen-saver web app on webOS 25
+/// (`com.webos.app.videoads`): a hidden, trusted web app in a `screenSaver` window. Only the
+/// identity (id, version, vendor, title) comes from LG's screensaver manifest. Every field is
+/// one SAM's `ApplicationDescription.schema` knows; it requires id, main, icon, type and title.
 pub fn manifest(stock: &Value) -> Value {
-    let mut manifest = match stock {
-        Value::Object(fields) => Value::Object(
-            fields
-                .iter()
-                .filter(|(key, _)| !key.to_ascii_lowercase().contains("flutter"))
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect(),
-        ),
-        _ => json!({}),
+    let text = |key: &str, fallback: &str| {
+        stock[key]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(fallback)
+            .to_owned()
     };
-    manifest["id"] = json!(ID);
-    manifest["type"] = json!("web");
-    manifest["main"] = json!("index.html");
-    manifest["defaultWindowType"] = json!("screenSaver");
-    manifest["noSplashOnLaunch"] = json!(true);
-    manifest["handlesRelaunch"] = json!(true);
-    manifest["disableBackHistoryAPI"] = json!(true);
-    if manifest.get("visible").is_none() {
-        manifest["visible"] = json!(false);
-    }
-    manifest
+    json!({
+        "id": ID,
+        "version": text("version", "1.0.0"),
+        "uiRevision": 2,
+        "vendor": text("vendor", "LGE"),
+        "type": "web",
+        "main": "index.html",
+        "title": text("title", "Screen Saver"),
+        "icon": ICON,
+        "visible": false,
+        "defaultWindowType": "screenSaver",
+        "noSplashOnLaunch": true,
+        "spinnerOnLaunch": false,
+        "trustLevel": "trusted",
+        "accessibility": {"supportsAudioGuidance": true},
+        "requiredPermissions": ["all"],
+    })
 }
 
-/// LG's manifest values that name a file inside its app directory (icons, images): plain
-/// relative paths with an extension and without `..`, which the stage needs copies of.
-fn referenced_files(stock: &Value) -> Vec<String> {
-    let Some(fields) = stock.as_object() else {
-        return vec![];
-    };
-    let mut files: Vec<String> = fields
-        .iter()
-        .filter(|(key, _)| !key.to_ascii_lowercase().contains("flutter") && *key != "main")
-        .filter_map(|(_, value)| value.as_str())
-        .filter(|name| {
-            let path = Path::new(name);
-            !name.is_empty()
-                && name.len() < 256
-                && path.is_relative()
-                && path.extension().is_some()
-                && path
-                    .components()
-                    .all(|c| matches!(c, std::path::Component::Normal(_)))
-        })
-        .map(str::to_owned)
-        .collect();
-    files.sort();
-    files.dedup();
-    files
+/// The stage's icon: LG's screensaver ships an `icon.png` (its manifest names none), otherwise
+/// Luma's own app icon is used. SAM requires the icon field; the file must exist.
+pub const ICON: &str = "icon.png";
+
+/// Checks the staged app as SAM's schema would before SAM is touched: the required fields
+/// present and non-empty, the enumerated values valid, and the main page and icon files there.
+pub fn validate(system: &impl System) -> Result<()> {
+    let manifest = system::json(system, format!("{STAGE}/appinfo.json"))?;
+    for key in ["id", "main", "icon", "type", "title"] {
+        if manifest[key].as_str().is_none_or(str::is_empty) {
+            return Err(format!("The staged manifest has no {key}; nothing changed"));
+        }
+    }
+    if manifest["id"] != ID
+        || manifest["type"] != "web"
+        || manifest["defaultWindowType"] != "screenSaver"
+        || !["default", "trusted", "netcast", "protected", "partner"]
+            .contains(&manifest["trustLevel"].as_str().unwrap_or("default"))
+    {
+        return Err("The staged manifest is not a screen-saver web app; nothing changed".into());
+    }
+    for key in ["main", "icon"] {
+        let name = manifest[key].as_str().unwrap_or("");
+        let path = Path::new(name);
+        if !path.is_relative()
+            || !path
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)))
+            || system::read(system, format!("{STAGE}/{name}"), LIMIT).is_ok_and(|b| b.is_empty())
+            || !system::exists(system, format!("{STAGE}/{name}"))
+        {
+            return Err(format!(
+                "The staged app has no usable {key} file ({name}); nothing changed"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Whether a manifest is already a staged one (enabling twice over a stale mount).
@@ -197,6 +212,24 @@ fn stage(system: &impl System, config: &Config) -> Result<()> {
         }
     } else if !system::exists(system, format!("{STAGE}/{}", PAGE[0])) {
         return Err("Luma's screensaver page is not installed".into());
+    }
+    // The icon SAM requires: LG's own while its directory is visible, else Luma's app icon.
+    let icon = format!("{STAGE}/{ICON}");
+    if !system::exists(system, &icon) {
+        let lg = (!mounted(system))
+            .then(|| system::read(system, format!("{TARGET}/{ICON}"), LIMIT).ok())
+            .flatten()
+            .filter(|bytes| !bytes.is_empty());
+        let bytes = match lg {
+            Some(bytes) => bytes,
+            None => system::read(
+                system,
+                Path::new(&config.app_dir).join("app-icon.png"),
+                LIMIT,
+            )
+            .map_err(|_| "No icon for the staged screensaver app".to_string())?,
+        };
+        update(system, &icon, &bytes, 0o644)?;
     }
     let manifest = manifest(&config.stock);
     update(
@@ -312,6 +345,7 @@ pub fn apply(system: &impl System, config: &Config) -> Result<()> {
         return Err(format!("Nothing changed. {RESTART}"));
     }
     stage(system, config)?;
+    validate(system)?;
     let result = (|| {
         if !mounted(system) {
             system::command(system, "/bin/mount", &["--bind", STAGE, TARGET])?;
@@ -378,24 +412,6 @@ pub fn enable(system: &impl System, app: &Path) -> Result<()> {
     }
     system::mkdir(system, STATE)?;
     system::mkdir(system, STAGE)?;
-    if !mounted(system) {
-        for name in referenced_files(&stock) {
-            let Ok(bytes) = system::read(system, format!("{TARGET}/{name}"), LIMIT) else {
-                continue;
-            };
-            let target = Path::new(STAGE).join(&name);
-            let mut missing = vec![];
-            let mut parent = target.parent().map(Path::to_path_buf);
-            while let Some(dir) = parent.filter(|dir| dir.as_path() != Path::new(STAGE)) {
-                parent = dir.parent().map(Path::to_path_buf);
-                missing.push(dir);
-            }
-            for dir in missing.into_iter().rev() {
-                system::mkdir(system, &dir)?;
-            }
-            update(system, &target.to_string_lossy(), &bytes, 0o644)?;
-        }
-    }
     install_scripts(system, &app)?;
     let mut config = Config {
         enabled: false,

@@ -1286,35 +1286,65 @@ fn a_rejected_staged_manifest_is_rolled_back_and_reports_that_a_restart_is_neede
 }
 
 #[test]
-fn the_staged_manifest_keeps_lg_fields_and_copies_the_files_they_name() {
+fn the_staged_manifest_follows_lg_screen_saver_web_app_and_has_every_required_field() {
     let f = screensaver_fixture();
+    // LG's real manifest on webOS 25: a Flutter app whose icon field is empty.
     f.put_json(
         &format!("{}/appinfo.json", screensaver::TARGET),
-        json!({"id":screensaver::ID,"type":"flutter","main":"screensaver","title":"Screen Saver","version":"2.0.1",
-            "icon":"assets/icon.png","requiredPermissions":["all"],"supportRollingScreenMode":true,
-            "flutterVersion":"3.19","visible":false}),
-    );
-    f.put(
-        &format!("{}/assets/icon.png", screensaver::TARGET),
-        b"lg-icon",
+        json!({"id":screensaver::ID,"version":"3.0.0","vendor":"LG Electronics, Inc.","type":"flutter",
+            "main":"/usr/palm/applications/com.webos.app.screensaver/","title":"Screen Saver","icon":"",
+            "visible":false,"supportRollingScreenMode":true,"defaultWindowType":"screenSaver",
+            "noSplashOnLaunch":true,"requiredPermissions":["all"]}),
     );
     screensaver::dispatch(&f, "enable", Some(DIR)).unwrap();
     let staged = system::json(&f, format!("{}/appinfo.json", screensaver::STAGE)).unwrap();
-    assert_eq!(staged["requiredPermissions"], json!(["all"]));
-    assert_eq!(staged["supportRollingScreenMode"], true);
-    assert_eq!(staged["icon"], "assets/icon.png");
-    assert_eq!(staged["title"], "Screen Saver");
-    assert_eq!(staged["version"], "2.0.1");
-    assert_eq!(staged["type"], "web");
-    assert_eq!(staged["main"], "index.html");
-    assert_eq!(staged["defaultWindowType"], "screenSaver");
-    assert!(staged.get("flutterVersion").is_none());
-    assert!(
-        staged.get("vendor").is_none(),
-        "No field LG did not write besides the window"
-    );
+    // The field set of LG's com.webos.app.videoads, with LG's screensaver identity.
     assert_eq!(
-        f.read(&format!("{}/assets/icon.png", screensaver::STAGE)),
+        staged,
+        json!({"id":screensaver::ID,"version":"3.0.0","uiRevision":2,"vendor":"LG Electronics, Inc.",
+            "type":"web","main":"index.html","title":"Screen Saver","icon":"icon.png","visible":false,
+            "defaultWindowType":"screenSaver","noSplashOnLaunch":true,"spinnerOnLaunch":false,
+            "trustLevel":"trusted","accessibility":{"supportsAudioGuidance":true},
+            "requiredPermissions":["all"]})
+    );
+    // LG's icon.png is copied; SAM's schema requires the icon and the file exists.
+    assert_eq!(
+        f.read(&format!("{}/icon.png", screensaver::STAGE)),
         b"lg-icon"
     );
+    screensaver::validate(&f).unwrap();
+}
+
+#[test]
+fn an_invalid_staged_app_is_refused_before_sam_is_touched() {
+    // Without LG's icon or Luma's app icon there is nothing SAM would accept as the icon.
+    let f = screensaver_fixture();
+    fs::remove_file(f.p(&format!("{}/icon.png", screensaver::TARGET))).unwrap();
+    let error = screensaver::dispatch(&f, "enable", Some(DIR)).unwrap_err();
+    assert!(error.contains("icon"), "{error}");
+    assert!(!f.calls().iter().any(|c| c.contains("blockSystemApp")));
+    assert!(!screensaver::mounted(&f));
+    // With Luma's app icon instead, the stage is complete.
+    f.put(&format!("{DIR}/app-icon.png"), b"luma-icon");
+    screensaver::dispatch(&f, "enable", Some(DIR)).unwrap();
+    assert_eq!(
+        f.read(&format!("{}/icon.png", screensaver::STAGE)),
+        b"luma-icon"
+    );
+    // A manifest missing a field SAM requires, or a missing page, fails validation.
+    screensaver::dispatch(&f, "disable", None).unwrap();
+    for key in ["id", "main", "icon", "type", "title"] {
+        let mut manifest = screensaver::manifest(&json!({}));
+        manifest.as_object_mut().unwrap().remove(key);
+        f.put_json(&format!("{}/appinfo.json", screensaver::STAGE), manifest);
+        let error = screensaver::validate(&f).unwrap_err();
+        assert!(error.contains(key), "{key}: {error}");
+    }
+    f.put_json(
+        &format!("{}/appinfo.json", screensaver::STAGE),
+        screensaver::manifest(&json!({})),
+    );
+    screensaver::validate(&f).unwrap();
+    fs::remove_file(f.p(&format!("{}/index.html", screensaver::STAGE))).unwrap();
+    assert!(screensaver::validate(&f).unwrap_err().contains("main"));
 }
