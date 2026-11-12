@@ -25,6 +25,7 @@ pub const TARGET: &str = "/usr/palm/applications/com.webos.app.screensaver";
 pub const PAGE: [&str; 2] = ["index.html", "inter-clock.ttf"];
 const SCRIPTS: [&str; 2] = ["screensaver.sh", "luma-helper"];
 const SAM_WAIT_POLLS: usize = 200;
+const POLLS_PER_SECOND: usize = 10;
 const LIMIT: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -51,42 +52,74 @@ pub fn supported(release: &str) -> Result<()> {
     }
 }
 
-/// The staged manifest: LG's identity and title, as a hidden web app in a screen-saver window.
+/// The staged manifest: LG's own manifest with only what makes it Luma's page changed (type,
+/// main file and the screen-saver window). Keys naming Flutter, which only LG's Flutter build
+/// reads, are dropped; every other field (icons, permissions, window options) stays as LG wrote
+/// it, and the files those fields name are copied into the stage.
 pub fn manifest(stock: &Value) -> Value {
-    let mut manifest = json!({
-        "id": ID,
-        "version": stock["version"].as_str().unwrap_or("1.0.0"),
-        "vendor": "Luma",
-        "title": stock["title"].as_str().unwrap_or("Screensaver"),
-        "type": "web",
-        "main": "index.html",
-        "defaultWindowType": "screenSaver",
-        "visible": false,
-        "noSplashOnLaunch": true,
-        "handlesRelaunch": true,
-        "disableBackHistoryAPI": true,
-    });
-    if let Some(icon) = stock_icon(stock) {
-        manifest["icon"] = json!(icon);
+    let mut manifest = match stock {
+        Value::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .filter(|(key, _)| !key.to_ascii_lowercase().contains("flutter"))
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        ),
+        _ => json!({}),
+    };
+    manifest["id"] = json!(ID);
+    manifest["type"] = json!("web");
+    manifest["main"] = json!("index.html");
+    manifest["defaultWindowType"] = json!("screenSaver");
+    manifest["noSplashOnLaunch"] = json!(true);
+    manifest["handlesRelaunch"] = json!(true);
+    manifest["disableBackHistoryAPI"] = json!(true);
+    if manifest.get("visible").is_none() {
+        manifest["visible"] = json!(false);
     }
     manifest
 }
 
-/// LG's icon when it is a plain relative file name, which the stage carries a copy of.
-fn stock_icon(stock: &Value) -> Option<&str> {
-    stock["icon"].as_str().filter(|icon| {
-        let path = Path::new(icon);
-        !icon.is_empty()
-            && path.is_relative()
-            && path
-                .components()
-                .all(|c| matches!(c, std::path::Component::Normal(_)))
-            && path.components().count() == 1
-    })
+/// LG's manifest values that name a file inside its app directory (icons, images): plain
+/// relative paths with an extension and without `..`, which the stage needs copies of.
+fn referenced_files(stock: &Value) -> Vec<String> {
+    let Some(fields) = stock.as_object() else {
+        return vec![];
+    };
+    let mut files: Vec<String> = fields
+        .iter()
+        .filter(|(key, _)| !key.to_ascii_lowercase().contains("flutter") && *key != "main")
+        .filter_map(|(_, value)| value.as_str())
+        .filter(|name| {
+            let path = Path::new(name);
+            !name.is_empty()
+                && name.len() < 256
+                && path.is_relative()
+                && path.extension().is_some()
+                && path
+                    .components()
+                    .all(|c| matches!(c, std::path::Component::Normal(_)))
+        })
+        .map(str::to_owned)
+        .collect();
+    files.sort();
+    files.dedup();
+    files
 }
 
+/// Whether a manifest is already a staged one (enabling twice over a stale mount).
 fn is_stage(manifest: &Value) -> bool {
-    manifest["type"] == "web" && manifest["main"] == "index.html" && manifest["vendor"] == "Luma"
+    manifest["type"] == "web" && manifest["main"] == "index.html"
+}
+
+/// What to do when SAM lost the screensaver: nothing is blocked persistently, so a restart
+/// registers LG's own app again.
+pub const RESTART: &str = "LG's screensaver is not registered with SAM right now. Nothing is blocked persistently: restart the TV (unplug it, or hold the remote's power button until it restarts) to get it back.";
+
+/// Whether SAM currently knows the screensaver app at all.
+pub fn registered(system: &impl System) -> bool {
+    home::app_manager(system, "getAppInfo", json!({"id": ID}))
+        .is_ok_and(|reply| reply["returnValue"] == true && reply["appInfo"].is_object())
 }
 
 pub fn mounted(system: &impl System) -> bool {
@@ -238,6 +271,8 @@ fn unmount(system: &impl System) -> Result<()> {
 }
 
 /// Puts LG's screensaver back: no mount, SAM reading LG's own manifest again, no marker.
+/// Succeeds only when SAM has LG's app registered afterwards; otherwise the error says that a
+/// restart is needed.
 pub fn restore(system: &impl System) -> Result<()> {
     system::remove(system, MARKER)?;
     if foreign_mount(system)? {
@@ -246,11 +281,19 @@ pub fn restore(system: &impl System) -> Result<()> {
     if mounted(system) {
         unmount(system)?;
     }
-    home::reread(
-        system,
-        ID,
-        &system::json(system, format!("{TARGET}/appinfo.json"))?,
-    )
+    let stock = system::json(system, format!("{TARGET}/appinfo.json"))?;
+    let error = match home::reread(system, ID, &stock) {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+    // A block fails once SAM has dropped the app; give a rescan in progress a moment anyway.
+    for _ in 0..3 * POLLS_PER_SECOND {
+        if registered(system) {
+            return Ok(());
+        }
+        system.poll();
+    }
+    Err(format!("{error}\n{RESTART}"))
 }
 
 /// Mounts the stage (refreshed from the installed package) and makes SAM read it. A failure
@@ -263,6 +306,10 @@ pub fn apply(system: &impl System, config: &Config) -> Result<()> {
     }
     if foreign_mount(system)? {
         return Err("Another integration is mounted over LG's screensaver".into());
+    }
+    // Never start from a screensaver SAM does not know: nothing could bring it back.
+    if !mounted(system) && !registered(system) {
+        return Err(format!("Nothing changed. {RESTART}"));
     }
     stage(system, config)?;
     let result = (|| {
@@ -331,11 +378,23 @@ pub fn enable(system: &impl System, app: &Path) -> Result<()> {
     }
     system::mkdir(system, STATE)?;
     system::mkdir(system, STAGE)?;
-    if !mounted(system)
-        && let Some(icon) = stock_icon(&stock)
-        && let Ok(bytes) = system::read(system, format!("{TARGET}/{icon}"), LIMIT)
-    {
-        update(system, &format!("{STAGE}/{icon}"), &bytes, 0o644)?;
+    if !mounted(system) {
+        for name in referenced_files(&stock) {
+            let Ok(bytes) = system::read(system, format!("{TARGET}/{name}"), LIMIT) else {
+                continue;
+            };
+            let target = Path::new(STAGE).join(&name);
+            let mut missing = vec![];
+            let mut parent = target.parent().map(Path::to_path_buf);
+            while let Some(dir) = parent.filter(|dir| dir.as_path() != Path::new(STAGE)) {
+                parent = dir.parent().map(Path::to_path_buf);
+                missing.push(dir);
+            }
+            for dir in missing.into_iter().rev() {
+                system::mkdir(system, &dir)?;
+            }
+            update(system, &target.to_string_lossy(), &bytes, 0o644)?;
+        }
     }
     install_scripts(system, &app)?;
     let mut config = Config {
@@ -369,6 +428,7 @@ pub fn status(system: &impl System) -> Result<Value> {
     Ok(json!({
         "enabled": saved.as_ref().is_some_and(|c| c.enabled),
         "mounted": mounted(system),
+        "registered": registered(system),
         "applied": system::exists(system, MARKER),
         "bootHook": hook_owned(system),
         "supported": supported(&release).is_ok(),

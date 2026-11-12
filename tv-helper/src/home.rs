@@ -592,26 +592,39 @@ pub(crate) fn reread(system: &impl System, id: &str, expected: &Value) -> Result
         (Err(error), _) | (_, Err(error)) => return Err(error),
         _ => {}
     }
+    // While SAM rescans after the release, the app can be briefly unknown ("Invalid appId"):
+    // keep asking for the whole budget instead of failing at the first refusal.
+    let mut last = String::new();
     for _ in 0..15 * POLLS_PER_SECOND {
-        let reply = accepted(app_manager(system, "getAppInfo", json!({"id":id}))?)?;
-        let info = &reply["appInfo"];
-        let main = expected["main"].as_str();
-        if info.is_object()
-            && info["type"] == expected["type"]
-            && main.is_none_or(|main| {
-                Path::new(info["main"].as_str().unwrap_or("")).file_name()
-                    == Path::new(main).file_name()
-            })
-            && (main != Some("luma")
-                || info["appCategory"]
-                    .as_array()
-                    .is_some_and(|a| a.iter().any(|v| v == "home")))
-        {
-            return Ok(());
+        match app_manager(system, "getAppInfo", json!({"id":id})).and_then(accepted) {
+            Ok(reply) => {
+                let info = &reply["appInfo"];
+                let main = expected["main"].as_str();
+                if info.is_object()
+                    && info["type"] == expected["type"]
+                    && main.is_none_or(|main| {
+                        Path::new(info["main"].as_str().unwrap_or("")).file_name()
+                            == Path::new(main).file_name()
+                    })
+                    && (main != Some("luma")
+                        || info["appCategory"]
+                            .as_array()
+                            .is_some_and(|a| a.iter().any(|v| v == "home")))
+                {
+                    return Ok(());
+                }
+                last = format!(
+                    "SAM reports type {} and main {}",
+                    info["type"], info["main"]
+                );
+            }
+            Err(error) => last = error,
         }
         system.poll();
     }
-    Err("SAM did not read the expected Home manifest".into())
+    Err(format!(
+        "SAM did not read the expected manifest of {id}: {last}"
+    ))
 }
 pub(crate) fn unescape(s: &str) -> String {
     s.replace("\\040", " ")

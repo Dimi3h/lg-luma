@@ -28,6 +28,8 @@ if [ "$COMMAND" = enable ]; then
     "  5. Turn off Luma's own screensaver timer while the TV's screensaver shows Luma's clock." \
     '' \
     "LG's screensaver files remain underneath the mount; its timing settings stay with the TV." \
+    "If SAM rejects the staged app, it is rolled back. When SAM then no longer lists LG's" \
+    'screensaver, the error says so and a TV restart brings it back (nothing is blocked for good).' \
     "Restore LG's screensaver with: sh $STATE/screensaver.sh disable" \
     ''
   while :; do

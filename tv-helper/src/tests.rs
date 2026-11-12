@@ -26,6 +26,13 @@ struct Fixture {
     trusted: Cell<bool>,
     fail_unmount: Cell<bool>,
     stuck: Cell<bool>,
+    /// SAM rejects the screensaver's staged manifest: blocking it drops the app for good
+    /// (until a restart), as observed on webOS 25.
+    sam_drops: Cell<bool>,
+    dropped: Cell<bool>,
+    /// How many `getAppInfo` calls after a release still find no app (a rescan in progress).
+    rescan_gap: Cell<usize>,
+    missing: Cell<usize>,
 }
 impl Fixture {
     fn new() -> Self {
@@ -57,6 +64,10 @@ impl Fixture {
             trusted: Cell::new(false),
             fail_unmount: Cell::new(false),
             stuck: Cell::new(false),
+            sam_drops: Cell::new(false),
+            dropped: Cell::new(false),
+            rescan_gap: Cell::new(0),
+            missing: Cell::new(0),
         };
         for dir in [
             "/var/lib/luma-home/app",
@@ -218,6 +229,28 @@ impl System for Fixture {
             .and_then(VecDeque::pop_front)
         {
             return reply.map(ok);
+        }
+        let screensaver = payload["id"] == screensaver::ID;
+        let unknown = json!({"returnValue":false,"errorCode":1,"errorText":"Invalid appId specified OR Unsupported Application Type: com.webos.app.screensaver"});
+        if screensaver && method == "getAppInfo" && self.dropped.get() {
+            return Ok(ok(unknown));
+        }
+        if screensaver && method == "getAppInfo" && self.missing.get() > 0 {
+            self.missing.set(self.missing.get() - 1);
+            return Ok(ok(unknown));
+        }
+        if screensaver && method == "blockSystemApp" {
+            if self.dropped.get() {
+                return Ok(ok(
+                    json!({"returnValue":false,"errorCode":1,"errorText":"app isn't exist: com.webos.app.screensaver"}),
+                ));
+            }
+            if self.sam_drops.get() {
+                self.dropped.set(true);
+            }
+        }
+        if screensaver && method == "releaseBlockSystemApp" {
+            self.missing.set(self.rescan_gap.get());
         }
         let reply = match method {
             "getForegroundAppInfo" => json!({"returnValue":true,"appId":*self.front.borrow()}),
@@ -1033,7 +1066,7 @@ fn screensaver_fixture() -> Fixture {
     f.put("/etc/starfish-release", b"Rockhopper release 10.3.2-6");
     f.put_json(
         &format!("{}/appinfo.json", screensaver::TARGET),
-        json!({"id":screensaver::ID,"type":"native","main":"flutter-client","title":"Screen Saver","version":"2.0.1","icon":"icon.png"}),
+        json!({"id":screensaver::ID,"type":"flutter","main":"flutter-client","title":"Screen Saver","version":"2.0.1","icon":"icon.png"}),
     );
     f.put(&format!("{}/icon.png", screensaver::TARGET), b"lg-icon");
     f.put(
@@ -1098,18 +1131,22 @@ fn screensaver_enable_stages_a_hidden_web_app_and_disable_restores_lg_screensave
             &json!(true)
         )
     );
-    assert_eq!(status["stockType"], "native");
+    assert_eq!(status["stockType"], "flutter");
 
     screensaver::dispatch(&f, "disable", None).unwrap();
     assert!(!screensaver::mounted(&f));
     assert!(!system::exists(&f, screensaver::MARKER));
     assert!(!system::exists(&f, screensaver::HOOK));
     let lg = system::json(&f, format!("{}/appinfo.json", screensaver::TARGET)).unwrap();
-    assert_eq!(lg["type"], "native");
+    assert_eq!(lg["type"], "flutter");
     let status = screensaver::dispatch(&f, "status", None).unwrap();
     assert_eq!(
-        (&status["enabled"], &status["mounted"]),
-        (&json!(false), &json!(false))
+        (
+            &status["enabled"],
+            &status["mounted"],
+            &status["registered"]
+        ),
+        (&json!(false), &json!(false), &json!(true))
     );
     // Enabling again works from LG's manifest.
     screensaver::dispatch(&f, "enable", Some(DIR)).unwrap();
@@ -1185,5 +1222,99 @@ fn screensaver_restores_lg_screensaver_when_sam_refuses_the_reread() {
     let status = screensaver::dispatch(&f, "status", None).unwrap();
     assert_eq!(status["enabled"], false);
     let lg = system::json(&f, format!("{}/appinfo.json", screensaver::TARGET)).unwrap();
-    assert_eq!(lg["type"], "native");
+    assert_eq!(lg["type"], "flutter");
+}
+
+#[test]
+fn screensaver_waits_through_a_rescan_in_which_sam_briefly_does_not_know_the_app() {
+    let f = screensaver_fixture();
+    // Two seconds of "Invalid appId" after the release, then the staged manifest.
+    f.rescan_gap.set(20);
+    screensaver::dispatch(&f, "enable", Some(DIR)).unwrap();
+    assert!(screensaver::mounted(&f));
+    assert!(screensaver::registered(&f));
+    assert_eq!(
+        screensaver::dispatch(&f, "status", None).unwrap()["registered"],
+        true
+    );
+}
+
+#[test]
+fn a_rejected_staged_manifest_is_rolled_back_and_reports_that_a_restart_is_needed() {
+    let f = screensaver_fixture();
+    f.sam_drops.set(true);
+    let error = screensaver::dispatch(&f, "enable", Some(DIR)).unwrap_err();
+    // The first failure, then the restart notice: never a clean failure while unregistered.
+    assert!(error.contains("Invalid appId"), "{error}");
+    assert!(error.contains("restart the TV"), "{error}");
+    assert!(!screensaver::mounted(&f));
+    assert!(!system::exists(&f, screensaver::MARKER));
+    assert!(!system::exists(&f, screensaver::HOOK));
+    let status = screensaver::dispatch(&f, "status", None).unwrap();
+    assert_eq!(
+        (
+            &status["enabled"],
+            &status["mounted"],
+            &status["registered"]
+        ),
+        (&json!(false), &json!(false), &json!(false))
+    );
+    // LG's files are untouched underneath.
+    let lg = system::json(&f, format!("{}/appinfo.json", screensaver::TARGET)).unwrap();
+    assert_eq!(lg["type"], "flutter");
+    // While SAM does not know the app, nothing is attempted: no mount, no block.
+    let blocks = f
+        .calls()
+        .iter()
+        .filter(|c| c.contains("blockSystemApp"))
+        .count();
+    let error = screensaver::dispatch(&f, "enable", Some(DIR)).unwrap_err();
+    assert!(error.starts_with("Nothing changed."), "{error}");
+    assert!(!screensaver::mounted(&f));
+    assert_eq!(
+        f.calls()
+            .iter()
+            .filter(|c| c.contains("blockSystemApp"))
+            .count(),
+        blocks
+    );
+    // After a restart SAM knows LG's app again and disable is clean.
+    f.dropped.set(false);
+    f.sam_drops.set(false);
+    screensaver::dispatch(&f, "disable", None).unwrap();
+    assert!(screensaver::registered(&f));
+}
+
+#[test]
+fn the_staged_manifest_keeps_lg_fields_and_copies_the_files_they_name() {
+    let f = screensaver_fixture();
+    f.put_json(
+        &format!("{}/appinfo.json", screensaver::TARGET),
+        json!({"id":screensaver::ID,"type":"flutter","main":"screensaver","title":"Screen Saver","version":"2.0.1",
+            "icon":"assets/icon.png","requiredPermissions":["all"],"supportRollingScreenMode":true,
+            "flutterVersion":"3.19","visible":false}),
+    );
+    f.put(
+        &format!("{}/assets/icon.png", screensaver::TARGET),
+        b"lg-icon",
+    );
+    screensaver::dispatch(&f, "enable", Some(DIR)).unwrap();
+    let staged = system::json(&f, format!("{}/appinfo.json", screensaver::STAGE)).unwrap();
+    assert_eq!(staged["requiredPermissions"], json!(["all"]));
+    assert_eq!(staged["supportRollingScreenMode"], true);
+    assert_eq!(staged["icon"], "assets/icon.png");
+    assert_eq!(staged["title"], "Screen Saver");
+    assert_eq!(staged["version"], "2.0.1");
+    assert_eq!(staged["type"], "web");
+    assert_eq!(staged["main"], "index.html");
+    assert_eq!(staged["defaultWindowType"], "screenSaver");
+    assert!(staged.get("flutterVersion").is_none());
+    assert!(
+        staged.get("vendor").is_none(),
+        "No field LG did not write besides the window"
+    );
+    assert_eq!(
+        f.read(&format!("{}/assets/icon.png", screensaver::STAGE)),
+        b"lg-icon"
+    );
 }

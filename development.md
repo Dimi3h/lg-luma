@@ -1074,9 +1074,21 @@ How it works, mirroring the Home manifest method:
   The time is 24-hour; the date follows `navigator.language` (Dutch lowercase, otherwise English).
 - webOS 5/6/24 are refused: their SAM cannot reread a system app's manifest (no
   `releaseBlockSystemApp` on 24), and the Flutter screensaver has no executable to replace.
+- The staged manifest is LG's own with only `type`, `main`, the screen-saver window fields and
+  `visible` changed; keys naming Flutter are dropped, and the files LG's fields name (icons) are
+  copied into the stage.
+- After the release, SAM rescans and can briefly not know the app ("Invalid appId"); the helper
+  keeps asking for 15 s instead of failing at the first refusal.
+- **Failure:** if SAM does not register the staged app, the helper unmounts and makes SAM read
+  LG's manifest again. Blocking fails once SAM has dropped the app, and a release alone does
+  not make it rescan, so the rollback then reports that LG's screensaver is not registered and
+  that a TV restart brings it back (the block is not persistent). `apply` and `enable` refuse to
+  start while SAM does not know the app, and `status` reports `registered` from `getAppInfo`.
+  Observed once on webOS 25 (10.3.2) with the first build of this feature, which also gave up at
+  the first "Invalid appId" during the rescan.
 
 There is no Settings row for it yet: enabling stays a root shell command with the same
-confirmation as `home.sh`. `screensaver.sh status` prints JSON (`enabled`, `mounted`, `applied`,
+confirmation as `home.sh`. `screensaver.sh status` prints JSON (`enabled`, `mounted`, `registered`, `applied`,
 `bootHook`, `supported`, `foreignMount`, `appDir`, `stockType`).
 
 Tests: `tv-helper/src/tests.rs` covers staging, the reread, restore after a refused reread,
