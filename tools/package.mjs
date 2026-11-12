@@ -97,6 +97,13 @@ for (const file of await fs.readdir(path.join(out, 'assets/splash')))
 await fs.copyFile(path.join(out, 'assets/splash/dunes.png'), path.join(stage, 'splash.png'));
 await fs.chmod(path.join(stage, 'autostart.sh'), 0o755);
 // The optional screensaver takeover: its script and the page staged over LG's screensaver.
+// `pnpm assets` writes the page's font subset to .build/screensaver (CI ships it with the
+// shared generated assets).
+await fs.access(path.join(root, '.build/screensaver/inter-clock.ttf')).catch(() => {
+  throw new Error(
+    'The screensaver font is missing: run pnpm assets (it writes .build/screensaver).',
+  );
+});
 await fs.mkdir(path.join(stage, 'screensaver'));
 await fs.copyFile(
   path.join(root, 'tv/screensaver/index.html'),
