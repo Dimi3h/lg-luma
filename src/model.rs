@@ -209,59 +209,42 @@ fn deserialize_appearance<'de, D: serde::Deserializer<'de>>(
     )
 }
 
-/// How a focused app or wallpaper card stands out. Temporary choice on the TV
-/// (Settings › General › Focus style): once one is picked, the others and the row go.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FocusStyle {
-    /// "Pop": about 4% larger with a soft, wide, low shadow; nothing else.
-    #[default]
-    S1,
-    /// "Pop + dim": S1, and every other card dimmed about 12%.
-    S2,
-    /// "Pop + glow": S1 plus a very soft light halo behind the card.
-    S3,
-    /// "Pop + hairline": S1 plus a 1 px inner hairline at about 30% white.
-    S4,
-    /// "Lift": about 6% larger, a deeper shadow and the card about 8% brighter.
-    S5,
-    /// "Rim": the earlier style C (5% larger, 12% brighter, dual-tone rim), for comparison.
-    S6,
-}
+/// How much larger a focused app or wallpaper card is drawn, in percent. A temporary choice on
+/// the TV (Settings › General › Focus size); once settled, the row goes and the value stays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct FocusGrow(pub u32);
 
-impl FocusStyle {
-    pub const ALL: [Self; 6] = [Self::S1, Self::S2, Self::S3, Self::S4, Self::S5, Self::S6];
+impl FocusGrow {
+    pub const LEVELS: [u32; 5] = [6, 8, 10, 12, 14];
 
-    pub fn index(self) -> usize {
-        Self::ALL.iter().position(|style| *style == self).unwrap()
+    /// The size step as a share of the card (0.10 for 10%).
+    pub fn share(self) -> f32 {
+        self.0 as f32 / 100.
     }
 
-    /// The next style; OK on the Settings row cycles through all six.
+    /// The next level; OK on the Settings row cycles through all five.
     pub fn next(self) -> Self {
-        Self::ALL[(self.index() + 1) % Self::ALL.len()]
-    }
-
-    pub fn label_key(self) -> &'static str {
-        match self {
-            Self::S1 => "focusPop",
-            Self::S2 => "focusPopDim",
-            Self::S3 => "focusPopGlow",
-            Self::S4 => "focusPopHairline",
-            Self::S5 => "focusLift",
-            Self::S6 => "focusRim",
-        }
+        let index = Self::LEVELS.iter().position(|level| *level == self.0);
+        Self(Self::LEVELS[index.map_or(0, |index| (index + 1) % Self::LEVELS.len())])
     }
 }
 
-/// Unknown or malformed values load as S1 instead of failing the preference file.
-fn deserialize_focus_style<'de, D: serde::Deserializer<'de>>(
+impl Default for FocusGrow {
+    fn default() -> Self {
+        Self(10)
+    }
+}
+
+/// Values other than the five levels load as the default instead of failing the file.
+fn deserialize_focus_grow<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
-) -> Result<FocusStyle, D::Error> {
-    let value = serde_json::Value::deserialize(deserializer)?;
-    Ok(FocusStyle::ALL
-        .into_iter()
-        .find(|style| serde_json::to_value(style).ok().as_ref() == Some(&value))
-        .unwrap_or_default())
+) -> Result<FocusGrow, D::Error> {
+    Ok(serde_json::Value::deserialize(deserializer)?
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| FocusGrow::LEVELS.contains(value))
+        .map_or_else(FocusGrow::default, FocusGrow))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -343,8 +326,8 @@ pub struct Preferences {
     pub screensaver_minutes: u32,
     #[serde(deserialize_with = "deserialize_appearance")]
     pub appearance: Appearance,
-    #[serde(deserialize_with = "deserialize_focus_style")]
-    pub focus_style: FocusStyle,
+    #[serde(deserialize_with = "deserialize_focus_grow")]
+    pub focus_grow: FocusGrow,
     /// The 24-hour choice as earlier versions saved it: written with every preference file, so
     /// only `true` is known to be deliberate. Read through `uses_24_hour`.
     pub hour_24: bool,
@@ -384,7 +367,7 @@ impl Default for Preferences {
             show_inputs: false,
             screensaver_minutes: 10,
             appearance: Appearance::Dark,
-            focus_style: FocusStyle::S1,
+            focus_grow: FocusGrow(10),
             hour_24: false,
             clock_24: None,
             show_seconds: false,
