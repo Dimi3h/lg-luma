@@ -26,6 +26,13 @@ struct Fixture {
     trusted: Cell<bool>,
     fail_unmount: Cell<bool>,
     stuck: Cell<bool>,
+    /// SAM rejects the screensaver's staged manifest: blocking it drops the app for good
+    /// (until a restart), as observed on webOS 25.
+    sam_drops: Cell<bool>,
+    dropped: Cell<bool>,
+    /// How many `getAppInfo` calls after a release still find no app (a rescan in progress).
+    rescan_gap: Cell<usize>,
+    missing: Cell<usize>,
 }
 impl Fixture {
     fn new() -> Self {
@@ -57,6 +64,10 @@ impl Fixture {
             trusted: Cell::new(false),
             fail_unmount: Cell::new(false),
             stuck: Cell::new(false),
+            sam_drops: Cell::new(false),
+            dropped: Cell::new(false),
+            rescan_gap: Cell::new(0),
+            missing: Cell::new(0),
         };
         for dir in [
             "/var/lib/luma-home/app",
@@ -218,6 +229,28 @@ impl System for Fixture {
             .and_then(VecDeque::pop_front)
         {
             return reply.map(ok);
+        }
+        let screensaver = payload["id"] == screensaver::ID;
+        let unknown = json!({"returnValue":false,"errorCode":1,"errorText":"Invalid appId specified OR Unsupported Application Type: com.webos.app.screensaver"});
+        if screensaver && method == "getAppInfo" && self.dropped.get() {
+            return Ok(ok(unknown));
+        }
+        if screensaver && method == "getAppInfo" && self.missing.get() > 0 {
+            self.missing.set(self.missing.get() - 1);
+            return Ok(ok(unknown));
+        }
+        if screensaver && method == "blockSystemApp" {
+            if self.dropped.get() {
+                return Ok(ok(
+                    json!({"returnValue":false,"errorCode":1,"errorText":"app isn't exist: com.webos.app.screensaver"}),
+                ));
+            }
+            if self.sam_drops.get() {
+                self.dropped.set(true);
+            }
+        }
+        if screensaver && method == "releaseBlockSystemApp" {
+            self.missing.set(self.rescan_gap.get());
         }
         let reply = match method {
             "getForegroundAppInfo" => json!({"returnValue":true,"appId":*self.front.borrow()}),
@@ -1026,4 +1059,292 @@ fn boot_apply_polls_briefly_and_refreshes_only_trusted_newer_scripts() {
         f.read("/var/lib/luma-home/home.sh"),
         b"#!/bin/sh\n# 2.18.1\n"
     );
+}
+
+fn screensaver_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.put("/etc/starfish-release", b"Rockhopper release 10.3.2-6");
+    f.put_json(
+        &format!("{}/appinfo.json", screensaver::TARGET),
+        json!({"id":screensaver::ID,"type":"flutter","main":"flutter-client","title":"Screen Saver","version":"2.0.1","icon":"icon.png"}),
+    );
+    f.put(&format!("{}/icon.png", screensaver::TARGET), b"lg-icon");
+    f.put(
+        &format!("{DIR}/screensaver/index.html"),
+        b"<html>clock</html>",
+    );
+    f.put(&format!("{DIR}/screensaver/inter-clock.ttf"), b"font");
+    f.put(&format!("{DIR}/screensaver.sh"), b"#!/bin/sh\n");
+    f
+}
+
+#[test]
+fn screensaver_enable_stages_a_hidden_web_app_and_disable_restores_lg_screensaver() {
+    let f = screensaver_fixture();
+    screensaver::dispatch(&f, "enable", Some(DIR)).unwrap();
+    assert!(screensaver::mounted(&f));
+    let staged = system::json(&f, format!("{}/appinfo.json", screensaver::TARGET)).unwrap();
+    assert_eq!(staged["id"], screensaver::ID);
+    assert_eq!(staged["type"], "web");
+    assert_eq!(staged["main"], "index.html");
+    assert_eq!(staged["defaultWindowType"], "screenSaver");
+    assert_eq!(staged["visible"], false);
+    assert_eq!(staged["noSplashOnLaunch"], true);
+    assert_eq!(staged["title"], "Screen Saver");
+    assert_eq!(staged["icon"], "icon.png");
+    // Copies, not links into the package: an update cannot leave the mount stale.
+    let page = f.p(&format!("{}/index.html", screensaver::STAGE));
+    assert!(
+        !fs::symlink_metadata(&page)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(fs::read(&page).unwrap(), b"<html>clock</html>");
+    assert_eq!(
+        f.read(&format!("{}/icon.png", screensaver::STAGE)),
+        b"lg-icon"
+    );
+    // SAM was made to reread the screensaver's manifest.
+    let calls = f.calls().join("\n");
+    assert!(calls.contains(&format!(
+        "blockSystemApp {{\"id\":\"{}\"}}",
+        screensaver::ID
+    )));
+    assert!(calls.contains("releaseBlockSystemApp"));
+    assert_eq!(f.read(screensaver::MARKER), format!("{APP}\n").as_bytes());
+    assert!(screensaver::hook_owned(&f));
+    let status = screensaver::dispatch(&f, "status", None).unwrap();
+    assert_eq!(
+        (
+            &status["enabled"],
+            &status["mounted"],
+            &status["applied"],
+            &status["bootHook"],
+            &status["supported"]
+        ),
+        (
+            &json!(true),
+            &json!(true),
+            &json!(true),
+            &json!(true),
+            &json!(true)
+        )
+    );
+    assert_eq!(status["stockType"], "flutter");
+
+    screensaver::dispatch(&f, "disable", None).unwrap();
+    assert!(!screensaver::mounted(&f));
+    assert!(!system::exists(&f, screensaver::MARKER));
+    assert!(!system::exists(&f, screensaver::HOOK));
+    let lg = system::json(&f, format!("{}/appinfo.json", screensaver::TARGET)).unwrap();
+    assert_eq!(lg["type"], "flutter");
+    let status = screensaver::dispatch(&f, "status", None).unwrap();
+    assert_eq!(
+        (
+            &status["enabled"],
+            &status["mounted"],
+            &status["registered"]
+        ),
+        (&json!(false), &json!(false), &json!(true))
+    );
+    // Enabling again works from LG's manifest.
+    screensaver::dispatch(&f, "enable", Some(DIR)).unwrap();
+    assert!(screensaver::mounted(&f));
+}
+
+#[test]
+fn screensaver_apply_at_boot_or_after_an_update_copies_the_new_page() {
+    let f = screensaver_fixture();
+    screensaver::dispatch(&f, "enable", Some(DIR)).unwrap();
+    // An app update while mounted: the next apply refreshes the stage in place.
+    f.put(&format!("{DIR}/screensaver/index.html"), b"<html>v2</html>");
+    screensaver::dispatch(&f, "apply", None).unwrap();
+    assert_eq!(
+        f.read(&format!("{}/index.html", screensaver::TARGET)),
+        b"<html>v2</html>"
+    );
+    // A cold boot: no mount, no marker; the hook's apply mounts again.
+    f.unmount(screensaver::TARGET);
+    fs::remove_file(f.p(screensaver::MARKER)).unwrap();
+    f.put(&format!("{DIR}/screensaver/index.html"), b"<html>v3</html>");
+    screensaver::dispatch(&f, "apply", None).unwrap();
+    assert!(screensaver::mounted(&f));
+    assert!(system::exists(&f, screensaver::MARKER));
+    assert_eq!(
+        f.read(&format!("{}/index.html", screensaver::TARGET)),
+        b"<html>v3</html>"
+    );
+    // With Luma removed, the copied page keeps working.
+    fs::remove_dir_all(f.p(&format!("{DIR}/screensaver"))).unwrap();
+    screensaver::dispatch(&f, "apply", None).unwrap();
+    assert_eq!(
+        f.read(&format!("{}/index.html", screensaver::TARGET)),
+        b"<html>v3</html>"
+    );
+}
+
+#[test]
+fn screensaver_refuses_old_firmware_foreign_mounts_and_non_root() {
+    let f = screensaver_fixture();
+    f.put("/etc/starfish-release", b"Rockhopper release 9.2.4-48");
+    assert!(screensaver::dispatch(&f, "enable", Some(DIR)).is_err());
+    assert!(!screensaver::mounted(&f));
+    assert!(!system::exists(&f, screensaver::HOOK));
+    let status = screensaver::dispatch(&f, "status", None).unwrap();
+    assert_eq!(status["supported"], false);
+
+    let f = screensaver_fixture();
+    f.mounts
+        .borrow_mut()
+        .insert(screensaver::TARGET.into(), "/var/lib/other".into());
+    f.sync_mounts();
+    let error = screensaver::dispatch(&f, "enable", Some(DIR)).unwrap_err();
+    assert!(error.contains("Another integration"), "{error}");
+
+    let f = screensaver_fixture();
+    f.uid.set(501);
+    assert!(screensaver::dispatch(&f, "enable", Some(DIR)).is_err());
+    assert!(screensaver::dispatch(&f, "apply", None).is_err());
+}
+
+#[test]
+fn screensaver_restores_lg_screensaver_when_sam_refuses_the_reread() {
+    let f = screensaver_fixture();
+    f.reply(
+        "blockSystemApp",
+        Ok(json!({"returnValue":false,"errorText":"denied"})),
+    );
+    let error = screensaver::dispatch(&f, "enable", Some(DIR)).unwrap_err();
+    assert!(error.contains("denied"), "{error}");
+    assert!(!screensaver::mounted(&f));
+    assert!(!system::exists(&f, screensaver::MARKER));
+    let status = screensaver::dispatch(&f, "status", None).unwrap();
+    assert_eq!(status["enabled"], false);
+    let lg = system::json(&f, format!("{}/appinfo.json", screensaver::TARGET)).unwrap();
+    assert_eq!(lg["type"], "flutter");
+}
+
+#[test]
+fn screensaver_waits_through_a_rescan_in_which_sam_briefly_does_not_know_the_app() {
+    let f = screensaver_fixture();
+    // Two seconds of "Invalid appId" after the release, then the staged manifest.
+    f.rescan_gap.set(20);
+    screensaver::dispatch(&f, "enable", Some(DIR)).unwrap();
+    assert!(screensaver::mounted(&f));
+    assert!(screensaver::registered(&f));
+    assert_eq!(
+        screensaver::dispatch(&f, "status", None).unwrap()["registered"],
+        true
+    );
+}
+
+#[test]
+fn a_rejected_staged_manifest_is_rolled_back_and_reports_that_a_restart_is_needed() {
+    let f = screensaver_fixture();
+    f.sam_drops.set(true);
+    let error = screensaver::dispatch(&f, "enable", Some(DIR)).unwrap_err();
+    // The first failure, then the restart notice: never a clean failure while unregistered.
+    assert!(error.contains("Invalid appId"), "{error}");
+    assert!(error.contains("restart the TV"), "{error}");
+    assert!(!screensaver::mounted(&f));
+    assert!(!system::exists(&f, screensaver::MARKER));
+    assert!(!system::exists(&f, screensaver::HOOK));
+    let status = screensaver::dispatch(&f, "status", None).unwrap();
+    assert_eq!(
+        (
+            &status["enabled"],
+            &status["mounted"],
+            &status["registered"]
+        ),
+        (&json!(false), &json!(false), &json!(false))
+    );
+    // LG's files are untouched underneath.
+    let lg = system::json(&f, format!("{}/appinfo.json", screensaver::TARGET)).unwrap();
+    assert_eq!(lg["type"], "flutter");
+    // While SAM does not know the app, nothing is attempted: no mount, no block.
+    let blocks = f
+        .calls()
+        .iter()
+        .filter(|c| c.contains("blockSystemApp"))
+        .count();
+    let error = screensaver::dispatch(&f, "enable", Some(DIR)).unwrap_err();
+    assert!(error.starts_with("Nothing changed."), "{error}");
+    assert!(!screensaver::mounted(&f));
+    assert_eq!(
+        f.calls()
+            .iter()
+            .filter(|c| c.contains("blockSystemApp"))
+            .count(),
+        blocks
+    );
+    // After a restart SAM knows LG's app again and disable is clean.
+    f.dropped.set(false);
+    f.sam_drops.set(false);
+    screensaver::dispatch(&f, "disable", None).unwrap();
+    assert!(screensaver::registered(&f));
+}
+
+#[test]
+fn the_staged_manifest_follows_lg_screen_saver_web_app_and_has_every_required_field() {
+    let f = screensaver_fixture();
+    // LG's real manifest on webOS 25: a Flutter app whose icon field is empty.
+    f.put_json(
+        &format!("{}/appinfo.json", screensaver::TARGET),
+        json!({"id":screensaver::ID,"version":"3.0.0","vendor":"LG Electronics, Inc.","type":"flutter",
+            "main":"/usr/palm/applications/com.webos.app.screensaver/","title":"Screen Saver","icon":"",
+            "visible":false,"supportRollingScreenMode":true,"defaultWindowType":"screenSaver",
+            "noSplashOnLaunch":true,"requiredPermissions":["all"]}),
+    );
+    screensaver::dispatch(&f, "enable", Some(DIR)).unwrap();
+    let staged = system::json(&f, format!("{}/appinfo.json", screensaver::STAGE)).unwrap();
+    // The field set of LG's com.webos.app.videoads, with LG's screensaver identity.
+    assert_eq!(
+        staged,
+        json!({"id":screensaver::ID,"version":"3.0.0","uiRevision":2,"vendor":"LG Electronics, Inc.",
+            "type":"web","main":"index.html","title":"Screen Saver","icon":"icon.png","visible":false,
+            "defaultWindowType":"screenSaver","noSplashOnLaunch":true,"spinnerOnLaunch":false,
+            "trustLevel":"trusted","accessibility":{"supportsAudioGuidance":true},
+            "requiredPermissions":["all"]})
+    );
+    // LG's icon.png is copied; SAM's schema requires the icon and the file exists.
+    assert_eq!(
+        f.read(&format!("{}/icon.png", screensaver::STAGE)),
+        b"lg-icon"
+    );
+    screensaver::validate(&f).unwrap();
+}
+
+#[test]
+fn an_invalid_staged_app_is_refused_before_sam_is_touched() {
+    // Without LG's icon or Luma's app icon there is nothing SAM would accept as the icon.
+    let f = screensaver_fixture();
+    fs::remove_file(f.p(&format!("{}/icon.png", screensaver::TARGET))).unwrap();
+    let error = screensaver::dispatch(&f, "enable", Some(DIR)).unwrap_err();
+    assert!(error.contains("icon"), "{error}");
+    assert!(!f.calls().iter().any(|c| c.contains("blockSystemApp")));
+    assert!(!screensaver::mounted(&f));
+    // With Luma's app icon instead, the stage is complete.
+    f.put(&format!("{DIR}/app-icon.png"), b"luma-icon");
+    screensaver::dispatch(&f, "enable", Some(DIR)).unwrap();
+    assert_eq!(
+        f.read(&format!("{}/icon.png", screensaver::STAGE)),
+        b"luma-icon"
+    );
+    // A manifest missing a field SAM requires, or a missing page, fails validation.
+    screensaver::dispatch(&f, "disable", None).unwrap();
+    for key in ["id", "main", "icon", "type", "title"] {
+        let mut manifest = screensaver::manifest(&json!({}));
+        manifest.as_object_mut().unwrap().remove(key);
+        f.put_json(&format!("{}/appinfo.json", screensaver::STAGE), manifest);
+        let error = screensaver::validate(&f).unwrap_err();
+        assert!(error.contains(key), "{key}: {error}");
+    }
+    f.put_json(
+        &format!("{}/appinfo.json", screensaver::STAGE),
+        screensaver::manifest(&json!({})),
+    );
+    screensaver::validate(&f).unwrap();
+    fs::remove_file(f.p(&format!("{}/index.html", screensaver::STAGE))).unwrap();
+    assert!(screensaver::validate(&f).unwrap_err().contains("main"));
 }

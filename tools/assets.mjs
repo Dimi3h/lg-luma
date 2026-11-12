@@ -35,6 +35,24 @@ if (weights.error || weights.status !== 0) {
   });
 }
 await fs.copyFile(path.join(source, 'fonts/ofl.txt'), path.join(out, 'font-license.txt'));
+// The screensaver takeover's page bundles its own small Inter subset (packaged beside it).
+const screensaverFont = spawnSync(
+  'python3',
+  [
+    path.join(import.meta.dirname, 'screensaver-font.py'),
+    path.join(out, 'font-display-500.ttf'),
+    path.join(root, '.build/screensaver/inter-clock.ttf'),
+  ],
+  { encoding: 'utf8' },
+);
+if (screensaverFont.error || screensaverFont.status !== 0) {
+  throw new Error(
+    'The screensaver font needs Python/fontTools. Run pnpm assets inside nix develop.',
+    {
+      cause: screensaverFont.error ?? new Error(screensaverFont.stderr),
+    },
+  );
+}
 
 for (const file of await fs.readdir(path.join(source, 'wallpapers'))) {
   if (!/\.(jpg|svg)$/.test(file)) continue;

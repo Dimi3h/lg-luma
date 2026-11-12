@@ -12,6 +12,7 @@ tools/                       Asset preparation, SDK/runtime setup, packaging and
 tests/                       Desktop rendering and mocked HTTP smoke scripts
 tv/autostart.sh              Optional cold-boot launch hook
 tv/home.sh / luma-helper         Optional root-only native Home integration
+tv/screensaver.sh, tv/screensaver/  Optional root-only takeover of LG's screensaver
 dist/                        Generated ARM IPK, checksum and Homebrew feed
 .build/                      Generated assets, SDK/runtime caches and rendering diagnostics
 ```
@@ -1030,6 +1031,87 @@ sends `relaunch` with `launchType: homeKey`, Luma comes to the front, and it reg
 a cold boot. SDL's own registration logs `Failed to register app: Failed to get
 nativeLifeCycleInterfaceVersion` at startup there, without effect. That the compositor sends
 `FocusGained` after such a relaunch, which the watchdog relies on, shows in the `Luma window:` log.
+
+**After an update.** Homebrew Channel's installer closes the normal app (`com.ecklf.luma`)
+before replacing the package, but not Luma running as Home, which then keeps running the old,
+unlinked program (`/proc/self/exe` ends in " (deleted)"). Luma checks for that whenever it loses
+the front or its window is hidden, and every 30 s while it stays out of sight. When it finds it,
+it writes the running version to `/tmp/luma-update-restart` and asks SAM to close its running
+identity (`closeByAppId` with the Home id as Home), as closing it from another app does; if SAM
+refuses, it quits by itself. The next Home press or launch starts the installed program, and
+preferences are already on disk. The marker allows one close per running version and boot, so a
+new program that fails to start, or a webOS 5/6 bind mount still serving the old file, cannot
+cause a restart loop. Only the detection is unit-tested; the close itself is TV behaviour.
+
+### Optional screensaver takeover (webOS 25/26)
+
+`tv/screensaver.sh` replaces LG's system screensaver app, `com.webos.app.screensaver` (a Flutter
+app), with Luma's clock: the same look as Luma's own screensaver (pure black, the time in
+`#bebebe` at Title 1 size and the date beneath in `#7c7c7c`, a jump to a random place inside the
+safe area every 5 s with a 350 ms fade out and in, nothing else on screen). It shows wherever the
+TV starts its screensaver, also over other apps, with the TV's own timing.
+
+How it works, mirroring the Home manifest method:
+
+- `luma-helper screensaver enable` stages `/var/lib/luma-screensaver/app`: **copies** of the
+  packaged `screensaver/index.html` and `inter-clock.ttf` (never links into the package) and a
+  manifest with LG's id, title, version and icon but `"type": "web"`, `"main": "index.html"`,
+  `"defaultWindowType": "screenSaver"` and `"visible": false` (see the field set below). It bind-mounts the stage over
+  `/usr/palm/applications/com.webos.app.screensaver`, then blocks and releases the app so SAM
+  rereads the manifest, and waits until `getAppInfo` reports the web app. Any failure after the
+  mount unmounts and makes SAM read LG's manifest again.
+- It copies `screensaver.sh` and `luma-helper` to `/var/lib/luma-screensaver` and links
+  `/var/lib/webosbrew/init.d/10-luma-screensaver` to that copy. The hook is its own, right after
+  `10-luma-home` in Homebrew Channel's name order, because the Home hook exists only while the
+  Home takeover is enabled. At boot it applies detached and logs to
+  `/var/lib/luma-screensaver/boot.log`.
+- Every apply (enable, cold boot, and the self-updater after a new package) copies the installed
+  page again when it changed. The mount source lives in `/var/lib`, so replacing the package
+  never leaves a stale mount, and the copied page keeps working if Luma is removed.
+- `/var/run/luma-screensaver` marks the takeover as applied this boot. While it exists Luma keeps
+  its own idle timer off (checked at start and whenever Luma comes to the front), so the clock is
+  never shown twice. A jailed normal launch that cannot read `/var/run` keeps its own timer.
+- The page uses timers only (one 5 s interval, a 350 ms timeout around each jump, and one timeout
+  that refreshes the time 20 ms after each minute change without moving the clock) and stops
+  them while hidden. Any `keydown`/`keyup`, pointer down, click, wheel or pointer movement that
+  reaches it calls `window.close()` without acting on it; pointer movement in the first 800 ms is
+  ignored, as the system places its cursor when a window opens. `webOSRelaunch` restarts the clock.
+  The time is 24-hour; the date follows `navigator.language` (Dutch lowercase, otherwise English).
+- webOS 5/6/24 are refused: their SAM cannot reread a system app's manifest (no
+  `releaseBlockSystemApp` on 24), and the Flutter screensaver has no executable to replace.
+- The staged manifest copies the field set of LG's own screen-saver web app on webOS 25,
+  `com.webos.app.videoads` (`type: web`, `main: index.html`, `icon: icon.png`, `visible: false`,
+  `defaultWindowType: screenSaver`, `noSplashOnLaunch`, `spinnerOnLaunch: false`,
+  `trustLevel: trusted`, `uiRevision: 2`, `accessibility`, `requiredPermissions: ["all"]`), with
+  the id, version, vendor and title of LG's screensaver. SAM's
+  `/etc/palm/schemas/sam/ApplicationDescription.schema` requires `id`, `main`, `icon`, `type` and
+  `title`; the first build had no `icon` field, which is the likely reason SAM dropped the app on
+  its rescan. The stage carries LG's `icon.png` (LG's manifest names none), or Luma's app icon.
+  Before SAM is touched, the helper validates the staged manifest (required fields, enumerated
+  values) and that `index.html` and the icon exist, and refuses otherwise.
+- After the release, SAM rescans and can briefly not know the app ("Invalid appId"); the helper
+  keeps asking for 15 s instead of failing at the first refusal.
+- **Failure:** if SAM does not register the staged app, the helper unmounts and makes SAM read
+  LG's manifest again. Blocking fails once SAM has dropped the app, and a release alone does
+  not make it rescan, so the rollback then reports that LG's screensaver is not registered and
+  that a TV restart brings it back (the block is not persistent). `apply` and `enable` refuse to
+  start while SAM does not know the app, and `status` reports `registered` from `getAppInfo`.
+  Observed once on webOS 25 (10.3.2) with the first build of this feature, which also gave up at
+  the first "Invalid appId" during the rescan.
+
+There is no Settings row for it yet: enabling stays a root shell command with the same
+confirmation as `home.sh`. `screensaver.sh status` prints JSON (`enabled`, `mounted`, `registered`, `applied`,
+`bootHook`, `supported`, `foreignMount`, `appDir`, `stockType`).
+
+Tests: `tv-helper/src/tests.rs` covers staging, the reread, restore after a refused reread,
+refreshing after an update or cold boot, and refusals (old firmware, foreign mounts, non-root);
+`tests/screensaver-wrapper.test.mjs` runs the script through its boot-hook symlink;
+`tests/screensaver-page.test.mjs` runs the page against a minimal DOM with fake timers. None of
+this is verified on a TV yet. If the TV does not hide a web-app screensaver itself, a key press
+would reach the page and close it; if instead the screensaver stays up after input, or the TV's
+screensaver no longer starts at all (`getAppInfo` shows the web manifest but nothing appears
+after the timeout), the system does not treat the web app as its screensaver and the takeover
+should be disabled.
 
 ## Manual extra-app preview
 

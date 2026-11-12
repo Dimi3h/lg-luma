@@ -4773,6 +4773,20 @@ fn the_focused_card_and_caption_stay_inside_the_margin_and_clear_of_neighbours()
 }
 
 #[test]
+fn luma_leaves_its_screensaver_timer_off_while_the_tv_screensaver_is_its_clock() {
+    let mut state = ready();
+    state.preferences.screensaver_minutes = 10;
+    assert_eq!(
+        state.screensaver_after(),
+        Some(std::time::Duration::from_secs(600))
+    );
+    state.system_screensaver = true;
+    assert_eq!(state.screensaver_after(), None);
+    // Desktop builds never see the TV marker.
+    assert!(!crate::platform::system_screensaver() || cfg!(feature = "webos"));
+}
+
+#[test]
 fn preference_files_from_the_focus_trials_still_load() {
     // focus_style (the S1–S6 trial) and focus_grow (the size trial) are no longer settings.
     for value in [
@@ -4799,4 +4813,23 @@ fn preference_files_from_the_focus_trials_still_load() {
             .iter()
             .any(|c| c.target == Target::Setting(16))
     );
+}
+
+#[test]
+fn a_replaced_executable_closes_luma_once_per_version_and_never_loops() {
+    use crate::platform::should_restart_after_update as restart;
+    let running = "2.18.3";
+    let live = "/media/developer/apps/usr/palm/applications/com.ecklf.luma/luma";
+    let replaced = format!("{live} (deleted)");
+    // Running the installed program: nothing to do.
+    assert!(!restart(live, None, running));
+    // Homebrew Channel replaced the package under a running Home instance.
+    assert!(restart(&replaced, None, running));
+    // Once this version has closed in this boot, it never closes again: if the new program
+    // fails to start, or a bind mount still serves the old file, there is no loop.
+    assert!(!restart(&replaced, Some("2.18.3\n"), running));
+    // A later update replacing the program again does close the next version once.
+    assert!(restart(&replaced, Some("2.18.3\n"), "3.0.0"));
+    // Desktop builds never see a replaced program in tests.
+    assert!(!crate::platform::executable_replaced_by_update() || cfg!(feature = "webos"));
 }

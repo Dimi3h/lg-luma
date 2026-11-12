@@ -298,6 +298,9 @@ pub struct State {
     /// position step last drawn (the clock jumps every `SCREENSAVER_STEP`).
     pub screensaver: Option<(Instant, u64)>,
     pub screensaver_step: u64,
+    /// Whether the TV's own screensaver is Luma's clock (`screensaver.sh enable`, applied this
+    /// boot). Luma's idle timer then stays off, so the clock is never shown twice.
+    pub system_screensaver: bool,
     /// Whether the last tick saw the clock mid-fade, so the frame that ends a fade is drawn.
     screensaver_fading: bool,
 }
@@ -346,6 +349,7 @@ impl State {
             last_input: Instant::now(),
             screensaver: None,
             screensaver_step: 0,
+            system_screensaver: false,
             screensaver_fading: false,
         }
     }
@@ -400,7 +404,7 @@ impl State {
     /// How long Luma waits without input before the screensaver, when it is on.
     pub fn screensaver_after(&self) -> Option<Duration> {
         let minutes = self.preferences.screensaver_minutes;
-        (minutes > 0).then(|| Duration::from_secs(minutes as u64 * 60))
+        (minutes > 0 && !self.system_screensaver).then(|| Duration::from_secs(minutes as u64 * 60))
     }
 
     /// Starts the clock screensaver (the idle timer ran out), at a random first position.

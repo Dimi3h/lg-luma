@@ -1,0 +1,232 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>Screensaver</title>
+    <style>
+      /* Luma's screensaver as the TV's own: a clock on pure black, nothing else on screen. */
+      @font-face {
+        font-family: 'Inter Clock';
+        src: url('inter-clock.ttf') format('truetype');
+        font-weight: 500;
+      }
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+        cursor: none;
+      }
+      #clock {
+        position: absolute;
+        left: 0;
+        top: 0;
+        opacity: 0;
+        transition: opacity 350ms ease-in-out;
+        font-family: 'Inter Clock', sans-serif;
+        font-weight: 500;
+        white-space: nowrap;
+        will-change: opacity;
+      }
+      #time {
+        color: #bebebe;
+        font-size: 76px;
+        line-height: 92px;
+        letter-spacing: -0.02em;
+      }
+      #date {
+        color: #7c7c7c;
+        font-size: 31px;
+        line-height: 40px;
+        letter-spacing: -0.005em;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="clock">
+      <div id="time"></div>
+      <div id="date"></div>
+    </div>
+    <script>
+      (function (window, document) {
+        'use strict';
+        // The same rhythm as Luma's own screensaver: a jump every 5 s, faded out and in.
+        var STEP = 5000;
+        var FADE = 350;
+        // Luma's safe area: 80 px at the sides, 60 px at the top and bottom.
+        var SAFE_X = 80;
+        var SAFE_Y = 60;
+        // Pointer moves right after the window opens are the system placing its cursor.
+        var SETTLE = 800;
+        var DAYS = {
+          en: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
+          nl: ['zondag', 'maandag', 'dinsdag', 'woensdag', 'donderdag', 'vrijdag', 'zaterdag'],
+        };
+        var MONTHS = {
+          en: [
+            'January',
+            'February',
+            'March',
+            'April',
+            'May',
+            'June',
+            'July',
+            'August',
+            'September',
+            'October',
+            'November',
+            'December',
+          ],
+          nl: [
+            'januari',
+            'februari',
+            'maart',
+            'april',
+            'mei',
+            'juni',
+            'juli',
+            'augustus',
+            'september',
+            'oktober',
+            'november',
+            'december',
+          ],
+        };
+        var clock = document.getElementById('clock');
+        var timeLine = document.getElementById('time');
+        var dateLine = document.getElementById('date');
+        var interval = null;
+        var fade = null;
+        var minute = null;
+        var started = 0;
+        var closed = false;
+
+        // The TV's interface language: Dutch, otherwise English.
+        function language() {
+          var value = String(window.navigator.language || 'en').toLowerCase();
+          return value.slice(0, 2) === 'nl' ? 'nl' : 'en';
+        }
+        function pad(value) {
+          return (value < 10 ? '0' : '') + value;
+        }
+        function timeText(now) {
+          return pad(now.getHours()) + ':' + pad(now.getMinutes());
+        }
+        function dateText(now, lang) {
+          var day = DAYS[lang][now.getDay()];
+          var month = MONTHS[lang][now.getMonth()];
+          return lang === 'nl'
+            ? day + ' ' + now.getDate() + ' ' + month
+            : day + ', ' + month + ' ' + now.getDate();
+        }
+        function render() {
+          var now = new Date();
+          timeLine.textContent = timeText(now);
+          dateLine.textContent = dateText(now, language());
+        }
+        // A random place that keeps the whole block inside the safe area.
+        function place() {
+          var width = window.innerWidth || 1920;
+          var height = window.innerHeight || 1080;
+          var room = Math.max(0, width - 2 * SAFE_X - clock.offsetWidth);
+          var depth = Math.max(0, height - 2 * SAFE_Y - clock.offsetHeight);
+          var x = Math.round(SAFE_X + Math.random() * room);
+          var y = Math.round(SAFE_Y + Math.random() * depth);
+          clock.style.transform = 'translate(' + x + 'px, ' + y + 'px)';
+        }
+        function jump() {
+          clock.style.opacity = '0';
+          fade = window.setTimeout(function () {
+            fade = null;
+            render();
+            place();
+            clock.style.opacity = '1';
+          }, FADE);
+        }
+        // The time changes exactly at each minute, not only at the next jump: one timeout set
+        // to just after the coming minute boundary, set again each time it fires.
+        function nextMinute() {
+          var now = new Date();
+          var wait = 60000 - (now.getSeconds() * 1000 + now.getMilliseconds()) + 20;
+          minute = window.setTimeout(function () {
+            minute = null;
+            render();
+            nextMinute();
+          }, wait);
+        }
+        // Timers only: nothing runs between jumps and minute changes, and nothing while hidden.
+        function stop() {
+          if (interval !== null) window.clearInterval(interval);
+          if (fade !== null) window.clearTimeout(fade);
+          if (minute !== null) window.clearTimeout(minute);
+          interval = null;
+          fade = null;
+          minute = null;
+        }
+        function start() {
+          if (closed) return;
+          stop();
+          started = Date.now();
+          render();
+          place();
+          clock.style.opacity = '1';
+          interval = window.setInterval(jump, STEP);
+          nextMinute();
+        }
+        // Any input that reaches the screensaver closes it; it never acts on the input.
+        function dismiss(event) {
+          if (closed) return;
+          if (
+            event &&
+            (event.type === 'mousemove' || event.type === 'pointermove') &&
+            Date.now() - started < SETTLE
+          ) {
+            return;
+          }
+          if (event && event.preventDefault) event.preventDefault();
+          closed = true;
+          stop();
+          clock.style.opacity = '0';
+          window.close();
+        }
+        [
+          'keydown',
+          'keyup',
+          'pointerdown',
+          'mousedown',
+          'click',
+          'wheel',
+          'mousewheel',
+          'pointermove',
+          'mousemove',
+        ].forEach(function (type) {
+          document.addEventListener(type, dismiss, true);
+        });
+        // SAM relaunches the running screensaver instead of starting a new one.
+        document.addEventListener('webOSRelaunch', function () {
+          closed = false;
+          start();
+        });
+        document.addEventListener('visibilitychange', function () {
+          if (document.hidden) stop();
+          else start();
+        });
+        window.lumaScreensaver = {
+          timeText: timeText,
+          dateText: dateText,
+          language: language,
+          running: function () {
+            return interval !== null;
+          },
+          closed: function () {
+            return closed;
+          },
+        };
+        start();
+      })(window, document);
+    </script>
+  </body>
+</html>

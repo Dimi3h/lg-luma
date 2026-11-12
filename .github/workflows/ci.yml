@@ -86,7 +86,7 @@ jobs:
       - name: Build shared desktop preview
         run: cargo build --locked --package luma --no-default-features
       - name: Bundle shared smoke inputs
-        run: tar -czf smoke-inputs.tar.gz .build/assets target/debug/luma
+        run: tar -czf smoke-inputs.tar.gz .build/assets .build/screensaver target/debug/luma
       - uses: actions/upload-artifact@v7
         with:
           name: smoke-inputs
@@ -177,7 +177,8 @@ jobs:
         with:
           name: smoke-inputs
       - name: Restore generated native assets
-        run: tar -xzf smoke-inputs.tar.gz .build/assets
+        # .build/screensaver holds the screensaver page's font subset, packaged beside it.
+        run: tar -xzf smoke-inputs.tar.gz .build/assets .build/screensaver
       - name: Set up the webOS SDK
         run: pnpm sdk
       - name: Cross-build and verify the native IPK and Homebrew feed

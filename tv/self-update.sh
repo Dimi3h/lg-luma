@@ -89,6 +89,13 @@ launch() {
   printf '%s\n' "$reply" >>"$LOG"
   printf '%s\n' "$reply" | grep -q '"returnValue": *true'
 }
+# The screensaver takeover copies the new page and scripts. A failure restores LG's own
+# screensaver and never fails the update.
+if grep -q '"enabled": *true' /var/lib/luma-screensaver/state.json 2>/dev/null &&
+   [ -f "$APP_DIR/screensaver.sh" ]; then
+  printf 'y\n' | sh "$APP_DIR/screensaver.sh" enable "$APP_DIR" >>"$LOG" 2>&1 ||
+    printf '%s\n' 'The screensaver takeover was not refreshed; see above.' >>"$LOG"
+fi
 HOME_ID=$(json_string "$HOME_STATE/state.json" homeId)
 HOME_ID=${HOME_ID:-com.webos.app.home}
 case "$HOME_ID" in
