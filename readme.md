@@ -1,5 +1,9 @@
 # Luma
 
+> **This is Dimi3h's personal fork of [ecklf/lg-luma](https://github.com/ecklf/lg-luma).** It has
+> a different interface and feature set from the original project and follows its own releases.
+> The app ID stays `com.ecklf.luma`.
+
 A native launcher for rooted LG webOS TVs, styled after Apple tvOS: one screen with the clock,
 date, greeting and weather above a grid of every app in your own order, small icons for the app
 store and Settings, 5:3 cards that brighten on focus with their title beneath, and Liquid
