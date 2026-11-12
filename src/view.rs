@@ -1,7 +1,7 @@
 //! Screen geometry and styling mirror the web UI's 1920×1080 / 16px-rem layout.
 use crate::{
     i18n::Language,
-    model::{App, BACKGROUNDS, FocusStyle, Input, InputMode},
+    model::{App, BACKGROUNDS, FocusGrow, Input, InputMode},
     renderer::{Color, Draw, TextStyle, WHITE},
     state::{
         APPS_COLUMNS, Control, KEYS, Overlay, Page, Rect, SYSTEM_SECTION, State, Subpage, Target,
@@ -239,10 +239,8 @@ pub struct Scene {
     raised: Vec<Draw>,
     /// Settings and overlays: focused controls appear at once in place (no lift), as cards do.
     static_focus: bool,
-    /// How focused app and wallpaper cards stand out (Settings › General › Focus style).
-    focus: FocusStyle,
-    /// Indices of dark veils that Light appearance must leave dark (focus style S2's dimming).
-    keep_dark: Vec<usize>,
+    /// How much larger focused app and wallpaper cards are (Settings › General › Focus size).
+    focus: FocusGrow,
 }
 
 /// Grows `rect` around its centre by `share` of its size.
@@ -278,8 +276,7 @@ impl Scene {
             backdrop: None,
             raised: Vec::new(),
             static_focus: false,
-            focus: FocusStyle::default(),
-            keep_dark: Vec::new(),
+            focus: FocusGrow::default(),
         }
     }
     /// How much a focused control grows: `lift`, or nothing where focus is static (Settings).
@@ -681,7 +678,7 @@ pub fn scene(state: &State, assets: &Assets, now: OffsetDateTime) -> Scene {
         return screensaver(state, assets, now, seed, step);
     }
     let mut out = Scene::new();
-    out.focus = state.preferences.focus_style;
+    out.focus = state.preferences.focus_grow;
     out.static_focus =
         state.page == Page::Settings || state.overlay.is_some() || state.recents_open();
     let shown = state.preferences.background.clone();
@@ -907,9 +904,7 @@ fn light_appearance(out: &mut Scene, from: usize) {
             {
                 *color = ink(*color)
             }
-            Draw::Shape(_, _, 0., color)
-                if near_black(color) && !out.keep_dark.contains(&index) =>
-            {
+            Draw::Shape(_, _, 0., color) if near_black(color) => {
                 *color = [0.96, 0.96, 0.97, color[3] * 0.9];
             }
             Draw::Shadow(_, _, _, color) => color[3] *= 0.5,
@@ -1098,14 +1093,6 @@ fn tile(out: &mut Scene, state: &State, assets: &Assets, app: &App, rect: Rect, 
     };
     app_face(out, assets, app, drawn, state.preferences.language, radius);
     card_glass(out, drawn, radius, level);
-    // S2: the other cards step back while a card in the grid has focus (not in move mode,
-    // which already fades them).
-    if state.focus_level(&target) <= 0.
-        && state.moving.is_none()
-        && matches!(state.focus, Target::App(_))
-    {
-        dim_unfocused(out, drawn, radius);
-    }
     if state.moving.as_ref() == Some(&app.id) {
         out.draw.push(Draw::Rim(
             drawn,
@@ -1146,54 +1133,10 @@ const CAPTION_GAP: f32 = 22.;
 /// A caption may run a little wider than its card, as on tvOS.
 const CARD_GAP_CAPTION: f32 = 36.;
 
-/// The focused card's highlight over its face, by focus style: a few percent brighter (S5,
-/// S6), a 1 px hairline (S4) or the dual-tone rim (S6). The pop styles draw nothing here.
+/// The focused card's highlight over its face: about 6% brighter. No rim and no outline.
 fn card_glass(out: &mut Scene, rect: Rect, radius: f32, level: f32) {
-    if level <= 0. {
-        return;
-    }
-    let level = level.min(1.);
-    let look = focus_look(out.focus);
-    if look.overlay > 0. {
-        out.shape(rect, radius, c(0xffffff, look.overlay * level));
-    }
-    if let Some(alpha) = look.hairline {
-        // Barely visible: it only defines the card's edge.
-        out.draw.push(Draw::Rim(
-            rect,
-            radius,
-            FOCUS_HAIRLINE,
-            c(0xffffff, alpha * level),
-            c(0xffffff, alpha * level),
-        ));
-    }
-    if look.dual {
-        // A thin dark outer line around a near-white inner rim: one of the two always
-        // contrasts, on any card colour and any wallpaper, in both appearances.
-        out.draw.push(Draw::Rim(
-            rect,
-            radius,
-            FOCUS_RIM_OUTER,
-            c(0x000000, 0.65 * level),
-            c(0x000000, 0.65 * level),
-        ));
-        out.draw.push(Draw::Rim(
-            inset(rect, FOCUS_RIM_OUTER),
-            radius - FOCUS_RIM_OUTER,
-            FOCUS_RIM_INNER,
-            c(0xffffff, 0.96 * level),
-            c(0xffffff, 0.9 * level),
-        ));
-    }
-}
-
-/// Style S2 dims every card but the focused one (while a card of that group has focus): a
-/// black veil over the resting card that stays dark under Light appearance as well.
-fn dim_unfocused(out: &mut Scene, rect: Rect, radius: f32) {
-    let amount = focus_look(out.focus).dim;
-    if amount > 0. {
-        out.keep_dark.push(out.draw.len());
-        out.shape(rect, radius, c(0x000000, amount));
+    if level > 0. {
+        out.shape(rect, radius, c(0xffffff, FOCUS_OVERLAY * level.min(1.)));
     }
 }
 
@@ -1228,104 +1171,34 @@ fn within_margin(card: Rect, grown: Rect) -> Rect {
     Rect::new(grown.x + dx, grown.y + dy, grown.w, grown.h)
 }
 
-fn inset(rect: Rect, by: f32) -> Rect {
-    Rect::new(rect.x + by, rect.y + by, rect.w - 2. * by, rect.h - 2. * by)
-}
-
 /// The focused card's drawn rectangle: its static size step, kept inside the screen margin.
-fn focused_rect(style: FocusStyle, rect: Rect) -> Rect {
-    within_margin(rect, grow(rect, focus_look(style).grow))
+fn focused_rect(focus: FocusGrow, rect: Rect) -> Rect {
+    within_margin(rect, grow(rect, focus.share()))
 }
 
-/// A card's shadow (and halo) and drawn rectangle for its focus `level`: the small resting
-/// shadow, or the focus style's size step with its own soft shadow. The hit region is never
-/// changed; nothing animates.
+/// A card's shadow and drawn rectangle for its focus `level`: the small resting shadow, or
+/// the focus size step with a soft shadow that grows with it, so a larger step also looks more
+/// lifted. The hit region is never changed; nothing animates.
 fn focus_card(out: &mut Scene, rect: Rect, radius: f32, level: f32) -> Rect {
     if level <= 0. {
         out.resting_shadow(rect, radius);
         return rect;
     }
-    let look = focus_look(out.focus);
     let drawn = focused_rect(out.focus, rect);
-    let (blur, y, alpha) = look.shadow;
+    let (blur, y, alpha) = focus_shadow(out.focus);
     out.shadow(drawn, radius, blur, y, alpha);
-    if let Some((blur, alpha)) = look.halo {
-        // A light glow with no hard edge, so the card also separates from a dark wallpaper.
-        out.draw
-            .push(Draw::Shadow(drawn, radius, blur, c(0xffffff, alpha)));
-    }
     drawn
 }
 
-/// Every focus style's parts. All are static: no animation, and hit regions never change.
-struct FocusLook {
-    /// The size step around the card's centre.
-    grow: f32,
-    /// Blur, downward offset and opacity of the focused card's shadow.
-    shadow: (f32, f32, f32),
-    /// A white halo behind the card: blur and opacity.
-    halo: Option<(f32, f32)>,
-    /// How much brighter the focused card is (a white overlay).
-    overlay: f32,
-    /// A 1 px inner hairline's white opacity.
-    hairline: Option<f32>,
-    /// The dual-tone rim of style S6.
-    dual: bool,
-    /// The black veil over every other card.
-    dim: f32,
+/// Blur, downward offset and opacity of the focused card's shadow: from soft and close at a
+/// 6% step to wide, low and deeper at 14%. Light appearance halves shadow opacity.
+pub fn focus_shadow(focus: FocusGrow) -> (f32, f32, f32) {
+    let t = ((focus.share() - 0.06) / 0.08).clamp(0., 1.);
+    (mix(32., 64., t), mix(12., 30., t), mix(0.32, 0.5, t))
 }
 
-/// The soft, wide, low shadow the pop styles share. Light appearance halves shadow opacity.
-const POP_SHADOW: (f32, f32, f32) = (40., 16., 0.4);
-
-fn focus_look(style: FocusStyle) -> FocusLook {
-    let pop = FocusLook {
-        grow: 0.04,
-        shadow: POP_SHADOW,
-        halo: None,
-        overlay: 0.,
-        hairline: None,
-        dual: false,
-        dim: 0.,
-    };
-    match style {
-        FocusStyle::S1 => pop,
-        FocusStyle::S2 => FocusLook { dim: 0.12, ..pop },
-        FocusStyle::S3 => FocusLook {
-            halo: Some((40., 0.22)),
-            ..pop
-        },
-        FocusStyle::S4 => FocusLook {
-            hairline: Some(0.3),
-            ..pop
-        },
-        FocusStyle::S5 => FocusLook {
-            grow: 0.06,
-            shadow: (56., 26., 0.5),
-            overlay: 0.08,
-            ..pop
-        },
-        FocusStyle::S6 => FocusLook {
-            grow: 0.05,
-            shadow: (56., 26., 0.46),
-            overlay: 0.12,
-            dual: true,
-            ..pop
-        },
-    }
-}
-
-/// The size step of each focus style, for checks of the safe area.
-#[cfg(test)]
-pub fn focus_grow(style: FocusStyle) -> f32 {
-    focus_look(style).grow
-}
-
-/// Style S4's hairline width.
-pub const FOCUS_HAIRLINE: f32 = 1.;
-/// Style S6's dual-tone rim: a dark outer line and the near-white rim inside it.
-pub const FOCUS_RIM_OUTER: f32 = 1.5;
-pub const FOCUS_RIM_INNER: f32 = 3.;
+/// How much brighter the focused card is: a white overlay of a few percent.
+pub const FOCUS_OVERLAY: f32 = 0.06;
 
 /// The card being moved: its rim, clearly visible in every focus style.
 const MOVING_RIM: f32 = 3.5;
@@ -2880,6 +2753,7 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
         0 => {
             let hidden = state.hidden_apps().len().to_string();
             let screensaver = screensaver_label(language, state.preferences.screensaver_minutes);
+            let focus_size = format!("{}%", state.preferences.focus_grow.0);
             for (position, (index, key, icon, value, chevron)) in [
                 (
                     0,
@@ -2909,12 +2783,12 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                     Some(screensaver.as_str()),
                     true,
                 ),
-                // Temporary: choosing the focus style on the TV. OK cycles S1 to S6.
+                // Temporary: settling the focus size on the TV. OK cycles 6% to 14%.
                 (
                     16,
-                    "focusStyle",
+                    "focusGrow",
                     "sparkles",
-                    Some(language.t(state.preferences.focus_style.label_key())),
+                    Some(focus_size.as_str()),
                     false,
                 ),
             ]
@@ -2957,9 +2831,6 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                     false,
                 );
                 card_glass(out, drawn, radius, level);
-                if level <= 0. && matches!(state.focus, Target::Background(_)) {
-                    dim_unfocused(out, drawn, radius);
-                }
                 if state.preferences.background == id {
                     // Selected: a solid white edge and check badge, at any focus level.
                     out.border(drawn, radius, 3., c(0xffffff, 0.95));

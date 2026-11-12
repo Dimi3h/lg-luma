@@ -3742,7 +3742,7 @@ fn move_mode_draws_no_jiggle_or_arrows_and_never_animates() {
     // The rim is drawn on the focused card's static size step around its slot.
     assert!(frame.draw.iter().any(|draw| matches!(draw,
         Draw::Rim(rect, _, width, ..) if *width > 3.
-            && rect.x <= netflix.x && rect.x > netflix.x - 8. && rect.y <= netflix.y && rect.y > netflix.y - 8.)));
+            && rect.x <= netflix.x && rect.x > netflix.x - 20. && rect.y <= netflix.y && rect.y > netflix.y - 20.)));
     for control in &before {
         if let Some(other) = frame.controls.iter().find(|c| c.target == control.target) {
             assert_eq!(
@@ -4052,13 +4052,14 @@ fn startup_diagnostics_are_written_as_json_next_to_the_preferences() {
 
 #[test]
 fn focused_card_pops_in_place_and_focus_moves_instantly() {
+    use crate::model::FocusGrow;
     use crate::renderer::Draw;
     use crate::state::Rect;
     let mut state = ready();
     state.open(Page::Home);
     state.sync_motion();
-    // S1 "Pop" is the default: 4% larger with a soft shadow, no rim and no brightening.
-    assert_eq!(state.preferences.focus_style, crate::model::FocusStyle::S1);
+    // One rimless style: 10% larger by default, a soft shadow and about 6% brighter.
+    assert_eq!(state.preferences.focus_grow, FocusGrow(10));
     let netflix = Target::App("netflix".into());
     assert_eq!(state.focus, netflix);
     let card = |state: &State, target: &Target| {
@@ -4069,7 +4070,7 @@ fn focused_card_pops_in_place_and_focus_moves_instantly() {
             .rect
     };
     let grown = |rect: Rect| {
-        let share = view::focus_grow(crate::model::FocusStyle::S1);
+        let share = FocusGrow::default().share();
         let (dx, dy) = (rect.w * share / 2., rect.h * share / 2.);
         Rect::new(rect.x - dx, rect.y - dy, rect.w + 2. * dx, rect.h + 2. * dy)
     };
@@ -4092,11 +4093,11 @@ fn focused_card_pops_in_place_and_focus_moves_instantly() {
         !frame.draw.iter().any(|draw| matches!(draw, Draw::Rim(..))),
         "No rim"
     );
-    assert!(
-        !frame.draw.iter().any(|draw| matches!(draw,
-        Draw::Shape(r, _, 0., color) if same(*r, grown(first)) && color[0] == 1.)),
-        "No brightening"
-    );
+    assert!(frame.draw.iter().any(|draw| matches!(draw,
+        Draw::Shape(r, _, 0., color) if same(*r, grown(first)) && *color == [1., 1., 1., view::FOCUS_OVERLAY])));
+    // No other card is dimmed or veiled.
+    assert!(!frame.draw.iter().any(|draw| matches!(draw,
+        Draw::Shape(r, _, 0., color) if r.w == view::CARD_WIDTH && color[0] == 0. && color[3] > 0.)));
     // Moving focus pops the next card in the very next frame and returns the old one.
     let all = controls(&state);
     state.direction(Direction::Right, &all);
@@ -4669,14 +4670,20 @@ fn removed_settings_still_load_from_old_preference_files_and_their_rows_are_gone
 }
 
 #[test]
-fn every_focus_style_keeps_the_grown_card_and_caption_inside_the_margin_in_both_appearances() {
-    use crate::model::FocusStyle;
+fn every_focus_size_keeps_the_card_and_caption_inside_the_margin_and_clear_of_neighbours() {
+    use crate::model::FocusGrow;
     use crate::renderer::Draw;
     use crate::state::Rect;
-    for style in FocusStyle::ALL {
+    let overlaps = |a: Rect, b: Rect| {
+        a.x < b.x + b.w - 0.01
+            && b.x < a.x + a.w - 0.01
+            && a.y < b.y + b.h - 0.01
+            && b.y < a.y + a.h - 0.01
+    };
+    for level in FocusGrow::LEVELS {
         for light in [false, true] {
             let mut state = ready();
-            state.preferences.focus_style = style;
+            state.preferences.focus_grow = FocusGrow(level);
             if light {
                 state.preferences.appearance = crate::model::Appearance::Light;
             }
@@ -4689,8 +4696,8 @@ fn every_focus_style_keeps_the_grown_card_and_caption_inside_the_margin_in_both_
                 .take(3 * crate::state::APPS_COLUMNS)
                 .collect();
             assert_eq!(cards.len(), 18);
-            let share = view::focus_grow(style);
-            for card in cards {
+            let share = FocusGrow(level).share();
+            for card in &cards {
                 state.focus = card.target.clone();
                 state.sync_motion();
                 let frame = scene(&state);
@@ -4716,7 +4723,7 @@ fn every_focus_style_keeps_the_grown_card_and_caption_inside_the_margin_in_both_
                         }
                         _ => None,
                     })
-                    .unwrap_or_else(|| panic!("{style:?}: no grown card for {:?}", card.target));
+                    .unwrap_or_else(|| panic!("{level}%: no grown card for {:?}", card.target));
                 let m = view::SCREEN_MARGIN;
                 let inside = |r: Rect| {
                     r.x >= m - 0.01
@@ -4725,11 +4732,20 @@ fn every_focus_style_keeps_the_grown_card_and_caption_inside_the_margin_in_both_
                 };
                 assert!(
                     inside(drawn),
-                    "{style:?}: {:?} grows to {drawn:?}",
+                    "{level}%: {:?} grows to {drawn:?}",
                     card.target
                 );
                 assert!(drawn.x <= hit.x && drawn.x + drawn.w >= hit.x + hit.w);
                 assert!(drawn.y <= hit.y + 0.01 && drawn.y + drawn.h >= hit.y + hit.h - 0.01);
+                // The neighbours stay where they are and the grown card never covers them.
+                for other in cards.iter().filter(|other| other.target != card.target) {
+                    assert!(
+                        !overlaps(drawn, other.rect),
+                        "{level}%: {:?} grown over {:?}",
+                        card.target,
+                        other.target
+                    );
+                }
                 let caption = frame
                     .draw
                     .iter()
@@ -4746,104 +4762,61 @@ fn every_focus_style_keeps_the_grown_card_and_caption_inside_the_margin_in_both_
                     caption.x >= m && caption.x + caption.w <= 1920. - m,
                     "{caption:?}"
                 );
+                assert!(
+                    caption.y >= drawn.y + drawn.h,
+                    "{level}%: caption under the card"
+                );
             }
         }
     }
-}
-
-#[test]
-fn each_focus_style_draws_only_its_own_parts_and_s2_dims_the_others_in_both_appearances() {
-    use crate::model::FocusStyle;
-    use crate::renderer::Draw;
-    let parts = |style: FocusStyle, light: bool| {
-        let mut state = ready();
-        state.preferences.focus_style = style;
-        if light {
-            state.preferences.appearance = crate::model::Appearance::Light;
-        }
-        state.open(Page::Home);
-        state.sync_motion();
-        let draw = scene(&state).draw;
-        let rims: Vec<f32> = draw
-            .iter()
-            .filter_map(|d| match d {
-                Draw::Rim(_, _, width, ..) => Some(*width),
-                _ => None,
-            })
-            .collect();
-        let halo = draw
-            .iter()
-            .any(|d| matches!(d, Draw::Shadow(_, _, _, color) if color[0] == 1. && color[3] > 0.));
-        let card = view::CARD_WIDTH * (1. + view::focus_grow(style));
-        let brightened = draw.iter().any(|d| {
-            matches!(d, Draw::Shape(r, _, 0., color)
-                if color[0] == 1. && color[3] < 0.2 && (r.w - card).abs() < 0.01)
-        });
-        let dimmed = draw
-            .iter()
-            .filter(|d| {
-                matches!(d, Draw::Shape(r, _, 0., color)
-                    if *color == [0., 0., 0., 0.12] && r.w == view::CARD_WIDTH)
-            })
-            .count();
-        (rims, halo, brightened, dimmed)
-    };
-    for light in [false, true] {
-        assert_eq!(parts(FocusStyle::S1, light), (vec![], false, false, 0));
-        let (rims, halo, brightened, dimmed) = parts(FocusStyle::S2, light);
-        assert_eq!((rims, halo, brightened), (vec![], false, false));
-        assert!(
-            dimmed >= 17,
-            "every other visible card is dimmed, also in Light ({dimmed})"
-        );
-        assert_eq!(parts(FocusStyle::S3, false), (vec![], true, false, 0));
-        assert_eq!(
-            parts(FocusStyle::S4, light),
-            (vec![view::FOCUS_HAIRLINE], false, false, 0)
-        );
-        assert_eq!(parts(FocusStyle::S5, light), (vec![], false, true, 0));
-        assert_eq!(
-            parts(FocusStyle::S6, light),
-            (
-                vec![view::FOCUS_RIM_OUTER, view::FOCUS_RIM_INNER],
-                false,
-                true,
-                0
-            )
-        );
+    // At 14% the 40 px gap between neighbours keeps a clear space on each side.
+    let gap = view::CARD_PITCH - view::CARD_WIDTH;
+    assert!(gap - view::CARD_WIDTH * 0.14 / 2. > 20.);
+    // The shadow grows with the size: wider, lower and deeper at each level.
+    let shadows: Vec<_> = FocusGrow::LEVELS
+        .iter()
+        .map(|level| view::focus_shadow(FocusGrow(*level)))
+        .collect();
+    for pair in shadows.windows(2) {
+        assert!(pair[1].0 > pair[0].0 && pair[1].1 > pair[0].1 && pair[1].2 > pair[0].2);
     }
 }
 
 #[test]
-fn the_temporary_focus_style_row_cycles_all_six_and_saves_at_once() {
-    use crate::model::FocusStyle;
+fn the_temporary_focus_size_row_cycles_five_levels_and_old_preferences_still_load() {
+    use crate::model::FocusGrow;
     let mut state = ready();
     state.open(Page::Settings);
     state.section = 0;
     state.focus = Target::Setting(16);
-    let mut seen = vec![state.preferences.focus_style];
-    for _ in 0..6 {
+    let mut seen = vec![state.preferences.focus_grow.0];
+    for _ in 0..5 {
         assert_eq!(state.activate(), vec![Effect::Save]);
-        seen.push(state.preferences.focus_style);
+        seen.push(state.preferences.focus_grow.0);
     }
-    assert_eq!(&seen[..6], &FocusStyle::ALL);
-    assert_eq!(seen[6], FocusStyle::S1, "OK after S6 returns to S1");
-    state.preferences.focus_style = FocusStyle::S3;
+    assert_eq!(seen, [10, 12, 14, 6, 8, 10]);
+    state.preferences.focus_grow = FocusGrow(14);
+    let frame = scene(&state);
     assert!(
-        scene(&state)
+        frame
             .draw
             .iter()
-            .any(|d| matches!(d, crate::renderer::Draw::Text(t, ..) if t == "S3 · Pop + glow"))
+            .any(|d| matches!(d, crate::renderer::Draw::Text(t, ..) if t == "14%"))
     );
-    // Stored as "focus_style"; a missing or unknown value loads as S1.
+    // Stored as "focus_grow"; other values load as 10%, and the earlier focus_style key
+    // (from the style trial) is ignored without error.
     let saved = serde_json::to_value(&state.preferences).unwrap();
-    assert_eq!(saved["focus_style"], "s3");
-    let loaded: Preferences = serde_json::from_value(json!({"focus_style": "s5"})).unwrap();
-    assert_eq!(loaded.focus_style, FocusStyle::S5);
-    for value in [json!("c"), json!(3), json!(null)] {
-        let loaded: Preferences = serde_json::from_value(json!({"focus_style": value})).unwrap();
-        assert_eq!(loaded.focus_style, FocusStyle::S1);
+    assert_eq!(saved["focus_grow"], 14);
+    assert!(saved.get("focus_style").is_none());
+    let loaded: Preferences =
+        serde_json::from_value(json!({"focus_grow": 6, "focus_style": "s3"})).unwrap();
+    assert_eq!(loaded.focus_grow, FocusGrow(6));
+    for value in [json!(7), json!("10"), json!(-1), json!(null), json!(1e20)] {
+        let loaded: Preferences = serde_json::from_value(json!({"focus_grow": value})).unwrap();
+        assert_eq!(loaded.focus_grow, FocusGrow(10), "{value}");
     }
-    let loaded: Preferences = serde_json::from_value(json!({})).unwrap();
-    assert_eq!(loaded.focus_style, FocusStyle::S1);
+    for style in ["s1", "s6", "c"] {
+        let loaded: Preferences = serde_json::from_value(json!({"focus_style": style})).unwrap();
+        assert_eq!(loaded.focus_grow, FocusGrow(10));
+    }
 }

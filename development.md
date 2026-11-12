@@ -469,20 +469,18 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
 - **Focus** is static on app and wallpaper cards, everywhere in Settings and in every overlay
   (the context menu, alerts, the keyboard, Recents): it changes in the
   first frame after the key, with no lift, spring, tilt or fade on the item itself. A focused
-  app or wallpaper card follows the focus style (`model::FocusStyle`, preference
-  `focus_style`, default S1). S1 "Pop": one static 4% size step around its centre with a soft,
-  wide, low shadow and nothing else. S2 "Pop + dim": S1, and while a card of that group has
-  focus every other card is veiled 12% black (kept dark in Light appearance too). S3 "Pop +
-  glow": S1 plus a soft white halo behind the card, for dark wallpapers where a shadow
-  disappears. S4 "Pop + hairline": S1 plus a 1 px inner hairline at 30% white. S5 "Lift": 6%
-  larger, a deeper shadow and the card 8% brighter. S6 "Rim": the former style C (5% larger,
-  12% brighter, a 3 px near-white rim inside a 1.5 px line of 65% black), kept for comparison.
-  Nothing animates, hit regions never move, and the size does not change while a card is
-  pressed; a grown card that would cross the 64 px screen margin (the third row's bottom edge)
-  is shifted back inside it. Its title appears beneath it; resting cards keep the same small
-  resting shadow. Settings › General › Focus style is a **temporary** row: OK cycles S1 to S6
-  and applies at once, so the style can be chosen on the TV; once chosen, the row, the
-  preference and the other styles are removed.
+  app or wallpaper card is drawn one static size step larger around its centre (preference
+  `focus_grow`, default 10%), about 6% brighter, with a soft shadow that grows with the step
+  (blur 32 → 64 px, offset 12 → 30 px, opacity 0.32 → 0.5 from 6% to 14%), so a larger step
+  also looks more lifted. There is no rim or outline, other cards are not dimmed, nothing
+  animates, hit regions never move, and the size does not change while a card is pressed. A
+  grown card that would cross the 64 px screen margin (the edge columns at 14%, the third row's
+  bottom edge) is shifted back inside it; at 14% a focused card still leaves more than 20 px of
+  the 40 px gap to its neighbours. Its title appears beneath it; resting cards keep the same
+  small resting shadow. Settings › General › Focus size is a **temporary** row: OK cycles 6%,
+  8%, 10%, 12% and 14% and applies at once, so the size can be settled on the TV; the row then
+  goes and the chosen value becomes the fixed size. The earlier `focus_style` key from the style
+  trial is ignored.
   In Settings the
   focused sidebar entry, row, choice, button or key turns opaque white with dark labels and its
   shadow at once, at its own rectangle (`Scene::lift` is 0 there and in overlays), and holding OK
