@@ -1066,7 +1066,8 @@ How it works, mirroring the Home manifest method:
 - `/var/run/luma-screensaver` marks the takeover as applied this boot. While it exists Luma keeps
   its own idle timer off (checked at start and whenever Luma comes to the front), so the clock is
   never shown twice. A jailed normal launch that cannot read `/var/run` keeps its own timer.
-- The page uses timers only (one 5 s interval and a 350 ms timeout around each jump) and stops
+- The page uses timers only (one 5 s interval, a 350 ms timeout around each jump, and one timeout
+  that refreshes the time 20 ms after each minute change without moving the clock) and stops
   them while hidden. Any `keydown`/`keyup`, pointer down, click, wheel or pointer movement that
   reaches it calls `window.close()` without acting on it; pointer movement in the first 800 ms is
   ignored, as the system places its cursor when a window opens. `webOSRelaunch` restarts the clock.

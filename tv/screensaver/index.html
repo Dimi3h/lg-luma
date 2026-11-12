@@ -100,6 +100,7 @@
         var dateLine = document.getElementById('date');
         var interval = null;
         var fade = null;
+        var minute = null;
         var started = 0;
         var closed = false;
 
@@ -145,12 +146,25 @@
             clock.style.opacity = '1';
           }, FADE);
         }
-        // Timers only: nothing runs between jumps, and nothing at all while hidden.
+        // The time changes exactly at each minute, not only at the next jump: one timeout set
+        // to just after the coming minute boundary, set again each time it fires.
+        function nextMinute() {
+          var now = new Date();
+          var wait = 60000 - (now.getSeconds() * 1000 + now.getMilliseconds()) + 20;
+          minute = window.setTimeout(function () {
+            minute = null;
+            render();
+            nextMinute();
+          }, wait);
+        }
+        // Timers only: nothing runs between jumps and minute changes, and nothing while hidden.
         function stop() {
           if (interval !== null) window.clearInterval(interval);
           if (fade !== null) window.clearTimeout(fade);
+          if (minute !== null) window.clearTimeout(minute);
           interval = null;
           fade = null;
+          minute = null;
         }
         function start() {
           if (closed) return;
@@ -160,6 +174,7 @@
           place();
           clock.style.opacity = '1';
           interval = window.setInterval(jump, STEP);
+          nextMinute();
         }
         // Any input that reaches the screensaver closes it; it never acts on the input.
         function dismiss(event) {

@@ -142,8 +142,8 @@ test('every 5 s the clock fades out for 350 ms, jumps inside the safe area and f
     tv.advance(1);
     assert.equal(clock.style.opacity, '1', 'Faded in at its new place');
     seen.push(tv.position());
-    // Only the repeating jump timer remains between jumps.
-    assert.equal(tv.timers.size, 1);
+    // Between jumps only the jump interval and the next minute change are scheduled.
+    assert.equal(tv.timers.size, 2);
   }
   for (const [x, y] of seen) {
     assert.ok(x >= 80 && x + 360 <= 1920 - 80, `x ${x}`);
@@ -190,5 +190,28 @@ test('a relaunch restarts the clock and a hidden page runs no timers', () => {
   assert.equal(tv.timers.size, 0);
   tv.document.hidden = false;
   tv.fire('visibilitychange');
-  assert.equal(tv.timers.size, 1);
+  assert.equal(tv.timers.size, 2);
+});
+
+test('the time changes exactly at the minute, between jumps, without moving the clock', () => {
+  // 21:07:57: the minute changes 3 s in, before the first jump at 5 s.
+  const tv = page({ start: '2026-11-12T21:07:57' });
+  const { time } = tv.elements;
+  const where = tv.position();
+  assert.equal(time.textContent, '21:07');
+  tv.advance(3019);
+  assert.equal(time.textContent, '21:07');
+  tv.advance(1);
+  assert.equal(time.textContent, '21:08', 'Shown 20 ms into the new minute');
+  assert.deepEqual(tv.position(), where, 'A minute change does not move the clock');
+  assert.equal(tv.elements.clock.style.opacity, '1');
+  // And again at every following minute, also across the hour and the day.
+  const midnight = page({ start: '2026-11-12T23:59:30', language: 'nl-NL' });
+  midnight.advance(30_020);
+  assert.equal(midnight.elements.time.textContent, '00:00');
+  assert.equal(midnight.elements.date.textContent, 'vrijdag 13 november');
+  for (let i = 1; i <= 3; i++) {
+    midnight.advance(60_000);
+    assert.equal(midnight.elements.time.textContent, `00:0${i}`);
+  }
 });
