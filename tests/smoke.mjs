@@ -153,7 +153,7 @@ try {
   assert.deepEqual(hidden.focus, { App: 'youtube.leanback.v4' });
   assert.ok(!hidden.apps.includes('netflix'), 'Hidden apps leave the grid');
   // Reload from disk and show the hidden Netflix again from Settings › General › Hidden apps.
-  const hiddenAppsPage = 'settings,enter,down,down,down,down,enter';
+  const hiddenAppsPage = 'settings,enter,down,down,down,enter';
   const hiddenList = await scenario('hidden-apps', hiddenAppsPage);
   assert.equal(hiddenList.subpage, 'HiddenApps');
   assert.deepEqual(hiddenList.focus, { Choice: 0 });
