@@ -209,6 +209,61 @@ fn deserialize_appearance<'de, D: serde::Deserializer<'de>>(
     )
 }
 
+/// How a focused app or wallpaper card stands out. Temporary choice on the TV
+/// (Settings › General › Focus style): once one is picked, the others and the row go.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FocusStyle {
+    /// "Pop": about 4% larger with a soft, wide, low shadow; nothing else.
+    #[default]
+    S1,
+    /// "Pop + dim": S1, and every other card dimmed about 12%.
+    S2,
+    /// "Pop + glow": S1 plus a very soft light halo behind the card.
+    S3,
+    /// "Pop + hairline": S1 plus a 1 px inner hairline at about 30% white.
+    S4,
+    /// "Lift": about 6% larger, a deeper shadow and the card about 8% brighter.
+    S5,
+    /// "Rim": the earlier style C (5% larger, 12% brighter, dual-tone rim), for comparison.
+    S6,
+}
+
+impl FocusStyle {
+    pub const ALL: [Self; 6] = [Self::S1, Self::S2, Self::S3, Self::S4, Self::S5, Self::S6];
+
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|style| *style == self).unwrap()
+    }
+
+    /// The next style; OK on the Settings row cycles through all six.
+    pub fn next(self) -> Self {
+        Self::ALL[(self.index() + 1) % Self::ALL.len()]
+    }
+
+    pub fn label_key(self) -> &'static str {
+        match self {
+            Self::S1 => "focusPop",
+            Self::S2 => "focusPopDim",
+            Self::S3 => "focusPopGlow",
+            Self::S4 => "focusPopHairline",
+            Self::S5 => "focusLift",
+            Self::S6 => "focusRim",
+        }
+    }
+}
+
+/// Unknown or malformed values load as S1 instead of failing the preference file.
+fn deserialize_focus_style<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<FocusStyle, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(FocusStyle::ALL
+        .into_iter()
+        .find(|style| serde_json::to_value(style).ok().as_ref() == Some(&value))
+        .unwrap_or_default())
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DateFormat {
@@ -288,6 +343,8 @@ pub struct Preferences {
     pub screensaver_minutes: u32,
     #[serde(deserialize_with = "deserialize_appearance")]
     pub appearance: Appearance,
+    #[serde(deserialize_with = "deserialize_focus_style")]
+    pub focus_style: FocusStyle,
     /// The 24-hour choice as earlier versions saved it: written with every preference file, so
     /// only `true` is known to be deliberate. Read through `uses_24_hour`.
     pub hour_24: bool,
@@ -327,6 +384,7 @@ impl Default for Preferences {
             show_inputs: false,
             screensaver_minutes: 10,
             appearance: Appearance::Dark,
+            focus_style: FocusStyle::S1,
             hour_24: false,
             clock_24: None,
             show_seconds: false,

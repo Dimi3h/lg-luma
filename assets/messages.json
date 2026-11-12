@@ -962,5 +962,33 @@
   "storeApps": {
     "en": "Apps",
     "nl": "Apps"
+  },
+  "focusStyle": {
+    "en": "Focus style",
+    "nl": "Focusstijl"
+  },
+  "focusPop": {
+    "en": "S1 · Pop",
+    "nl": "S1 · Pop"
+  },
+  "focusPopDim": {
+    "en": "S2 · Pop + dim",
+    "nl": "S2 · Pop + dim"
+  },
+  "focusPopGlow": {
+    "en": "S3 · Pop + glow",
+    "nl": "S3 · Pop + gloed"
+  },
+  "focusPopHairline": {
+    "en": "S4 · Pop + hairline",
+    "nl": "S4 · Pop + haarlijn"
+  },
+  "focusLift": {
+    "en": "S5 · Lift",
+    "nl": "S5 · Lift"
+  },
+  "focusRim": {
+    "en": "S6 · Rim",
+    "nl": "S6 · Rand"
   }
 }
