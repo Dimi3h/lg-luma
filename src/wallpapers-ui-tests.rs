@@ -11,7 +11,7 @@ fn custom(index: u32) -> Wallpaper {
 }
 
 #[test]
-fn upload_sits_left_of_rotation_and_both_remain_fixed_in_every_language() {
+fn upload_is_the_only_fixed_action_and_stays_put_in_every_language() {
     let mut state = ready();
     state.open(crate::state::Page::Settings);
     state.section = 1;
@@ -19,252 +19,32 @@ fn upload_sits_left_of_rotation_and_both_remain_fixed_in_every_language() {
         state.preferences.language = language;
         state.scroll = 0.;
         let before = controls(&state);
-        let cycle = before
-            .iter()
-            .find(|c| c.target == Target::WallpaperCycle)
-            .unwrap()
-            .rect;
         let upload = before
             .iter()
             .find(|c| c.target == Target::UploadWallpaper)
             .unwrap()
             .rect;
-        assert!(cycle.x >= 640.);
-        let gradient = before
-            .iter()
-            .find(|c| c.target == Target::WallpaperGradient)
-            .unwrap()
-            .rect;
         assert!(upload.x >= 640., "{}: {}", language.code(), upload.x);
-        assert_eq!(upload.x + upload.w + 20., gradient.x);
-        assert_eq!(gradient.x + gradient.w + 20., cycle.x);
-        assert_eq!(cycle.y, upload.y);
+        // The removed Gradient and Rotation buttons left only Upload above the gallery.
+        assert_eq!(
+            before
+                .iter()
+                .filter(|c| !c.scrollable && c.rect.y == upload.y)
+                .count(),
+            1
+        );
         state.scroll = 500.;
         let after = controls(&state);
-        for target in [
-            Target::WallpaperCycle,
-            Target::WallpaperGradient,
-            Target::UploadWallpaper,
-        ] {
-            let old = before.iter().find(|c| c.target == target).unwrap();
-            let new = after.iter().find(|c| c.target == target).unwrap();
-            assert_eq!(
-                (old.rect.x, old.rect.y, old.rect.w),
-                (new.rect.x, new.rect.y, new.rect.w)
-            );
-            assert!(!new.scrollable);
-        }
-    }
-}
-
-#[test]
-fn cycling_button_toggles_on_off_without_opening_a_page_or_moving_controls() {
-    let mut state = ready();
-    state.open(crate::state::Page::Settings);
-    state.section = 1;
-    state.focus = Target::UploadWallpaper;
-    state.direction(Direction::Right, &controls(&state));
-    assert_eq!(state.focus, Target::WallpaperGradient);
-    state.direction(Direction::Right, &controls(&state));
-    assert_eq!(state.focus, Target::WallpaperCycle);
-    state.direction(Direction::Left, &controls(&state));
-    assert_eq!(state.focus, Target::WallpaperGradient);
-    state.direction(Direction::Left, &controls(&state));
-    assert_eq!(state.focus, Target::UploadWallpaper);
-    state.direction(Direction::Right, &controls(&state));
-    state.direction(Direction::Right, &controls(&state));
-    assert!(!state.preferences.wallpaper_cycle);
-    state.scroll = 300.;
-    for language in crate::i18n::Language::ALL {
-        state.preferences.language = language;
-        let before = controls(&state);
-        assert!(scene(&state).draw.iter().any(|draw| matches!(draw, Draw::TintedImage(path, ..) if path.ends_with("ui-icons/refresh-off.lvec"))));
-        assert_eq!(state.activate(), vec![Effect::Save]);
-        assert!(state.preferences.wallpaper_cycle);
-        assert!(state.preferences.wallpaper_changed > 0);
-        assert!(state.subpage.is_none());
-        assert!(state.overlay.is_none());
-        assert_eq!(state.focus, Target::WallpaperCycle);
-        assert_eq!(state.scroll, 300.);
-        let enabled = scene(&state);
-        assert!(enabled.draw.iter().any(|draw| matches!(draw, Draw::TintedImage(path, ..) if path.ends_with("ui-icons/refresh.lvec"))));
-        assert!(!enabled.draw.iter().any(|draw| matches!(draw, Draw::TintedImage(path, ..) if path.ends_with("ui-icons/refresh-off.lvec"))));
-        let label = language.t("wallpaperCycle");
-        assert!(
-            enabled
-                .draw
-                .iter()
-                .any(|draw| matches!(draw, Draw::Text(value, ..) if value == label))
-        );
-        let button = enabled
-            .controls
+        let new = after
             .iter()
-            .find(|c| c.target == Target::WallpaperCycle)
-            .unwrap()
-            .rect;
-        let title = enabled
-            .draw
-            .iter()
-            .find_map(|draw| match draw {
-                Draw::Text(value, rect, ..) if value == label => Some(rect),
-                _ => None,
-            })
+            .find(|c| c.target == Target::UploadWallpaper)
             .unwrap();
-        let (value, style) = enabled
-            .draw
-            .iter()
-            .find_map(|draw| match draw {
-                Draw::Text(label, rect, style, ..)
-                    if label == language.t("stateOn") && rect.x > button.x =>
-                {
-                    Some((rect, style))
-                }
-                _ => None,
-            })
-            .unwrap();
-        assert!(style.align_right);
-        assert!((value.x - title.x - title.w - 20.).abs() < 0.001);
-        // Focus in Settings is static (no grow); the value keeps its inset from the edge.
-        assert!((button.x + button.w - value.x - value.w - 28.).abs() < 0.001);
-        for (old, new) in before.iter().zip(&enabled.controls) {
-            assert_eq!(old.target, new.target);
-            assert_eq!(
-                (old.rect.x, old.rect.y, old.rect.w, old.rect.h),
-                (new.rect.x, new.rect.y, new.rect.w, new.rect.h)
-            );
-        }
-        assert_eq!(state.activate(), vec![Effect::Save]);
-        assert!(!state.preferences.wallpaper_cycle);
-    }
-}
-
-#[test]
-fn gradient_toggle_is_saved_stable_and_switches_bundled_and_uploaded_images() {
-    let mut state = ready();
-    state.open(crate::state::Page::Settings);
-    state.section = 1;
-    state.focus = Target::WallpaperGradient;
-    state.scroll = 300.;
-    let defaults: crate::model::Preferences = serde_json::from_str("{}").unwrap();
-    assert!(defaults.wallpaper_gradient);
-    for language in crate::i18n::Language::ALL {
-        state.preferences.language = language;
-        let before = controls(&state);
-        assert_eq!(state.activate(), vec![Effect::Save]);
-        assert!(!state.preferences.wallpaper_gradient);
-        assert_eq!(state.focus, Target::WallpaperGradient);
-        assert_eq!(state.scroll, 300.);
-        assert!(state.overlay.is_none() && state.subpage.is_none());
-        let rendered = scene(&state);
-        assert!(
-            matches!(&rendered.draw[0], Draw::Image(path, ..) if path.ends_with("dunes-plain.jpg"))
+        assert_eq!(
+            (upload.x, upload.y, upload.w),
+            (new.rect.x, new.rect.y, new.rect.w)
         );
-        for (old, new) in before.iter().zip(&rendered.controls) {
-            assert_eq!(old.target, new.target);
-            assert_eq!(
-                (old.rect.x, old.rect.y, old.rect.w),
-                (new.rect.x, new.rect.y, new.rect.w)
-            );
-        }
-        let saved = serde_json::to_string(&state.preferences).unwrap();
-        let restored: crate::model::Preferences = serde_json::from_str(&saved).unwrap();
-        assert!(!restored.wallpaper_gradient);
-        assert_eq!(state.activate(), vec![Effect::Save]);
-        assert!(
-            matches!(&scene(&state).draw[0], Draw::Image(path, ..) if path.ends_with("dunes.jpg"))
-        );
+        assert!(!new.scrollable);
     }
-    state.direction(Direction::Down, &controls(&state));
-    assert_eq!(state.focus, Target::Background(1));
-    state.direction(Direction::Up, &controls(&state));
-    assert_eq!(state.focus, Target::WallpaperGradient);
-    let item = custom(1);
-    state.preferences.background = item.id.clone();
-    state.set_wallpapers(vec![item]);
-    state.activate();
-    assert!(
-        matches!(&scene(&state).draw[0], Draw::Image(path, ..) if path.ends_with("original.jpg"))
-    );
-    state.wallpapers[0].has_original = false;
-    assert!(
-        matches!(&scene(&state).draw[0], Draw::Image(path, ..) if path.ends_with("wallpaper.jpg"))
-    );
-}
-
-#[test]
-fn cycling_uses_all_uploaded_ids_but_not_deleted_or_pending_deletion_entries() {
-    let mut state = ready();
-    state.preferences.reduced_motion = true;
-    let first = custom(1);
-    let second = custom(2);
-    state.set_wallpapers(vec![first.clone(), second.clone()]);
-    state.preferences.background = "northern-lights".into();
-    state.deleting_wallpaper = Some(first.id.clone());
-    assert!(state.cycle_wallpaper(100));
-    assert_eq!(state.preferences.background, second.id);
-    assert!(!state.can_delete_background(&second.id));
-    assert!(state.previous_background.is_none());
-    assert!(state.cycle_wallpaper(200));
-    assert_eq!(state.preferences.background, "slate");
-    state.deleting_wallpaper = None;
-    state.preferences.background = "northern-lights".into();
-    assert!(state.cycle_wallpaper(300));
-    assert_eq!(state.preferences.background, first.id);
-    state.preferences.background = "dunes".into();
-    state.preferences.deleted_backgrounds = vec!["san-francisco".into()];
-    assert!(state.cycle_wallpaper(400));
-    assert_eq!(state.preferences.background, "summit");
-}
-
-#[test]
-fn automatic_changes_preserve_manual_splash_across_saves_and_restart_and_manual_selection_resets_time()
- {
-    let mut state = ready();
-    state.preferences.background = "forest".into();
-    state.preferences.wallpaper_cycle = true;
-    state.preferences.wallpaper_changed = 100;
-    assert!(!crate::wallpaper_cycle::due(true, 100, 100));
-    assert!(crate::wallpaper_cycle::startup_due(
-        true,
-        true,
-        true,
-        std::time::Duration::ZERO
-    ));
-    assert!(state.cycle_wallpaper(100));
-    assert_eq!(state.background_fade, crate::state::CYCLE_FADE);
-    assert_eq!(state.preferences.splash_background(), "forest");
-    state.preferences.show_seconds = !state.preferences.show_seconds;
-    let mut preferences: Preferences =
-        serde_json::from_value(serde_json::to_value(&state.preferences).unwrap()).unwrap();
-    preferences.sanitize();
-    assert_eq!(preferences.splash_background(), "forest");
-    let mut restored = State::new(preferences);
-    assert!(restored.cycle_wallpaper(200));
-    assert_eq!(restored.preferences.splash_background(), "forest");
-    restored.open(crate::state::Page::Settings);
-    restored.section = 1;
-    restored.focus = Target::Background(0);
-    restored.activate();
-    assert_eq!(restored.activate(), vec![Effect::Save]);
-    assert_eq!(restored.preferences.background, "slate");
-    assert_eq!(restored.preferences.splash_background(), "slate");
-    assert_eq!(restored.background_fade, crate::state::BACKGROUND_FADE);
-    assert!(restored.preferences.wallpaper_changed > 200);
-}
-
-#[test]
-fn former_exclusions_are_ignored_and_only_the_on_off_state_is_saved() {
-    let preferences: Preferences = serde_json::from_value(serde_json::json!({
-        "wallpaper_cycle": "hourly", "wallpaper_skip": ["san-francisco"], "background": "dunes"
-    }))
-    .unwrap();
-    let mut state = State::new(preferences);
-    assert!(state.preferences.wallpaper_cycle);
-    assert!(state.cycle_wallpaper(100));
-    assert_eq!(state.preferences.background, "san-francisco");
-    let saved = serde_json::to_value(state.preferences).unwrap();
-    assert_eq!(saved["wallpaper_cycle"], true);
-    assert!(saved.get("wallpaper_skip").is_none());
 }
 
 #[test]
@@ -372,7 +152,7 @@ fn upload_instructions_are_ordered_and_only_the_displayed_url_loses_its_slash() 
 }
 
 #[test]
-fn upload_button_is_compact_and_rotation_is_right_aligned_in_every_language() {
+fn upload_button_is_compact_and_right_aligned_in_every_language() {
     let mut state = ready();
     state.open(crate::state::Page::Settings);
     state.section = 1;
@@ -390,12 +170,7 @@ fn upload_button_is_compact_and_rotation_is_right_aligned_in_every_language() {
             .find(|c| c.target == Target::Background(2))
             .unwrap()
             .rect;
-        let cycle = gallery
-            .iter()
-            .find(|c| c.target == Target::WallpaperCycle)
-            .unwrap()
-            .rect;
-        assert_eq!(cycle.x + cycle.w, right_card.x + right_card.w);
+        assert_eq!(upload.x + upload.w, right_card.x + right_card.w);
         assert!((88. ..=520.).contains(&upload.w));
         assert!(upload.y + upload.h < right_card.y);
         let title = rendered
@@ -469,7 +244,7 @@ fn gallery_scrolls_behind_fixed_controls_and_fades_beneath_the_title_line() {
             )
         })
         .unwrap();
-    for key in ["uploadWallpaper", "wallpaperCycle", "interface"] {
+    for key in ["uploadWallpaper", "interface"] {
         let label = state.preferences.language.t(key);
         let fixed = scrolled
             .draw
@@ -538,8 +313,9 @@ fn remote_background_focus_stays_below_the_fixed_upload_action() {
         }
     }
     assert_eq!(state.focus, Target::Background(2));
+    // Above the gallery's first row there is only Upload.
     state.direction(Direction::Up, &controls(&state));
-    assert_eq!(state.focus, Target::WallpaperCycle);
+    assert_eq!(state.focus, Target::UploadWallpaper);
 }
 
 #[test]
@@ -661,19 +437,13 @@ fn background_popup_is_modal_keeps_the_same_thumbnail_and_restores_its_parent() 
             .iter()
             .map(|c| c.target.clone())
             .collect::<Vec<_>>(),
-        vec![
-            Target::UseBackground,
-            Target::NightBackground,
-            Target::DeleteBackground
-        ]
+        vec![Target::UseBackground, Target::DeleteBackground]
     );
     // The popup keeps the same thumbnail in place, unscaled: cards no longer lift.
     assert!(popup.draw.iter().any(
         |draw| matches!(draw, Draw::Image(_, rect, ..)
             if rect.x == before.x && rect.y == before.y && rect.w == before.w && rect.h == before.h)
     ));
-    state.direction(Direction::Down, &popup.controls);
-    assert_eq!(state.focus, Target::NightBackground);
     state.direction(Direction::Down, &popup.controls);
     assert_eq!(state.focus, Target::DeleteBackground);
     state.activate();
@@ -700,8 +470,8 @@ fn selected_background_has_no_delete_action_and_rejects_forced_confirmation() {
         .unwrap();
     state.focus = Target::Background(index);
     state.options();
-    // Use and Use at night, but no Delete.
-    assert_eq!(scene(&state).controls.len(), 2);
+    // Use, but no Delete.
+    assert_eq!(scene(&state).controls.len(), 1);
     assert!(!state.can_delete_background(&selected));
     state.focus = Target::DeleteBackground;
     state.activate();

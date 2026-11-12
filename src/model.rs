@@ -288,18 +288,12 @@ pub struct Preferences {
     pub screensaver_minutes: u32,
     #[serde(deserialize_with = "deserialize_appearance")]
     pub appearance: Appearance,
-    /// Settings › General › Text size: Larger (about 1.15×) for body text.
-    pub larger_text: bool,
-    /// A second wallpaper shown between sunset and sunrise (as Automatic appearance decides
-    /// night); `None` keeps one wallpaper all day.
-    pub night_background: Option<String>,
     /// The 24-hour choice as earlier versions saved it: written with every preference file, so
     /// only `true` is known to be deliberate. Read through `uses_24_hour`.
     pub hour_24: bool,
     /// The clock format once chosen in Settings (12 or 24 hour). Unset, Dutch uses 24 hours.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clock_24: Option<bool>,
-    pub reduced_motion: bool,
     pub show_seconds: bool,
     /// Optional name appended to the Home greeting ("Good evening, Ana."). Empty = plain greeting.
     pub greeting_name: String,
@@ -317,11 +311,6 @@ pub struct Preferences {
     pub temperature_unit: Unit,
     #[serde(deserialize_with = "crate::i18n::deserialize_language")]
     pub language: Language,
-    #[serde(deserialize_with = "crate::wallpaper_cycle::deserialize")]
-    pub wallpaper_cycle: bool,
-    pub wallpaper_gradient: bool,
-    /// Unix seconds of the last automatic or chosen wallpaper change, for the timed modes.
-    pub wallpaper_changed: u64,
 }
 
 impl Default for Preferences {
@@ -338,11 +327,8 @@ impl Default for Preferences {
             show_inputs: false,
             screensaver_minutes: 10,
             appearance: Appearance::Dark,
-            larger_text: false,
-            night_background: None,
             hour_24: false,
             clock_24: None,
-            reduced_motion: false,
             show_seconds: false,
             greeting_name: String::new(),
             show_greeting: true,
@@ -354,9 +340,6 @@ impl Default for Preferences {
             weather_location: None,
             temperature_unit: Unit::Celsius,
             language: Language::En,
-            wallpaper_cycle: false,
-            wallpaper_gradient: true,
-            wallpaper_changed: 0,
         }
     }
 }

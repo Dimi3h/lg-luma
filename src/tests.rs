@@ -324,7 +324,6 @@ fn up_and_down_follow_grid_indices_including_offscreen_rows() {
 #[test]
 fn the_shelf_scrolls_away_only_past_three_rows_and_returns_with_the_first() {
     let mut state = ready();
-    state.preferences.reduced_motion = true;
     let grid = state.grid();
     assert!(
         grid.len() > 3 * crate::state::APPS_COLUMNS,
@@ -362,7 +361,6 @@ fn the_shelf_scrolls_away_only_past_three_rows_and_returns_with_the_first() {
 #[test]
 fn eighteen_cards_fit_in_three_rows_beneath_a_compact_shelf_without_scrolling() {
     let mut state = State::new(Preferences::default());
-    state.preferences.reduced_motion = true;
     let mut inventory = demo_inventory();
     inventory.apps.truncate(18);
     state.set_inventory(inventory, None);
@@ -958,7 +956,6 @@ fn app_names_are_one_toggle_for_the_focused_grid_card() {
 #[test]
 fn input_name_actions_only_highlight_the_focused_row_and_keep_the_saved_mode() {
     let mut state = ready();
-    state.preferences.reduced_motion = true;
     state
         .preferences
         .set_input_name("com.webos.app.hdmi1", "Console");
@@ -992,7 +989,6 @@ fn input_name_actions_only_highlight_the_focused_row_and_keep_the_saved_mode() {
 #[test]
 fn clock_choices_only_highlight_focus_while_preserving_saved_checkmarks() {
     let mut state = ready();
-    state.preferences.reduced_motion = true;
     state.preferences.show_seconds = true;
     state.open(crate::state::Page::Settings);
     state.focus = Target::Setting(1);
@@ -1211,15 +1207,9 @@ fn background_sidebar_right_focuses_upload_and_ok_restores_the_applied_backgroun
     state.direction(Direction::Right, &controls(&state));
     assert_eq!(state.focus, Target::UploadWallpaper);
     assert_eq!(state.preferences.background, "forest");
-    assert!(!state.preferences.wallpaper_cycle);
     assert!(state.overlay.is_none());
+    // Upload is the only action: Right stays on it.
     state.direction(Direction::Right, &controls(&state));
-    assert_eq!(state.focus, Target::WallpaperGradient);
-    state.direction(Direction::Right, &controls(&state));
-    assert_eq!(state.focus, Target::WallpaperCycle);
-    state.direction(Direction::Left, &controls(&state));
-    assert_eq!(state.focus, Target::WallpaperGradient);
-    state.direction(Direction::Left, &controls(&state));
     assert_eq!(state.focus, Target::UploadWallpaper);
     state.direction(Direction::Left, &controls(&state));
     assert_eq!(state.focus, Target::Sidebar(1));
@@ -1252,7 +1242,6 @@ fn a_notice_does_not_escape_modal_focus_and_closing_restores_the_app() {
 #[test]
 fn delete_confirmation_defaults_to_cancel_and_back_restores_side_popup() {
     let mut state = ready();
-    state.preferences.reduced_motion = true;
     state.open(crate::state::Page::Home);
     state.focus = Target::App("netflix".into());
     let card = controls(&state)
@@ -1622,21 +1611,6 @@ fn long_captions_stay_on_one_line_inside_the_row_gap() {
 }
 
 #[test]
-fn reduced_motion_disables_panel_wallpaper_and_notification_animation() {
-    let mut state = ready();
-    state.preferences.reduced_motion = true;
-    state.open(crate::state::Page::Settings);
-    state.focus = Target::Setting(1);
-    state.activate();
-    assert!(!state.animating());
-    state.back();
-    state.focus = Target::Background(6);
-    state.activate();
-    state.notify("Saved");
-    assert!(!state.animating());
-}
-
-#[test]
 fn showing_a_hidden_app_restores_it_to_its_place_and_leaves_hidden_empty() {
     let mut state = ready();
     state.open(crate::state::Page::Home);
@@ -1860,11 +1834,11 @@ fn settings_order_language_sort_and_shortcut_empty_card() {
         .iter()
         .find(|control| control.target == Target::Setting(4))
         .unwrap();
-    let motion = general
+    let hidden = general
         .iter()
-        .find(|control| control.target == Target::Setting(2))
+        .find(|control| control.target == Target::Setting(11))
         .unwrap();
-    assert!(language.rect.y < motion.rect.y);
+    assert!(language.rect.y < hidden.rect.y);
     state.subpage = Some(Subpage::Shortcuts);
     let empty = scene(&state);
     assert!(empty.draw.iter().any(|draw| matches!(draw,
@@ -2401,7 +2375,6 @@ fn custom_tiles_are_sanitized_and_get_stable_unique_ids() {
 fn shortcut_settings_offer_qr_editing_and_a_test_remove_popup() {
     use crate::state::{Subpage, WIDGETS_SECTION};
     let mut state = ready();
-    state.preferences.reduced_motion = true;
     state.open(crate::state::Page::Settings);
     state.focus = Target::Widget(2);
     state.activate();
@@ -2495,7 +2468,6 @@ fn shortcut_settings_offer_qr_editing_and_a_test_remove_popup() {
 fn widgets_group_existing_settings_and_restore_each_parent_without_changing_preferences() {
     use crate::state::{SECTION_COUNT, Subpage, WIDGETS_SECTION};
     let mut state = ready();
-    state.preferences.reduced_motion = true;
     state.preferences.greeting_name = "Ana".into();
     state.preferences.show_weather = false;
     state.preferences.weather_location = Some(crate::weather::Location {
@@ -2683,7 +2655,6 @@ fn settings_lists_keep_bottom_padding_for_remote_and_wheel_scrolling() {
     use crate::state::{SETTINGS_LIST_FADE, SETTINGS_SAFE_BOTTOM, Subpage};
     for backgrounds in [false, true] {
         let mut state = ready();
-        state.preferences.reduced_motion = true;
         state.open(crate::state::Page::Settings);
         if backgrounds {
             state.set_wallpapers(
@@ -2736,7 +2707,6 @@ fn settings_lists_keep_bottom_padding_for_remote_and_wheel_scrolling() {
 fn language_list_scrolls_under_fixed_ui_and_fades_beneath_the_title_line() {
     use crate::{renderer::Draw, state::Subpage};
     let mut state = ready();
-    state.preferences.reduced_motion = true;
     state.open(crate::state::Page::Settings);
     state.subpage = Some(Subpage::Language);
     state.scroll = 180.;
@@ -3196,7 +3166,6 @@ fn shortcut_tiles_keep_apps_options_and_never_launch_or_uninstall_a_platform_app
         ..Default::default()
     };
     let mut state = ready();
-    state.preferences.reduced_motion = true;
     state.replace_tiles(vec![tile.clone()]);
     state.open(crate::state::Page::Home);
     state.focus = Target::App(tile.id.clone());
@@ -3255,7 +3224,6 @@ fn shortcut_tiles_alone_do_not_stop_inventory_retries() {
 fn shortcut_tiles_open_a_modal_editor_for_another_device() {
     use crate::state::WIDGETS_SECTION;
     let mut state = ready();
-    state.preferences.reduced_motion = true;
     state.open(crate::state::Page::Settings);
     state.focus = Target::Widget(2);
     state.activate();
@@ -3771,8 +3739,10 @@ fn move_mode_draws_no_jiggle_or_arrows_and_never_animates() {
         .find(|c| c.target == Target::App("netflix".into()))
         .unwrap()
         .rect;
+    // The rim is drawn on the focused card's static size step around its slot.
     assert!(frame.draw.iter().any(|draw| matches!(draw,
-        Draw::Rim(rect, _, width, ..) if *width > view::FOCUS_RIM && rect.x == netflix.x && rect.y == netflix.y)));
+        Draw::Rim(rect, _, width, ..) if *width > 3.
+            && rect.x <= netflix.x && rect.x > netflix.x - 20. && rect.y <= netflix.y && rect.y > netflix.y - 20.)));
     for control in &before {
         if let Some(other) = frame.controls.iter().find(|c| c.target == control.target) {
             assert_eq!(
@@ -3781,17 +3751,6 @@ fn move_mode_draws_no_jiggle_or_arrows_and_never_animates() {
             );
         }
     }
-    // Reduced motion draws exactly the same.
-    let normal = frame.draw;
-    state.preferences.reduced_motion = true;
-    let reduced = scene(&state).draw;
-    assert!(
-        normal.len() == reduced.len()
-            && normal
-                .iter()
-                .zip(&reduced)
-                .all(|(a, b)| crate::damage::same(a, b))
-    );
     state.back();
     assert!(state.moving.is_none());
 }
@@ -3812,6 +3771,9 @@ fn the_grid_stays_unchanged_until_move_is_chosen() {
     state.back();
     assert_eq!(card_faces(&state), faces);
     // A pointer hold that has not moved yet changes nothing either; releasing opens the menu.
+    // (Pointing at YouTube focuses it, which gives it the focus size step.)
+    state.focus = Target::App("youtube.leanback.v4".into());
+    let faces = card_faces(&state);
     let rect = controls(&state)
         .into_iter()
         .find(|c| c.target == Target::App("youtube.leanback.v4".into()))
@@ -3839,107 +3801,6 @@ fn the_grid_stays_unchanged_until_move_is_chosen() {
     );
     state.drag_move((rect.x + 80., rect.y + 20.), &controls(&state));
     assert_eq!(state.moving.as_deref(), Some("youtube.leanback.v4"));
-}
-
-#[test]
-fn larger_text_scales_body_styles_keeps_titles_and_still_fits_three_rows() {
-    use crate::renderer::Draw;
-    let old: Preferences = serde_json::from_value(json!({"favorites": []})).unwrap();
-    assert!(!old.larger_text);
-    let mut state = State::new(Preferences::default());
-    let mut inventory = demo_inventory();
-    inventory.apps.truncate(18);
-    state.set_inventory(inventory, None);
-    state.preferences.reduced_motion = true;
-    let sizes = |state: &State, label: &str| {
-        scene(state)
-            .draw
-            .iter()
-            .find_map(|draw| match draw {
-                Draw::Text(text, rect, style, ..) if text == label => Some((style.size, *rect)),
-                _ => None,
-            })
-            .unwrap()
-    };
-    let greeting = state.preferences.language.greeting(0, "");
-    let (body, _) = sizes(&state, "Set weather location");
-    let (title, _) = sizes(&state, &greeting);
-    state.preferences.larger_text = true;
-    let (larger, _) = sizes(&state, "Set weather location");
-    assert!((larger / body - view::LARGER_TEXT).abs() < 0.001);
-    assert_eq!(sizes(&state, &greeting).0, title, "Titles keep their size");
-    // The last row's focused caption stays inside the safe area.
-    let last = state.grid().last().unwrap().clone();
-    state.focus = state.grid()[12].clone();
-    let rendered = scene(&state);
-    let caption = rendered
-        .draw
-        .iter()
-        .filter_map(|draw| match draw {
-            Draw::Text(_, rect, ..) => Some(rect.y + rect.h),
-            _ => None,
-        })
-        .fold(0., f32::max);
-    // The last row's focused caption may reach into the bottom margin, but stays on screen.
-    assert!(caption <= 1080., "Lowest text ends at {caption}");
-    state.focus = last;
-    state.reveal_focus(&controls(&state));
-    assert_eq!(state.scroll, 0.);
-    // Settings › General › Text size.
-    state.open(Page::Settings);
-    state.focus = Target::Setting(15);
-    state.direction(Direction::Right, &controls(&state));
-    assert_eq!(state.subpage, Some(crate::state::Subpage::TextSize));
-    assert_eq!(state.focus, Target::Choice(1));
-    state.direction(Direction::Up, &controls(&state));
-    assert_eq!(state.activate(), vec![Effect::Save]);
-    assert!(!state.preferences.larger_text);
-}
-
-#[test]
-fn a_night_wallpaper_replaces_the_chosen_one_between_sunset_and_sunrise() {
-    use crate::renderer::Draw;
-    let old: Preferences = serde_json::from_value(json!({"favorites": []})).unwrap();
-    assert_eq!(old.night_background, None, "Off by default");
-    let mut state = ready();
-    let at = |hour: u8| time::OffsetDateTime::UNIX_EPOCH.replace_hour(hour).unwrap();
-    assert_eq!(state.shown_background(at(23)), "dunes");
-    // Background options › Use at night on another wallpaper.
-    state.open(Page::Settings);
-    state.section = 1;
-    let night = (0..state.background_count())
-        .find(|&i| state.background_id(i) != Some("dunes"))
-        .unwrap();
-    let night_id = state.background_id(night).unwrap().to_owned();
-    state.focus = Target::Background(night);
-    state.options();
-    state.focus = Target::NightBackground;
-    assert_eq!(state.activate(), vec![Effect::Save]);
-    assert_eq!(
-        state.preferences.night_background.as_deref(),
-        Some(night_id.as_str())
-    );
-    assert_eq!(
-        state.preferences.background, "dunes",
-        "The day wallpaper is unchanged"
-    );
-    // Without a forecast, night is 21:00 to 07:00.
-    assert_eq!(state.shown_background(at(12)), "dunes");
-    assert_eq!(state.shown_background(at(22)), night_id);
-    assert_eq!(state.shown_background(at(6)), night_id);
-    // The test scene renders at midnight: the night wallpaper is drawn.
-    state.open(Page::Home);
-    assert!(scene(&state).draw.iter().any(|draw| matches!(draw,
-        Draw::Image(path, ..) if path.contains(&format!("wallpapers/{night_id}")))));
-    // The same action again stops it.
-    state.open(Page::Settings);
-    state.section = 1;
-    state.focus = Target::Background(night);
-    state.options();
-    state.focus = Target::NightBackground;
-    state.activate();
-    assert_eq!(state.preferences.night_background, None);
-    assert_eq!(state.shown_background(at(22)), "dunes");
 }
 
 #[test]
@@ -4085,12 +3946,11 @@ fn the_top_bar_keeps_settings_without_the_app_store_and_icons_are_clickable() {
 #[test]
 fn every_settings_list_keeps_its_last_row_inside_the_safe_area_and_fades_at_the_bottom() {
     use crate::renderer::Draw;
-    use crate::state::{SETTINGS_LIST_FADE, SETTINGS_SAFE_BOTTOM};
+    use crate::state::{SETTINGS_LIST_FADE, SETTINGS_SAFE_BOTTOM, Subpage};
     let mut state = ready();
-    state.preferences.reduced_motion = true;
     state.open(Page::Settings);
     state.activate();
-    // General is the longest list: walk down to its last row.
+    // Walk down General to its last row: every row stays above the fade.
     let mut previous = None;
     while previous.as_ref() != Some(&state.focus) {
         previous = Some(state.focus.clone());
@@ -4107,18 +3967,35 @@ fn every_settings_list_keeps_its_last_row_inside_the_safe_area_and_fades_at_the_
             rect.y + rect.h
         );
     }
-    assert!(state.scroll > 0., "General is longer than the screen");
-    let last = controls(&state)
-        .into_iter()
-        .filter(|c| matches!(c.target, Target::Setting(_)))
-        .map(|c| c.rect.y + c.rect.h)
-        .fold(0., f32::max);
-    assert!(last <= SETTINGS_SAFE_BOTTOM);
+    // A list longer than the screen (many hidden apps) scrolls to keep its rows above the fade.
+    state.preferences.hidden = state
+        .apps()
+        .iter()
+        .take(14)
+        .map(|app| app.id.clone())
+        .collect();
+    state.focus = Target::Setting(11);
+    state.activate();
+    assert_eq!(state.subpage, Some(Subpage::HiddenApps));
+    // (Down from the last hidden app wraps to the first, so step exactly to the last row.)
+    for _ in 1..state.hidden_apps().len() {
+        state.direction(Direction::Down, &controls(&state));
+        let rect = controls(&state)
+            .into_iter()
+            .find(|c| c.target == state.focus)
+            .unwrap()
+            .rect;
+        assert!(rect.y + rect.h <= SETTINGS_SAFE_BOTTOM - SETTINGS_LIST_FADE + 0.01);
+    }
+    assert!(
+        state.scroll > 0.,
+        "the hidden apps list is longer than the screen"
+    );
     // Wheel scrolling stops with the last row above the fade, too.
     state.wheel_scroll(&controls(&state), Some((1000., 600.)), 0, -1000);
     let last = controls(&state)
         .into_iter()
-        .filter(|c| matches!(c.target, Target::Setting(_)))
+        .filter(|c| matches!(c.target, Target::Choice(_)))
         .map(|c| c.rect.y + c.rect.h)
         .fold(0., f32::max);
     assert!((last - (SETTINGS_SAFE_BOTTOM - SETTINGS_LIST_FADE)).abs() < 0.01);
@@ -4131,7 +4008,6 @@ fn every_settings_list_keeps_its_last_row_inside_the_safe_area_and_fades_at_the_
 fn notices_are_a_small_pill_centred_above_the_bottom_safe_area() {
     use crate::renderer::Draw;
     let mut state = ready();
-    state.preferences.reduced_motion = true;
     state.notify("Netflix added to favorites.");
     let rendered = scene(&state);
     let pill = rendered
@@ -4175,11 +4051,14 @@ fn startup_diagnostics_are_written_as_json_next_to_the_preferences() {
 }
 
 #[test]
-fn focused_card_only_brightens_in_place_and_focus_moves_instantly() {
+fn focused_card_pops_in_place_and_focus_moves_instantly() {
     use crate::renderer::Draw;
+    use crate::state::Rect;
     let mut state = ready();
     state.open(Page::Home);
     state.sync_motion();
+    // One rimless style: 10% larger, a soft shadow and about 6% brighter.
+    assert_eq!(view::FOCUS_GROW, 0.10);
     let netflix = Target::App("netflix".into());
     assert_eq!(state.focus, netflix);
     let card = |state: &State, target: &Target| {
@@ -4189,34 +4068,44 @@ fn focused_card_only_brightens_in_place_and_focus_moves_instantly() {
             .unwrap()
             .rect
     };
-    use crate::state::Rect;
-    let same = |a: Rect, b: Rect| a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h;
-    let highlight = |state: &State, rect: Rect| {
-        let drawn = scene(state).draw;
-        let rim = drawn.iter().any(|draw| {
-            matches!(draw, Draw::Rim(r, _, width, ..) if same(*r, rect) && *width == view::FOCUS_RIM)
-        });
-        let overlay = drawn.iter().any(|draw| {
-            matches!(draw, Draw::Shape(r, _, _, color)
-                if same(*r, rect) && *color == [1., 1., 1., view::FOCUS_OVERLAY])
-        });
-        (rim, overlay)
+    let grown = |rect: Rect| {
+        let share = view::FOCUS_GROW;
+        let (dx, dy) = (rect.w * share / 2., rect.h * share / 2.);
+        Rect::new(rect.x - dx, rect.y - dy, rect.w + 2. * dx, rect.h + 2. * dy)
+    };
+    let same = |a: Rect, b: Rect| {
+        (a.x - b.x).abs() < 0.01
+            && (a.y - b.y).abs() < 0.01
+            && (a.w - b.w).abs() < 0.01
+            && (a.h - b.h).abs() < 0.01
+    };
+    // The card's face is drawn at the grown size; its hit region stays the resting card.
+    let popped = |state: &State, rect: Rect| {
+        scene(state).draw.iter().any(|draw| {
+            matches!(draw, Draw::Image(path, r, ..) if path.contains("surfaces/") && same(*r, grown(rect)))
+        })
     };
     let first = card(&state, &netflix);
-    assert_eq!(highlight(&state, first), (true, true));
-    // Nothing is drawn larger than the card: no lift or scale.
-    assert!(!scene(&state).draw.iter().any(|draw| matches!(draw,
-        Draw::Rim(r, ..) if r.w > first.w + 0.01 && (r.center().0 - first.center().0).abs() < 1.)));
-    // Moving focus highlights the next card in the very next frame and clears the old one.
+    assert!(popped(&state, first));
+    let frame = scene(&state);
+    assert!(
+        !frame.draw.iter().any(|draw| matches!(draw, Draw::Rim(..))),
+        "No rim"
+    );
+    assert!(frame.draw.iter().any(|draw| matches!(draw,
+        Draw::Shape(r, _, 0., color) if same(*r, grown(first)) && *color == [1., 1., 1., view::FOCUS_OVERLAY])));
+    // No other card is dimmed or veiled.
+    assert!(!frame.draw.iter().any(|draw| matches!(draw,
+        Draw::Shape(r, _, 0., color) if r.w == view::CARD_WIDTH && color[0] == 0. && color[3] > 0.)));
+    // Moving focus pops the next card in the very next frame and returns the old one.
     let all = controls(&state);
     state.direction(Direction::Right, &all);
     state.sync_motion();
     let next = state.focus.clone();
     assert!(matches!(next, Target::App(_)) && next != netflix);
-    assert_eq!(state.focus_level(&next), 1.);
-    assert_eq!(state.focus_level(&netflix), 0.);
-    assert_eq!(highlight(&state, card(&state, &next)), (true, true));
-    assert_eq!(highlight(&state, first), (false, false));
+    assert!(popped(&state, card(&state, &next)));
+    assert!(!popped(&state, first));
+    assert!(same(card(&state, &netflix), first));
 }
 
 #[test]
@@ -4287,10 +4176,10 @@ fn settings_focus_changes_in_the_first_frame_and_never_moves_afterwards() {
         );
     }
     // Holding OK keeps the focused look in Settings; releasing toggles the value at once.
-    state.focus = Target::Setting(2);
+    state.focus = Target::Setting(0);
     state.sync_motion();
-    state.pressed = Some(Target::Setting(2));
-    assert_eq!(state.display_level(&Target::Setting(2)), 1.);
+    state.pressed = Some(Target::Setting(0));
+    assert_eq!(state.display_level(&Target::Setting(0)), 1.);
     state.pressed = None;
     let on = state.preferences.language.t("stateOn").to_owned();
     let count_on = |state: &State| {
@@ -4301,10 +4190,10 @@ fn settings_focus_changes_in_the_first_frame_and_never_moves_afterwards() {
             .count()
     };
     let before = count_on(&state);
+    // App names, on by default, turns off: the very next scene shows the new value.
     assert_eq!(state.activate(), vec![Effect::Save]);
-    assert!(state.preferences.reduced_motion);
-    // The very next scene shows the new value.
-    assert_eq!(count_on(&state), before + 1);
+    assert!(!state.preferences.show_app_names);
+    assert_eq!(count_on(&state) + 1, before);
 }
 
 #[test]
@@ -4677,7 +4566,7 @@ fn the_screensaver_clock_fades_out_and_in_around_each_jump_and_never_brightens()
     use crate::renderer::Draw;
     use crate::state::{SCREENSAVER_FADE, SCREENSAVER_STEP, screensaver_opacity};
     use std::time::{Duration, Instant};
-    let at = |ms: u64| screensaver_opacity(Duration::from_millis(ms), false);
+    let at = |ms: u64| screensaver_opacity(Duration::from_millis(ms));
     let step = SCREENSAVER_STEP.as_millis() as u64;
     let fade = SCREENSAVER_FADE.as_millis() as u64;
     assert!((300..=400).contains(&fade), "a subtle 300–400 ms fade");
@@ -4699,10 +4588,6 @@ fn the_screensaver_clock_fades_out_and_in_around_each_jump_and_never_brightens()
         previous = alpha;
         // Fading out is the mirror image of fading in.
         assert!((at(2 * step - (ms - step)) - alpha).abs() < 1e-4);
-    }
-    // Reduced motion: the instant jump, never faded.
-    for ms in [0, fade / 2, step - 1, step] {
-        assert_eq!(screensaver_opacity(Duration::from_millis(ms), true), 1.);
     }
     // In the scene: only the text's opacity changes, never above its resting grey, on black.
     let mut state = ready();
@@ -4737,7 +4622,181 @@ fn the_screensaver_clock_fades_out_and_in_around_each_jump_and_never_brightens()
     assert!(!state.animating());
     let wake = state.screensaver_wake().unwrap();
     assert!(wake <= SCREENSAVER_STEP - SCREENSAVER_FADE - Duration::from_millis(990));
-    state.preferences.reduced_motion = true;
-    assert_eq!(state.screensaver_wake(), None);
-    assert!(!state.animating());
+}
+
+#[test]
+fn removed_settings_still_load_from_old_preference_files_and_their_rows_are_gone() {
+    // Text size, Night wallpaper, Rotation, Gradient and Reduced motion were removed; files that
+    // still carry them load with everything else intact and drop them when saved.
+    let old: Preferences = serde_json::from_value(json!({
+        "larger_text": true,
+        "night_background": "forest",
+        "wallpaper_cycle": "hourly",
+        "wallpaper_changed": 1_700_000_000u64,
+        "wallpaper_gradient": false,
+        "reduced_motion": true,
+        "background": "summit",
+        "greeting_name": "Ana",
+        "appearance": "light"
+    }))
+    .unwrap();
+    assert_eq!(old.background, "summit");
+    assert_eq!(old.greeting_name, "Ana");
+    assert_eq!(old.appearance, crate::model::Appearance::Light);
+    let saved = serde_json::to_value(&old).unwrap();
+    let saved = saved.as_object().unwrap();
+    for key in [
+        "larger_text",
+        "night_background",
+        "wallpaper_cycle",
+        "wallpaper_changed",
+        "wallpaper_gradient",
+        "reduced_motion",
+    ] {
+        assert!(!saved.contains_key(key), "{key}");
+    }
+    // General keeps App names, Clock, Language, Hidden apps, Appearance and Screensaver.
+    let mut state = ready();
+    state.open(Page::Settings);
+    let rows: Vec<usize> = controls(&state)
+        .into_iter()
+        .filter_map(|c| match c.target {
+            Target::Setting(index) => Some(index),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rows, [0, 1, 4, 11, 14, 12]);
+}
+
+#[test]
+fn the_focused_card_and_caption_stay_inside_the_margin_and_clear_of_neighbours() {
+    use crate::renderer::Draw;
+    use crate::state::Rect;
+    let overlaps = |a: Rect, b: Rect| {
+        a.x < b.x + b.w - 0.01
+            && b.x < a.x + a.w - 0.01
+            && a.y < b.y + b.h - 0.01
+            && b.y < a.y + a.h - 0.01
+    };
+    let level = 10;
+    {
+        for light in [false, true] {
+            let mut state = ready();
+            if light {
+                state.preferences.appearance = crate::model::Appearance::Light;
+            }
+            state.open(Page::Home);
+            state.sync_motion();
+            // Every card of the three visible rows, edge columns included.
+            let cards: Vec<_> = controls(&state)
+                .into_iter()
+                .filter(|c| matches!(c.target, Target::App(_)))
+                .take(3 * crate::state::APPS_COLUMNS)
+                .collect();
+            assert_eq!(cards.len(), 18);
+            let share = view::FOCUS_GROW;
+            for card in &cards {
+                state.focus = card.target.clone();
+                state.sync_motion();
+                let frame = scene(&state);
+                let hit = frame
+                    .controls
+                    .iter()
+                    .find(|c| c.target == card.target)
+                    .unwrap()
+                    .rect;
+                assert_eq!(
+                    (hit.x, hit.y, hit.w, hit.h),
+                    (card.rect.x, card.rect.y, card.rect.w, card.rect.h)
+                );
+                let drawn = frame
+                    .draw
+                    .iter()
+                    .find_map(|draw| match draw {
+                        Draw::Image(path, r, ..)
+                            if path.contains("surfaces/")
+                                && (r.w - card.rect.w * (1. + share)).abs() < 0.01 =>
+                        {
+                            Some(*r)
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("{level}%: no grown card for {:?}", card.target));
+                let m = view::SCREEN_MARGIN;
+                let inside = |r: Rect| {
+                    r.x >= m - 0.01
+                        && r.x + r.w <= 1920. - m + 0.01
+                        && r.y + r.h <= 1080. - m + 0.01
+                };
+                assert!(
+                    inside(drawn),
+                    "{level}%: {:?} grows to {drawn:?}",
+                    card.target
+                );
+                assert!(drawn.x <= hit.x && drawn.x + drawn.w >= hit.x + hit.w);
+                assert!(drawn.y <= hit.y + 0.01 && drawn.y + drawn.h >= hit.y + hit.h - 0.01);
+                // The neighbours stay where they are and the grown card never covers them.
+                for other in cards.iter().filter(|other| other.target != card.target) {
+                    assert!(
+                        !overlaps(drawn, other.rect),
+                        "{level}%: {:?} grown over {:?}",
+                        card.target,
+                        other.target
+                    );
+                }
+                let caption = frame
+                    .draw
+                    .iter()
+                    .find_map(|draw| match draw {
+                        Draw::Text(_, r, ..)
+                            if r.y > hit.y + hit.h && r.y < hit.y + hit.h + 40. =>
+                        {
+                            Some(*r)
+                        }
+                        _ => None,
+                    })
+                    .unwrap();
+                assert!(
+                    caption.x >= m && caption.x + caption.w <= 1920. - m,
+                    "{caption:?}"
+                );
+                assert!(
+                    caption.y >= drawn.y + drawn.h,
+                    "{level}%: caption under the card"
+                );
+            }
+        }
+    }
+    // At 10% the 40 px gap between neighbours keeps 27 px clear.
+    let gap = view::CARD_PITCH - view::CARD_WIDTH;
+    assert!(gap - view::CARD_WIDTH * view::FOCUS_GROW / 2. > 26.);
+}
+
+#[test]
+fn preference_files_from_the_focus_trials_still_load() {
+    // focus_style (the S1–S6 trial) and focus_grow (the size trial) are no longer settings.
+    for value in [
+        json!({"focus_style": "s3"}),
+        json!({"focus_grow": 14}),
+        json!({"focus_style": "c", "focus_grow": "x", "show_app_names": false}),
+    ] {
+        let loaded: Preferences = serde_json::from_value(value.clone()).unwrap();
+        let saved = serde_json::to_value(&loaded).unwrap();
+        assert!(
+            saved.get("focus_style").is_none() && saved.get("focus_grow").is_none(),
+            "{value}"
+        );
+    }
+    let loaded: Preferences =
+        serde_json::from_value(json!({"focus_grow": 6, "show_app_names": false})).unwrap();
+    assert!(!loaded.show_app_names, "the other settings are kept");
+    // The General list has no focus row any more.
+    let mut state = ready();
+    state.open(Page::Settings);
+    state.section = 0;
+    assert!(
+        !controls(&state)
+            .iter()
+            .any(|c| c.target == Target::Setting(16))
+    );
 }

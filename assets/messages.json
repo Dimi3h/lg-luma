@@ -1,8 +1,4 @@
 {
-  "wallpaperGradient": {
-    "en": "Gradient",
-    "nl": "Verloop"
-  },
   "date": {
     "en": "Date",
     "nl": "Datum"
@@ -66,10 +62,6 @@
   "widgets": {
     "en": "Widgets",
     "nl": "Widgets"
-  },
-  "wallpaperCycle": {
-    "en": "Rotation",
-    "nl": "Afwisselen"
   },
   "useBackground": {
     "en": "Use background",
@@ -282,10 +274,6 @@
   "hour24": {
     "en": "24-hour",
     "nl": "24-uurs"
-  },
-  "reducedMotion": {
-    "en": "Reduced motion",
-    "nl": "Minder beweging"
   },
   "refreshApps": {
     "en": "Refresh apps & inputs",
@@ -970,26 +958,6 @@
   "appearanceAuto": {
     "en": "Automatic",
     "nl": "Automatisch"
-  },
-  "textSize": {
-    "en": "Text size",
-    "nl": "Tekstgrootte"
-  },
-  "textDefault": {
-    "en": "Default",
-    "nl": "Standaard"
-  },
-  "textLarger": {
-    "en": "Larger",
-    "nl": "Groter"
-  },
-  "useAtNight": {
-    "en": "Use at night",
-    "nl": "'s Nachts gebruiken"
-  },
-  "stopNightBackground": {
-    "en": "Don't use at night",
-    "nl": "Niet 's nachts gebruiken"
   },
   "storeApps": {
     "en": "Apps",

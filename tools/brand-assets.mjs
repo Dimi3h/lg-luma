@@ -148,6 +148,16 @@ export const sources = [
     'https://raw.githubusercontent.com/DCueto/filmin-svelte-clone/36c977e31ec76abb42473b243584acbaed23579f/src/assets/filmin_logo.svg',
     'f9fbaec75b29bedec27236bf3717701b8871344e5bcb0ac8bc2e8c9a0c127b4d',
   ],
+  [
+    'stremio',
+    `${simple}/icons/stremio.svg`,
+    '88b47bc8690fee5b98ba89972446d4ad86c7f14f77dc6a1260ec1ba8f506130b',
+  ],
+  [
+    'vtm-go',
+    commons('VTM_Go_logo_2024.svg'),
+    '05ca939fd963264b5840580bd703746fd3e9f050ef0795fc1ea2235cd95fabfc',
+  ],
 ];
 
 async function download(url) {
@@ -174,16 +184,22 @@ export function prepareSvg(name, original, url) {
       .replace(/<defs>[\s\S]*?<\/defs>/g, '')
       .replace(/\sclip-path="[^"]*"/g, '');
   }
-  if (['peacock', 'watcha'].includes(name)) {
+  if (['peacock', 'watcha', 'vtm-go'].includes(name)) {
     // These clips only repeat the artwork's rectangular outer bounds. Keep
-    // gradient definitions while removing the redundant clipping wrapper.
+    // gradient definitions while removing the redundant clipping wrapper
+    // (VTM GO applies it through a stylesheet class).
     svg = svg
       .replace(/<clipPath\b[^>]*>[\s\S]*?<\/clipPath>/g, '')
-      .replace(/\sclip-path="[^"]*"/g, '');
+      .replace(/\sclip-path="[^"]*"/g, '')
+      .replace(/clip-path:\s*url\([^)]*\);?/g, '');
   }
   // Source provenance stays beside the original paths. Display-only white
   // treatments and tight bounds are applied by the host mesh compiler.
-  return `<!-- Source: ${url} -->\n${svg.trim()}\n`;
+  const credit =
+    name === 'vtm-go'
+      ? '<!-- VTM GO logo by DPG Media, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Changed: redundant bounds clip removed. -->\n'
+      : '';
+  return `<!-- Source: ${url} -->\n${credit}${svg.trim()}\n`;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === import.meta.filename) {

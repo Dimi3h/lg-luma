@@ -5,7 +5,7 @@ import sharp from 'sharp';
 import { sources, prepareSvg } from '../tools/brand-assets.mjs';
 
 test('every expanded brand has standalone, renderable vector artwork and pinned provenance', async () => {
-  assert.equal(sources.length, 27);
+  assert.equal(sources.length, 29);
   for (const [name, url, hash] of sources) {
     assert.match(hash, /^[0-9a-f]{64}$/, name);
     const svg = await fs.readFile(new URL(`../assets/logos/${name}.svg`, import.meta.url), 'utf8');

@@ -31,7 +31,6 @@ const configuration = {
   weather_location: null,
   hidden: [],
   input_modes: {},
-  reduced_motion: false,
 };
 try {
   for (const [name, script] of [

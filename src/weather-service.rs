@@ -119,8 +119,7 @@ impl Client {
                 ("latitude", &latitude),
                 ("longitude", &longitude),
                 ("current", "temperature_2m,is_day,weather_code"),
-                // Today's sunrise and sunset (local time) for Automatic appearance and the
-                // night wallpaper.
+                // Today's sunrise and sunset (local time) for Automatic appearance.
                 ("daily", "sunrise,sunset"),
                 ("forecast_days", "1"),
                 ("temperature_unit", "celsius"),

@@ -32,7 +32,6 @@ mod tile_editor;
 mod update;
 mod vector;
 mod view;
-mod wallpaper_cycle;
 mod wallpapers;
 mod weather;
 #[path = "weather-service.rs"]
@@ -883,6 +882,11 @@ fn run() -> Result<(), String> {
     let mut full_report = (0usize, 0usize, 0usize, 0u8);
     let mut redrawn_total = 0.;
     let mut profile = diagnostics::Profile::default();
+    // Rolling frame statistics while in front; the writer thread puts them in the file.
+    let mut frame_stats = diagnostics::FrameStats::default();
+    let diagnostics_writer = diagnostics::Writer::spawn(diagnostics_path);
+    let mut stats_written = Instant::now();
+    frame_stats.set_foreground(stats_written, true);
     let mut presented = 0usize;
     let mut captured = None;
     let mut last_drawable = None;
@@ -1004,9 +1008,6 @@ fn run() -> Result<(), String> {
     let mut queued_event = None;
     let mut text_active = false;
     let mut initial_focus = options.script.is_empty();
-    let mut startup_cycle_pending = state.preferences.wallpaper_cycle;
-    let mut wallpapers_scanned = false;
-    let launched = Instant::now();
     // When to ask for the inventory again after a failed load (State::inventory_failed).
     let mut inventory_retry: Option<Instant> = None;
     let mut input_refresh = input_refresh::Refresh::default();
@@ -1034,10 +1035,7 @@ fn run() -> Result<(), String> {
         wallpaper_service.set_active(wallpaper_upload_active(&state, webos, focused, visible));
         while let Ok(event) = wallpaper_service.receiver.try_recv() {
             match event {
-                wallpapers::Event::Catalog(items) => {
-                    wallpapers_scanned = true;
-                    state.set_wallpapers(items);
-                }
+                wallpapers::Event::Catalog(items) => state.set_wallpapers(items),
                 wallpapers::Event::Deleted(id, result) => state.wallpaper_deleted(id, result),
                 wallpapers::Event::Session(generation, result)
                     if generation == wallpaper_service.generation()
@@ -1106,34 +1104,6 @@ fn run() -> Result<(), String> {
         if renderer.poll_glyphs() {
             state.dirty = true;
             damage_tracker.reset();
-        }
-        let unix = state::unix_now();
-        let startup_cycle = wallpaper_cycle::startup_due(
-            state.preferences.wallpaper_cycle,
-            startup_cycle_pending,
-            wallpapers_scanned,
-            launched.elapsed(),
-        );
-        if focused
-            && visible
-            && state.overlay.is_none()
-            && state.moving.is_none()
-            && state.deleting_wallpaper.is_none()
-            && !state.animating()
-            && (startup_cycle
-                || wallpaper_cycle::due(
-                    state.preferences.wallpaper_cycle,
-                    state.preferences.wallpaper_changed,
-                    unix,
-                ))
-        {
-            let cycled = state.cycle_wallpaper(unix);
-            if startup_cycle {
-                startup_cycle_pending = false;
-            }
-            if cycled && let Err(error) = storage::save(&preferences_path, &state.preferences) {
-                eprintln!("{error}");
-            }
         }
         while let Ok(response) = updates.receiver.try_recv() {
             state.install_response(response);
@@ -1971,6 +1941,7 @@ fn run() -> Result<(), String> {
                 }
                 presented += 1;
                 last_present = Instant::now();
+                frame_stats.presented(last_present, damage.is_some());
                 if options.profile_frames.is_some() {
                     profile.record(
                         Instant::now(),
@@ -1994,9 +1965,7 @@ fn run() -> Result<(), String> {
                     facts["drawable"] = serde_json::json!([width, height]);
                     facts["density"] = serde_json::json!(drawable.scale());
                     facts["first_frame_text"] = first_text.clone();
-                    if let Err(error) = diagnostics::write_startup(&diagnostics_path, &facts) {
-                        eprintln!("Luma diagnostics file: {error}");
-                    }
+                    diagnostics_writer.facts(facts);
                     if options.diagnostics.is_some() || options.resolution.is_some() {
                         eprintln!(
                             "Luma drawable: {}x{}, density {:.3}x, 4K buffer: {}",
@@ -2014,6 +1983,12 @@ fn run() -> Result<(), String> {
         frame += 1;
         if final_frame {
             running = false;
+        }
+        let checked = Instant::now();
+        frame_stats.set_foreground(checked, visible && (!webos || focused));
+        if checked.duration_since(stats_written) >= diagnostics::WRITE_INTERVAL {
+            diagnostics_writer.frames(frame_stats.summary(checked));
+            stats_written = checked;
         }
         if foreground.failed(Instant::now())
             && let Some(end_registration) = &end_registration
@@ -2088,6 +2063,8 @@ fn run() -> Result<(), String> {
     if text_active {
         video.text_input().stop();
     }
+    diagnostics_writer.frames(frame_stats.summary(Instant::now()));
+    diagnostics_writer.finish();
     if !options.script.is_empty() {
         return Err("Frame budget ended before the input script completed".into());
     }

@@ -189,9 +189,77 @@ fn transparent_edges_keep_the_logo_colour_when_scaled() {
     for pixel in pixels.pixels().filter(|pixel| pixel[3] > 0) {
         assert!(pixel[0].min(pixel[1]).min(pixel[2]) >= 245, "{pixel:?}");
     }
-    let beside = pixels.get_pixel(128, 103);
+    // Trimmed to the logo with a small transparent margin: the texel just above the logo is
+    // transparent but carries the logo's colour.
+    let x = pixels.width() / 2;
+    let first = (0..pixels.height())
+        .find(|&y| pixels.get_pixel(x, y)[3] > 0)
+        .unwrap();
+    assert!(first > 0, "a transparent margin remains");
+    let beside = pixels.get_pixel(x, first - 1);
     assert_eq!(beside[3], 0);
     assert!(beside[0] >= 245, "transparent neighbour {beside:?}");
+}
+
+#[test]
+fn tv_artwork_is_trimmed_to_its_logo_and_every_logo_gets_the_same_optical_size() {
+    // A flat red tile (as VRT MAX ships) with a small white wordmark: the card takes the tile's
+    // colour and the artwork is cropped to the wordmark, from the full-resolution source.
+    let tile = RgbaImage::from_fn(512, 512, |x, y| {
+        if (176..336).contains(&x) && (224..288).contains(&y) {
+            Rgba([255, 255, 255, 255])
+        } else {
+            Rgba([240, 80, 70, 255])
+        }
+    });
+    let artwork = decode(&png(tile)).unwrap();
+    for (actual, expected) in artwork.backdrop[0].into_iter().zip([240u8, 80, 70]) {
+        assert!(actual.abs_diff(expected) <= 2);
+    }
+    let (w, h) = artwork.pixels.dimensions();
+    assert!((w as f32 / h as f32 - 160. / 64.).abs() < 0.4, "{w}x{h}");
+    let share = |image: &RgbaImage, logo: &dyn Fn(&Rgba<u8>) -> bool| {
+        image.pixels().filter(|pixel| logo(pixel)).count() as f32 / image.pixels().len() as f32
+    };
+    let white = share(&artwork.pixels, &|pixel| pixel[0] > 200 && pixel[1] > 200);
+    assert!(white > 0.6, "mostly the wordmark, not the tile: {white}");
+    // Transparent margins around a mark are trimmed too.
+    let mark = RgbaImage::from_fn(400, 400, |x, y| {
+        if (150..250).contains(&x) && (150..250).contains(&y) {
+            Rgba([20, 120, 220, 255])
+        } else {
+            Rgba([0, 0, 0, 0])
+        }
+    });
+    let trimmed = decode(&png(mark)).unwrap().pixels;
+    let (w, h) = trimmed.dimensions();
+    assert!(w.abs_diff(h) <= 2, "{w}x{h}");
+    let opaque = share(&trimmed, &|pixel| pixel[3] > 128);
+    assert!(opaque > 0.7, "mostly the mark, not the margin: {opaque}");
+    // A full-bleed icon has nothing to trim.
+    let full = decode(&encoded(ImageFormat::Png, 300, 300, [10, 200, 90, 255])).unwrap();
+    assert_eq!(full.pixels.dimensions(), (256, 256));
+    // Same optical area for a square mark and a 3:1 wordmark, within the card's caps.
+    let (card_w, card_h) = (260., 156.);
+    let square = crate::app_artwork::fit(100., 100., card_w, card_h);
+    let wide = crate::app_artwork::fit(300., 100., card_w, card_h);
+    let area = |(w, h): (f32, f32)| w * h;
+    assert!((area(square) - area(wide)).abs() / area(square) < 0.2);
+    for (w, h) in [
+        square,
+        wide,
+        crate::app_artwork::fit(900., 100., card_w, card_h),
+    ] {
+        assert!(
+            w <= card_w * 0.66 + 0.01 && h <= card_h * 0.6 + 0.01,
+            "{w}x{h}"
+        );
+    }
+    // A tiny source is scaled up to the same size as a large one.
+    assert_eq!(
+        crate::app_artwork::fit(20., 10., card_w, card_h),
+        crate::app_artwork::fit(200., 100., card_w, card_h)
+    );
 }
 
 #[test]

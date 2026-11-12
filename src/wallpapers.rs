@@ -45,6 +45,8 @@ pub struct Wallpaper {
 }
 
 impl Wallpaper {
+    /// The unshaded original uploads still keep (the gradient is always on now); tests check it.
+    #[cfg(test)]
     pub fn unshaded_image(&self) -> String {
         // Preserve full resolution for older uploads without an unshaded original.
         self.directory

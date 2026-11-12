@@ -107,10 +107,7 @@ const location = `${weatherPage},down,enter`;
 try {
   if (process.env.LUMA_SMOKE_SKIP_BUILD !== '1')
     await run('cargo', ['build', '--locked', '--package', 'luma']);
-  await fs.writeFile(
-    preferences,
-    JSON.stringify({ language: 'en', show_app_names: true, reduced_motion: true }),
-  );
+  await fs.writeFile(preferences, JSON.stringify({ language: 'en', show_app_names: true }));
   const languages = await scenario('picker-en', picker);
   assert.equal(languages.subpage, 'Language');
   assert.ok(languages.ui_text.includes('English'));
@@ -196,10 +193,7 @@ try {
   await scenario('nl-4k', 'home', ['--capture-scale', '2']);
 
   // A language earlier versions offered falls back to English instead of failing to load.
-  await fs.writeFile(
-    preferences,
-    JSON.stringify({ language: 'de', show_app_names: true, reduced_motion: true }),
-  );
+  await fs.writeFile(preferences, JSON.stringify({ language: 'de', show_app_names: true }));
   const fallback = await scenario('removed-language', 'home');
   assert.equal(fallback.preferences.language, 'en');
   contains(fallback, 'evening', 'en');
