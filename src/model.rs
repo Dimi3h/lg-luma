@@ -209,44 +209,6 @@ fn deserialize_appearance<'de, D: serde::Deserializer<'de>>(
     )
 }
 
-/// How much larger a focused app or wallpaper card is drawn, in percent. A temporary choice on
-/// the TV (Settings › General › Focus size); once settled, the row goes and the value stays.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(transparent)]
-pub struct FocusGrow(pub u32);
-
-impl FocusGrow {
-    pub const LEVELS: [u32; 5] = [6, 8, 10, 12, 14];
-
-    /// The size step as a share of the card (0.10 for 10%).
-    pub fn share(self) -> f32 {
-        self.0 as f32 / 100.
-    }
-
-    /// The next level; OK on the Settings row cycles through all five.
-    pub fn next(self) -> Self {
-        let index = Self::LEVELS.iter().position(|level| *level == self.0);
-        Self(Self::LEVELS[index.map_or(0, |index| (index + 1) % Self::LEVELS.len())])
-    }
-}
-
-impl Default for FocusGrow {
-    fn default() -> Self {
-        Self(10)
-    }
-}
-
-/// Values other than the five levels load as the default instead of failing the file.
-fn deserialize_focus_grow<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<FocusGrow, D::Error> {
-    Ok(serde_json::Value::deserialize(deserializer)?
-        .as_u64()
-        .and_then(|value| u32::try_from(value).ok())
-        .filter(|value| FocusGrow::LEVELS.contains(value))
-        .map_or_else(FocusGrow::default, FocusGrow))
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DateFormat {
@@ -326,8 +288,6 @@ pub struct Preferences {
     pub screensaver_minutes: u32,
     #[serde(deserialize_with = "deserialize_appearance")]
     pub appearance: Appearance,
-    #[serde(deserialize_with = "deserialize_focus_grow")]
-    pub focus_grow: FocusGrow,
     /// The 24-hour choice as earlier versions saved it: written with every preference file, so
     /// only `true` is known to be deliberate. Read through `uses_24_hour`.
     pub hour_24: bool,
@@ -367,7 +327,6 @@ impl Default for Preferences {
             show_inputs: false,
             screensaver_minutes: 10,
             appearance: Appearance::Dark,
-            focus_grow: FocusGrow(10),
             hour_24: false,
             clock_24: None,
             show_seconds: false,

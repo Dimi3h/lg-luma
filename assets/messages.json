@@ -962,9 +962,5 @@
   "storeApps": {
     "en": "Apps",
     "nl": "Apps"
-  },
-  "focusGrow": {
-    "en": "Focus size",
-    "nl": "Focusgrootte"
   }
 }

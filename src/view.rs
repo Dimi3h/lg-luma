@@ -1,7 +1,7 @@
 //! Screen geometry and styling mirror the web UI's 1920×1080 / 16px-rem layout.
 use crate::{
     i18n::Language,
-    model::{App, BACKGROUNDS, FocusGrow, Input, InputMode},
+    model::{App, BACKGROUNDS, Input, InputMode},
     renderer::{Color, Draw, TextStyle, WHITE},
     state::{
         APPS_COLUMNS, Control, KEYS, Overlay, Page, Rect, SYSTEM_SECTION, State, Subpage, Target,
@@ -239,8 +239,6 @@ pub struct Scene {
     raised: Vec<Draw>,
     /// Settings and overlays: focused controls appear at once in place (no lift), as cards do.
     static_focus: bool,
-    /// How much larger focused app and wallpaper cards are (Settings › General › Focus size).
-    focus: FocusGrow,
 }
 
 /// Grows `rect` around its centre by `share` of its size.
@@ -276,7 +274,6 @@ impl Scene {
             backdrop: None,
             raised: Vec::new(),
             static_focus: false,
-            focus: FocusGrow::default(),
         }
     }
     /// How much a focused control grows: `lift`, or nothing where focus is static (Settings).
@@ -678,7 +675,6 @@ pub fn scene(state: &State, assets: &Assets, now: OffsetDateTime) -> Scene {
         return screensaver(state, assets, now, seed, step);
     }
     let mut out = Scene::new();
-    out.focus = state.preferences.focus_grow;
     out.static_focus =
         state.page == Page::Settings || state.overlay.is_some() || state.recents_open();
     let shown = state.preferences.background.clone();
@@ -1172,30 +1168,29 @@ fn within_margin(card: Rect, grown: Rect) -> Rect {
 }
 
 /// The focused card's drawn rectangle: its static size step, kept inside the screen margin.
-fn focused_rect(focus: FocusGrow, rect: Rect) -> Rect {
-    within_margin(rect, grow(rect, focus.share()))
+fn focused_rect(rect: Rect) -> Rect {
+    within_margin(rect, grow(rect, FOCUS_GROW))
 }
 
 /// A card's shadow and drawn rectangle for its focus `level`: the small resting shadow, or
-/// the focus size step with a soft shadow that grows with it, so a larger step also looks more
-/// lifted. The hit region is never changed; nothing animates.
+/// the 10% size step with a soft, wide shadow that makes it look lifted. The hit region is
+/// never changed; nothing animates.
 fn focus_card(out: &mut Scene, rect: Rect, radius: f32, level: f32) -> Rect {
     if level <= 0. {
         out.resting_shadow(rect, radius);
         return rect;
     }
-    let drawn = focused_rect(out.focus, rect);
-    let (blur, y, alpha) = focus_shadow(out.focus);
+    let drawn = focused_rect(rect);
+    let (blur, y, alpha) = FOCUS_SHADOW;
     out.shadow(drawn, radius, blur, y, alpha);
     drawn
 }
 
-/// Blur, downward offset and opacity of the focused card's shadow: from soft and close at a
-/// 6% step to wide, low and deeper at 14%. Light appearance halves shadow opacity.
-pub fn focus_shadow(focus: FocusGrow) -> (f32, f32, f32) {
-    let t = ((focus.share() - 0.06) / 0.08).clamp(0., 1.);
-    (mix(32., 64., t), mix(12., 30., t), mix(0.32, 0.5, t))
-}
+/// How much larger the focused card is drawn, around its centre (chosen on the TV).
+pub const FOCUS_GROW: f32 = 0.10;
+/// Blur, downward offset and opacity of the focused card's shadow. Light appearance halves
+/// shadow opacity.
+pub const FOCUS_SHADOW: (f32, f32, f32) = (48., 21., 0.41);
 
 /// How much brighter the focused card is: a white overlay of a few percent.
 pub const FOCUS_OVERLAY: f32 = 0.06;
@@ -2753,7 +2748,6 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
         0 => {
             let hidden = state.hidden_apps().len().to_string();
             let screensaver = screensaver_label(language, state.preferences.screensaver_minutes);
-            let focus_size = format!("{}%", state.preferences.focus_grow.0);
             for (position, (index, key, icon, value, chevron)) in [
                 (
                     0,
@@ -2782,14 +2776,6 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                     "weather-moon",
                     Some(screensaver.as_str()),
                     true,
-                ),
-                // Temporary: settling the focus size on the TV. OK cycles 6% to 14%.
-                (
-                    16,
-                    "focusGrow",
-                    "sparkles",
-                    Some(focus_size.as_str()),
-                    false,
                 ),
             ]
             .into_iter()
@@ -3581,7 +3567,7 @@ fn options(out: &mut Scene, state: &State, assets: &Assets, id: &str, anchor: Op
     };
     let panel = Rect::new(x, card.y.clamp(144., 1020. - height), width, height);
     // The selected card keeps its focused highlight and size step, in place.
-    let lifted = focused_rect(out.focus, card);
+    let lifted = focused_rect(card);
     let radius = CARD_RADIUS;
     if background {
         let path = state
