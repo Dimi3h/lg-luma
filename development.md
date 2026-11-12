@@ -691,6 +691,17 @@ frame's glyph atlas fill (glyphs, worker milliseconds, SDL-thread milliseconds, 
 drawable size and density, the GL vendor, renderer and version strings, the SDL video driver and
 the partial-redraw mode. Read it over SSH to see what the TV actually granted.
 
+The same file carries `frame_stats`, rolling figures for the time Luma is visible and in front
+(on webOS: focused; time behind other apps is not counted): frames presented, partial and full
+redraws and the partial share, the mean, 95th percentile and largest interval between two
+presentations, how many intervals took more than 20 ms and more than 33 ms, the seconds in front
+and the idle seconds within them. Idle screens draw on demand, so a gap of more than 100 ms
+without a frame counts as idle time rather than as an interval. Each presentation adds a few
+numbers and one bucket of a fixed 0.25 ms histogram on the SDL thread (no allocation or sorting);
+a `luma-diagnostics` thread merges the figures with the startup facts and replaces the file, at
+most once a minute and once more when Luma exits. TV figures depend on the TV and are unmeasured
+here; the idle reference before this change was 10.9 MB RSS and about 0.1 % of one core.
+
 Raster artwork has a 48 MiB cache budget. Diagnostics include atlas and bitmap bytes, glyph
 uploads and pending glyphs, text quads, draw calls and missing/failed artwork/glyphs. Idle screens
 draw on demand; VSync paces animation.
