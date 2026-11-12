@@ -258,15 +258,8 @@ Open **Settings → Background → Upload**, then scan the QR code or open the s
 address on a phone or computer on the same network. Choose a JPEG, PNG or WebP and adjust
 its 16:9 crop before choosing **Save to TV**.
 
-The upload link works only while its TV dialog is open and focused.
-
-Enable **Rotation** beside **Upload** to cycle through backgrounds on each Luma restart and every
-15 minutes with a slow cross-fade. Rotation is off by default and leaves your manually chosen
-LG splash unchanged.
-
-Toggle **Gradient** beside **Rotation** to turn background shading on or off. It defaults to On
-and remembers your choice. Older uploads without an unshaded copy keep their full-resolution
-shaded image. This does not change LG's launch splash.
+The upload link works only while its TV dialog is open and focused. Backgrounds always carry
+the readability shading; the chosen one stays until you pick another.
 
 ### Arranging apps
 

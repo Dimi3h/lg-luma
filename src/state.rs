@@ -28,18 +28,14 @@ pub const GRID_TOP_LIMIT: f32 = 150.;
 pub const BACKGROUND_FADE: f32 = 0.4;
 /// The clock line; scrolled content is not hit-testable above it.
 pub const MAIN_TOP: f32 = 120.;
-pub const CYCLE_FADE: f32 = 1.6;
 /// The screensaver's clock fades out over this long before each jump and in over this long
 /// after it (just opacity, eased in and out; no fade under Reduced motion).
 pub const SCREENSAVER_FADE: Duration = Duration::from_millis(350);
 
 /// The screensaver clock's opacity `elapsed` after it started: eased in over `SCREENSAVER_FADE`
-/// after each jump, eased out over the same before the next, and 1 in between (always 1 under
-/// Reduced motion, where the clock just jumps). Never above 1: the text keeps its resting grey.
-pub fn screensaver_opacity(elapsed: Duration, reduced: bool) -> f32 {
-    if reduced {
-        return 1.;
-    }
+/// after each jump, eased out over the same before the next, and 1 in between. Never above 1:
+/// the text keeps its resting grey.
+pub fn screensaver_opacity(elapsed: Duration) -> f32 {
     let step = SCREENSAVER_STEP.as_secs_f32();
     let fade = SCREENSAVER_FADE.as_secs_f32();
     let t = elapsed.as_secs_f32() % step;
@@ -59,13 +55,6 @@ fn is_grid_card(target: &Target) -> bool {
 
 /// LG's app store: an icon in the main screen's top bar, not a card in the grid.
 pub const STORE_ID: &str = "com.webos.app.discovery";
-
-pub fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub enum Page {
@@ -100,11 +89,8 @@ pub enum Target {
     ClockTimeFormat,
     Background(usize),
     UploadWallpaper,
-    WallpaperCycle,
-    WallpaperGradient,
     UseBackground,
     /// Background options: use this wallpaper between sunset and sunrise (or stop).
-    NightBackground,
     DeleteBackground,
     InputMode(String),
     InputRename,
@@ -217,8 +203,6 @@ pub enum Subpage {
     Screensaver,
     /// Settings › General › Appearance: Dark, Light or Automatic.
     Appearance,
-    /// Settings › General › Text size: Default or Larger.
-    TextSize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -380,19 +364,6 @@ impl State {
         minutes < sunrise || minutes >= sunset
     }
 
-    /// The wallpaper to show now: the night wallpaper between sunset and sunrise when one is
-    /// set and still exists, otherwise the chosen one.
-    pub fn shown_background(&self, now: time::OffsetDateTime) -> &str {
-        match &self.preferences.night_background {
-            Some(night)
-                if self.is_night(now) && self.background_ids().any(|known| known == night) =>
-            {
-                night
-            }
-            _ => &self.preferences.background,
-        }
-    }
-
     /// Whether the light appearance applies now.
     pub fn light(&self, now: time::OffsetDateTime) -> bool {
         match self.preferences.appearance {
@@ -454,9 +425,8 @@ impl State {
 
     /// The screensaver clock's current opacity (1 when it is not fading or not running).
     pub fn screensaver_alpha(&self) -> f32 {
-        self.screensaver.map_or(1., |(started, _)| {
-            screensaver_opacity(started.elapsed(), self.preferences.reduced_motion)
-        })
+        self.screensaver
+            .map_or(1., |(started, _)| screensaver_opacity(started.elapsed()))
     }
 
     /// Whether the clock is fading out or in around a jump: frames are drawn only then (and at
@@ -468,9 +438,6 @@ impl State {
     /// How long until the clock's next fade-out begins, so the loop wakes in time for it.
     pub fn screensaver_wake(&self) -> Option<Duration> {
         let (started, _) = self.screensaver?;
-        if self.preferences.reduced_motion {
-            return None;
-        }
         let step = SCREENSAVER_STEP.as_millis();
         let into = started.elapsed().as_millis() % step;
         let fade_out = step - SCREENSAVER_FADE.as_millis();
@@ -492,7 +459,6 @@ impl State {
             section: self.section,
             subpage: &self.subpage,
             scroll: self.scroll,
-            reduced: self.preferences.reduced_motion,
             pointer: self.pointer,
             overlay: self.overlay.is_some() || self.recents_open(),
         }
@@ -637,26 +603,20 @@ impl State {
         self.motion = motion;
         let recents_open = self.recents_open();
         if recents_open || self.recents.visibility > 0. {
-            self.dirty |= self.recents.animate(
-                recents_open,
-                self.preferences.reduced_motion,
-                self.pointer,
-                Instant::now(),
-            );
+            self.dirty |= self
+                .recents
+                .animate(recents_open, self.pointer, Instant::now());
         }
         if self
             .notice
             .as_ref()
             .is_some_and(|(_, start)| start.elapsed() < Duration::from_millis(240))
-            && !self.preferences.reduced_motion
         {
             self.dirty = true;
         }
         if let Some((_, start)) = &self.previous_background {
             self.dirty = true;
-            if self.preferences.reduced_motion
-                || start.elapsed().as_secs_f32() >= self.background_fade
-            {
+            if start.elapsed().as_secs_f32() >= self.background_fade {
                 self.previous_background = None;
             }
         }
@@ -677,11 +637,10 @@ impl State {
             || self.previous_background.is_some()
             || self.motion.animating()
             || self.screensaver_fading()
-            || (!self.preferences.reduced_motion
-                && self
-                    .notice
-                    .as_ref()
-                    .is_some_and(|(_, start)| start.elapsed() < Duration::from_millis(240)))
+            || self
+                .notice
+                .as_ref()
+                .is_some_and(|(_, start)| start.elapsed() < Duration::from_millis(240))
     }
 
     /// Home's lifecycle relaunch returns directly to Home, even from an overlay.
@@ -1203,29 +1162,6 @@ impl State {
         self.background_ids().count()
     }
 
-    pub fn cycle_wallpaper(&mut self, now: u64) -> bool {
-        let ids: Vec<_> = self
-            .background_ids()
-            .filter(|id| self.deleting_wallpaper.as_deref() != Some(*id))
-            .map(str::to_owned)
-            .collect();
-        let next = crate::wallpaper_cycle::next(&ids, &self.preferences.background);
-        self.preferences.wallpaper_changed = now;
-        let Some(id) = next else {
-            return false;
-        };
-        self.preferences.splash_background = Some(self.preferences.splash_background().to_owned());
-        if self.preferences.reduced_motion {
-            self.previous_background = None;
-        } else {
-            self.previous_background = Some((self.preferences.background.clone(), Instant::now()));
-            self.background_fade = CYCLE_FADE;
-        }
-        self.preferences.background = id;
-        self.dirty = true;
-        true
-    }
-
     pub fn background_id(&self, index: usize) -> Option<&str> {
         self.background_ids().nth(index)
     }
@@ -1384,7 +1320,6 @@ impl State {
             Some(Subpage::HiddenApps) => Target::Setting(11),
             Some(Subpage::Screensaver) => Target::Setting(12),
             Some(Subpage::Appearance) => Target::Setting(14),
-            Some(Subpage::TextSize) => Target::Setting(15),
             None => Target::Sidebar(self.section),
         };
         self.scroll = 0.;
@@ -1486,7 +1421,6 @@ impl State {
                     Some(Subpage::HiddenApps) => self.hidden_apps().len().max(1),
                     Some(Subpage::Screensaver) => SCREENSAVER_MINUTES.len(),
                     Some(Subpage::Appearance) => crate::model::Appearance::ALL.len(),
-                    Some(Subpage::TextSize) => 2,
                     Some(Subpage::DateFormat) => crate::model::DateFormat::ALL.len(),
                     _ => 3,
                 };
@@ -1693,11 +1627,7 @@ impl State {
                     }
                     Direction::Up => {
                         self.focus(
-                            if index == 2 {
-                                Target::WallpaperCycle
-                            } else if index == 1 {
-                                Target::WallpaperGradient
-                            } else if index < 3 {
+                            if index < 3 {
                                 Target::UploadWallpaper
                             } else {
                                 Target::Background(index - 3)
@@ -1723,31 +1653,7 @@ impl State {
                     Direction::Down => self.focus(Target::Background(0), controls),
                     Direction::Up => {}
                     Direction::Left => self.focus(Target::Sidebar(1), controls),
-                    Direction::Right => self.focus(Target::WallpaperGradient, controls),
-                }
-                return vec![];
-            }
-            if self.focus == Target::WallpaperGradient {
-                match direction {
-                    Direction::Right => self.focus(Target::WallpaperCycle, controls),
-                    Direction::Left => self.focus(Target::UploadWallpaper, controls),
-                    Direction::Up => {}
-                    Direction::Down => self.focus(
-                        Target::Background(1.min(self.background_count().saturating_sub(1))),
-                        controls,
-                    ),
-                }
-                return vec![];
-            }
-            if self.focus == Target::WallpaperCycle {
-                match direction {
                     Direction::Right => {}
-                    Direction::Left => self.focus(Target::WallpaperGradient, controls),
-                    Direction::Up => {}
-                    Direction::Down => self.focus(
-                        Target::Background(2.min(self.background_count().saturating_sub(1))),
-                        controls,
-                    ),
                 }
                 return vec![];
             }
@@ -2521,7 +2427,6 @@ impl State {
                         self.focus = Target::ClockFormat;
                         return vec![];
                     }
-                    2 => self.preferences.reduced_motion = !self.preferences.reduced_motion,
                     12 => {
                         self.subpage = Some(Subpage::Screensaver);
                         self.scroll = 0.;
@@ -2531,12 +2436,6 @@ impl State {
                                 .position(|m| *m == self.preferences.screensaver_minutes)
                                 .unwrap_or(3),
                         );
-                        return vec![];
-                    }
-                    15 => {
-                        self.subpage = Some(Subpage::TextSize);
-                        self.scroll = 0.;
-                        self.focus = Target::Choice(usize::from(self.preferences.larger_text));
                         return vec![];
                     }
                     14 => {
@@ -2559,19 +2458,9 @@ impl State {
                     5 => return vec![Effect::Quit],
                     _ => return vec![Effect::Reload],
                 }
-                return vec![Effect::Save];
             }
             Target::Background(_) => {
                 self.options();
-            }
-            Target::WallpaperCycle => {
-                self.preferences.wallpaper_cycle = !self.preferences.wallpaper_cycle;
-                self.preferences.wallpaper_changed = unix_now();
-                return vec![Effect::Save];
-            }
-            Target::WallpaperGradient => {
-                self.preferences.wallpaper_gradient = !self.preferences.wallpaper_gradient;
-                return vec![Effect::Save];
             }
             Target::UseBackground => {
                 let Some(Overlay::BackgroundOptions { id, .. }) = self.overlay.clone() else {
@@ -2583,7 +2472,7 @@ impl State {
                 if !self.background_ids().any(|known| known == id) {
                     return self.back();
                 }
-                if !self.preferences.reduced_motion && self.preferences.background != id {
+                if self.preferences.background != id {
                     self.previous_background =
                         Some((self.preferences.background.clone(), Instant::now()));
                     self.background_fade = BACKGROUND_FADE;
@@ -2594,20 +2483,6 @@ impl State {
                     id.clone()
                 });
                 self.preferences.background = id;
-                self.preferences.wallpaper_changed = unix_now();
-                self.back();
-                return vec![Effect::Save];
-            }
-            Target::NightBackground => {
-                let Some(Overlay::BackgroundOptions { id, .. }) = self.overlay.clone() else {
-                    return vec![];
-                };
-                self.preferences.night_background =
-                    if self.preferences.night_background.as_deref() == Some(id.as_str()) {
-                        None
-                    } else {
-                        Some(id)
-                    };
                 self.back();
                 return vec![Effect::Save];
             }
@@ -2661,7 +2536,6 @@ impl State {
                             Language::ALL[index.min(Language::ALL.len() - 1)];
                         self.weather.cancel_search();
                     }
-                    Some(Subpage::TextSize) => self.preferences.larger_text = index == 1,
                     Some(Subpage::Appearance) => {
                         let modes = crate::model::Appearance::ALL;
                         self.preferences.appearance = modes[index.min(modes.len() - 1)];
@@ -2859,13 +2733,11 @@ impl State {
                 return vec![];
             }
             if matches!(overlay, Overlay::Recents { .. }) {
-                self.recents.closing_focus = Some(self.focus.clone());
+                // Gone in the very frame it closes (no fade).
                 self.recents.updated = Instant::now();
+                self.recents.visibility = 0.;
+                self.recents.closing_focus = None;
                 self.pressed = None;
-                if self.preferences.reduced_motion {
-                    self.recents.visibility = 0.;
-                    self.recents.closing_focus = None;
-                }
             }
             if let Overlay::Options { restore, .. } | Overlay::Recents { restore } = overlay {
                 self.focus = restore;

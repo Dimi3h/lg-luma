@@ -315,7 +315,6 @@ fn the_main_screen_header_is_only_the_clock() {
 fn recents_has_only_cards_without_action_buttons_or_footer() {
     use crate::renderer::Draw;
     let mut state = ready();
-    state.preferences.reduced_motion = true;
     state.open_recents();
     accept(&mut state, recents::demo());
     let scene = scene(&state);
@@ -360,7 +359,6 @@ fn youtube_recents_uses_the_apps_vector_and_the_same_relative_logo_geometry() {
             .unwrap()
     };
     let mut state = ready();
-    state.preferences.reduced_motion = true;
     state.open(crate::state::Page::Home);
     let apps = scene(&state);
     let app_face = bounds(&apps, "surfaces/youtube.png");
@@ -497,7 +495,7 @@ fn failed_actions_keep_history_and_stale_replies_cannot_reopen_or_replace_a_sess
 }
 
 #[test]
-fn recents_pointer_focus_never_moves_hit_regions_and_reduced_motion_snaps() {
+fn recents_pointer_focus_never_moves_hit_regions() {
     let mut state = ready();
     state.open_recents();
     accept(&mut state, recents::demo());
@@ -524,10 +522,11 @@ fn recents_pointer_focus_never_moves_hit_regions_and_reduced_motion_snaps() {
         state.recents.position, 1.5,
         "Pointer input interrupts carousel motion"
     );
-    state.preferences.reduced_motion = true;
     state.pointer = false;
     state.recents.selected = 7;
-    state.tick();
+    for _ in 0..60 {
+        advance_recents(&mut state, 16);
+    }
     assert_eq!(state.recents.position, 7.);
     assert!(
         controls(&state)
@@ -551,7 +550,7 @@ fn recents_appears_and_disappears_in_one_frame_and_restores_parent_input_immedia
     state.recents.updated = start;
     state
         .recents
-        .animate(true, false, false, start + Duration::from_millis(16));
+        .animate(true, false, start + Duration::from_millis(16));
     assert_eq!(state.recents.visibility, 1.);
     let incoming = scene(&state);
     assert!(incoming.modal.is_some());
@@ -569,7 +568,7 @@ fn recents_appears_and_disappears_in_one_frame_and_restores_parent_input_immedia
     assert_eq!(state.focus, Target::ClockFormat);
     state
         .recents
-        .animate(false, false, false, start + Duration::from_millis(32));
+        .animate(false, false, start + Duration::from_millis(32));
     assert_eq!(state.recents.visibility, 0.);
     let outgoing = scene(&state);
     assert!(outgoing.modal.is_none());
@@ -587,7 +586,7 @@ fn recents_appears_and_disappears_in_one_frame_and_restores_parent_input_immedia
     state.open_recents();
     state
         .recents
-        .animate(true, false, false, start + Duration::from_millis(48));
+        .animate(true, false, start + Duration::from_millis(48));
     assert_eq!(state.recents.visibility, 1.);
 }
 
@@ -599,7 +598,7 @@ fn pointer_interruption_freezes_cards_and_recents_is_shown_at_once() {
     recent.selected = 3;
     recent.position = 1.5;
     for frame in 1..40 {
-        recent.animate(true, false, true, start + Duration::from_millis(frame * 16));
+        recent.animate(true, true, start + Duration::from_millis(frame * 16));
     }
     assert_eq!(recent.visibility, 1.);
     assert_eq!(recent.position, 1.5);
@@ -608,7 +607,6 @@ fn pointer_interruption_freezes_cards_and_recents_is_shown_at_once() {
 fn advance_recents(state: &mut State, millis: u64) {
     state.recents.animate(
         state.recents_open(),
-        state.preferences.reduced_motion,
         state.pointer,
         state.recents.updated + Duration::from_millis(millis),
     );
@@ -623,10 +621,9 @@ fn shows_recent_message(state: &State, key: &str) -> bool {
 
 #[test]
 fn closing_recent_cards_keeps_the_close_and_follow_up_refresh_quiet() {
-    for reduced in [false, true] {
+    {
         for count in [1, 2] {
             let mut state = ready();
-            state.preferences.reduced_motion = reduced;
             state.open_recents();
             assert!(shows_recent_message(&state, "recentLoading"));
             accept(
@@ -712,7 +709,6 @@ fn netflix_logo(state: &State) -> crate::state::Rect {
 #[test]
 fn row_cards_hit_the_focused_card_and_smaller_neighbours_beside_it() {
     let mut state = ready();
-    state.preferences.reduced_motion = true;
     state.open_recents();
     accept(&mut state, recents::demo());
     let front = recent_bounds(&state, "netflix");
@@ -803,10 +799,9 @@ fn a_failed_close_returns_the_same_card_and_restores_its_hit_target() {
 }
 
 #[test]
-fn closing_the_last_slot_brings_the_previous_card_forward_and_reduced_motion_snaps() {
-    for reduced in [false, true] {
+fn closing_the_last_slot_brings_the_previous_card_forward() {
+    {
         let mut state = ready();
-        state.preferences.reduced_motion = reduced;
         state.open_recents();
         accept(&mut state, recents::demo().into_iter().take(2).collect());
         state.recents.visibility = 1.;
@@ -823,10 +818,7 @@ fn closing_the_last_slot_brings_the_previous_card_forward_and_reduced_motion_sna
         let entering = recent_bounds(&state, "netflix");
         assert!(entering.center().0 > before.center().0);
         assert!(entering.w > before.w);
-        assert_eq!(state.recents.position == 0., reduced);
-        if reduced {
-            assert!(state.recents.dismissals.is_empty());
-        }
+        assert_ne!(state.recents.position, 0.);
         for _ in 0..50 {
             advance_recents(&mut state, 16);
         }
@@ -859,11 +851,10 @@ fn close_selects_the_hovered_cards_neighbor_and_preserves_browsing_during_the_re
 }
 
 #[test]
-fn the_last_card_exits_before_the_empty_state_and_reduced_motion_skips_the_exit() {
+fn the_last_card_exits_before_the_empty_state() {
     use crate::renderer::Draw;
-    for reduced in [false, true] {
+    {
         let mut state = ready();
-        state.preferences.reduced_motion = reduced;
         state.open_recents();
         accept(&mut state, recents::demo().into_iter().take(1).collect());
         state.recents.visibility = 1.;
@@ -877,7 +868,7 @@ fn the_last_card_exits_before_the_empty_state_and_reduced_motion_skips_the_exit(
                 .iter()
                 .any(|draw| matches!(draw, Draw::Text(value, ..) if value == "No recent apps"))
         };
-        assert_eq!(empty_visible(&state), reduced);
+        assert!(!empty_visible(&state));
         for _ in 0..30 {
             advance_recents(&mut state, 16);
         }
@@ -891,7 +882,6 @@ fn the_last_card_exits_before_the_empty_state_and_reduced_motion_skips_the_exit(
 fn empty_recents_has_no_explanatory_subtitle() {
     use crate::renderer::Draw;
     let mut state = ready();
-    state.preferences.reduced_motion = true;
     state.open_recents();
     accept(&mut state, vec![]);
     let texts: Vec<_> = scene(&state)

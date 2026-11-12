@@ -111,42 +111,28 @@ impl Assets {
 
     fn background(&self, state: &State, id: &str) -> String {
         if let Some(item) = state.wallpapers.iter().find(|item| item.id == id) {
-            return if state.preferences.wallpaper_gradient {
-                item.image()
-            } else {
-                item.unshaded_image()
-            };
+            return item.image();
         }
         let id = if BACKGROUNDS.iter().any(|(known, _)| *known == id) {
             id
         } else {
             "dunes"
         };
-        let suffix = if state.preferences.wallpaper_gradient {
-            ""
-        } else {
-            "-plain"
-        };
-        self.path(format!("wallpapers/{id}{suffix}.jpg"))
+        self.path(format!("wallpapers/{id}.jpg"))
     }
 
     /// The blurred copy of the visible background that glass panels sample.
     fn glass_backdrop(&self, state: &State, id: &str) -> Option<String> {
         let id = &id.to_owned();
         if let Some(item) = state.wallpapers.iter().find(|item| &item.id == id) {
-            return item.blurred(state.preferences.wallpaper_gradient);
+            return item.blurred(true);
         }
         let id = if BACKGROUNDS.iter().any(|(known, _)| known == id) {
             id.as_str()
         } else {
             "dunes"
         };
-        let suffix = if state.preferences.wallpaper_gradient {
-            ""
-        } else {
-            "-plain"
-        };
-        Some(self.path(format!("wallpapers/{id}{suffix}-blur.jpg")))
+        Some(self.path(format!("wallpapers/{id}-blur.jpg")))
     }
 
     /// One line no wider than `width`: shrinks to Caption 2 at most, then ends with "…".
@@ -168,7 +154,6 @@ impl Assets {
     }
 
     fn width(&self, value: &str, style: TextStyle) -> f32 {
-        let style = scaled(style);
         let key = format!(
             "{}{}",
             if style.size >= 32. { "display-" } else { "" },
@@ -204,7 +189,6 @@ impl Assets {
     }
 
     fn lines(&self, value: &str, style: TextStyle, width: f32) -> usize {
-        let style = scaled(style);
         let key = format!(
             "{}{}",
             if style.size >= 32. { "display-" } else { "" },
@@ -255,24 +239,6 @@ pub struct Scene {
     raised: Vec<Draw>,
     /// Settings and overlays: focused controls appear at once in place (no lift), as cards do.
     static_focus: bool,
-}
-
-/// Settings › General › Text size: Larger scales the body text styles (40 px and below) by this
-/// much; titles keep their size so the main screen's three rows still fit.
-pub const LARGER_TEXT: f32 = 1.15;
-
-thread_local! {
-    /// The text scale of the scene being built: set by `scene` from the preference and used
-    /// alike when text is measured (`Assets::width`, `lines`) and when it is drawn.
-    static TEXT_SCALE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.) };
-}
-
-/// `style` as drawn: body styles grow with Larger text, measured in unscaled units elsewhere.
-fn scaled(mut style: TextStyle) -> TextStyle {
-    if style.size <= 40. {
-        style.size *= TEXT_SCALE.with(std::cell::Cell::get);
-    }
-    style
 }
 
 /// Grows `rect` around its centre by `share` of its size.
@@ -328,20 +294,8 @@ impl Scene {
         color: Color,
         center: bool,
     ) {
-        // Larger text grows the box around its vertical centre, keeping its width.
-        let grown = scaled(style).size / style.size;
-        let rect = if grown != 1. {
-            Rect::new(
-                rect.x,
-                rect.y - rect.h * (grown - 1.) / 2.,
-                rect.w,
-                rect.h * grown,
-            )
-        } else {
-            rect
-        };
         self.draw
-            .push(Draw::Text(text.into(), rect, scaled(style), color, center));
+            .push(Draw::Text(text.into(), rect, style, color, center));
     }
     fn image(&mut self, path: String, rect: Rect, radius: f32, contain: bool) {
         self.draw.push(Draw::Image(path, rect, radius, contain));
@@ -717,21 +671,13 @@ pub fn recents_replaces_page(state: &State) -> bool {
 }
 
 pub fn scene(state: &State, assets: &Assets, now: OffsetDateTime) -> Scene {
-    TEXT_SCALE.with(|scale| {
-        scale.set(if state.preferences.larger_text {
-            LARGER_TEXT
-        } else {
-            1.
-        })
-    });
     if let Some((seed, step)) = state.screensaver_position_step() {
         return screensaver(state, assets, now, seed, step);
     }
     let mut out = Scene::new();
     out.static_focus =
         state.page == Page::Settings || state.overlay.is_some() || state.recents_open();
-    // The night wallpaper replaces the chosen one between sunset and sunrise.
-    let shown = state.shown_background(now).to_owned();
+    let shown = state.preferences.background.clone();
     out.backdrop = assets.glass_backdrop(state, &shown);
     if let Some((previous, start)) = &state.previous_background {
         out.image(
@@ -1990,14 +1936,6 @@ fn row_y(index: usize) -> f32 {
     SETTINGS_TOP + index as f32 * (ROW_H + ROW_GAP)
 }
 
-fn rotation_value_width(assets: &Assets, language: Language) -> f32 {
-    ["stateOn", "stateOff"]
-        .into_iter()
-        .map(|key| assets.width(language.t(key), BODY.weight(400)))
-        .fold(0., f32::max)
-        .ceil()
-}
-
 /// A tvOS list row: glass at rest; focused it turns white with dark text, grows slightly and
 /// rounds into a lifted card. Values sit right-aligned in secondary grey.
 fn row(out: &mut Scene, state: &State, assets: &Assets, row: Row<'_>) {
@@ -2023,16 +1961,9 @@ fn row(out: &mut Scene, state: &State, assets: &Assets, row: Row<'_>) {
         } else {
             (drawn.h - 36.) / 2.
         };
-    let compact_value_width = matches!(
-        row.target,
-        Target::WallpaperCycle | Target::WallpaperGradient
-    )
-    .then(|| rotation_value_width(assets, state.preferences.language));
-    let right_inset = if let Some(width) = compact_value_width {
-        width + ROW_PAD + 20.
-    } else if row.value.is_some() {
+    let right_inset = if row.value.is_some() {
         VALUE_WIDTH + 60.
-    } else if matches!(row.target, Target::UploadWallpaper | Target::WallpaperCycle) {
+    } else if matches!(row.target, Target::UploadWallpaper) {
         ROW_PAD
     } else {
         72.
@@ -2065,7 +1996,7 @@ fn row(out: &mut Scene, state: &State, assets: &Assets, row: Row<'_>) {
         );
     }
     if let Some(value) = row.value {
-        let value_width = compact_value_width.unwrap_or(VALUE_WIDTH);
+        let value_width = VALUE_WIDTH;
         let (value, style) = assets.single_line(value, BODY.weight(400), value_width);
         out.text(
             value,
@@ -2094,10 +2025,7 @@ fn row(out: &mut Scene, state: &State, assets: &Assets, row: Row<'_>) {
             if row.selected { primary } else { secondary },
         );
     }
-    let scrollable = !matches!(
-        row.target,
-        Target::UploadWallpaper | Target::WallpaperCycle | Target::WallpaperGradient
-    );
+    let scrollable = !matches!(row.target, Target::UploadWallpaper);
     if level > 0. {
         let lifted = out.draw.split_off(start);
         out.raised.extend(lifted);
@@ -2443,7 +2371,6 @@ fn settings_path(state: &State) -> Vec<&str> {
         Some(Subpage::HiddenApps) => vec![language.t("hiddenApps")],
         Some(Subpage::Screensaver) => vec![language.t("screensaver")],
         Some(Subpage::Appearance) => vec![language.t("appearance")],
-        Some(Subpage::TextSize) => vec![language.t("textSize")],
         None => vec![],
     };
     let mut path = vec![section];
@@ -2720,18 +2647,6 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                 .into_iter()
                 .map(|option| (option.name(), None, option == language))
                 .collect(),
-            Subpage::TextSize => vec![
-                (
-                    language.t("textDefault"),
-                    None,
-                    !state.preferences.larger_text,
-                ),
-                (
-                    language.t("textLarger"),
-                    None,
-                    state.preferences.larger_text,
-                ),
-            ],
             Subpage::Appearance => crate::model::Appearance::ALL
                 .into_iter()
                 .map(|mode| {
@@ -2801,29 +2716,7 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                 ),
                 (1, "clock", "clock", None, true),
                 (4, "language", "language", Some(language.name()), true),
-                (
-                    2,
-                    "reducedMotion",
-                    "motion",
-                    Some(if state.preferences.reduced_motion {
-                        language.t("stateOn")
-                    } else {
-                        language.t("stateOff")
-                    }),
-                    false,
-                ),
                 (11, "hiddenApps", "eye-off", Some(hidden.as_str()), true),
-                (
-                    15,
-                    "textSize",
-                    "type",
-                    Some(language.t(if state.preferences.larger_text {
-                        "textLarger"
-                    } else {
-                        "textDefault"
-                    })),
-                    true,
-                ),
                 (
                     14,
                     "appearance",
@@ -3038,89 +2931,34 @@ pub fn gallery_rect(index: usize, scroll: f32) -> Rect {
     )
 }
 
-/// Upload, Gradient and Rotation: fixed glass buttons on the title line, above the gallery.
+/// Upload: a fixed glass button on the title line, above the gallery.
 fn background_actions(out: &mut Scene, state: &State, assets: &Assets) {
     let language = state.preferences.language;
     let upload_label = language.t("uploadWallpaper");
     let upload_width = (assets.width(upload_label, BODY) + ROW_PAD * 2. + 50.)
         .ceil()
         .min(520.);
-    let cycle_label = language.t("wallpaperCycle");
-    let gradient_label = language.t("wallpaperGradient");
-    let value = rotation_value_width(assets, language);
-    let gradient_width = (assets.width(gradient_label, BODY) + value + ROW_PAD * 2. + 70.)
-        .ceil()
-        .min(400.);
-    let cycle_width = (assets.width(cycle_label, BODY) + value + ROW_PAD * 2. + 70.)
-        .ceil()
-        .min(520.);
     let right = SETTINGS_X + SETTINGS_W;
-    let y = SETTINGS_TITLE_Y;
-    for (target, rect, title, icon, value) in [
-        (
-            Target::WallpaperCycle,
-            Rect::new(right - cycle_width, y, cycle_width, TITLE_LINE_H),
-            cycle_label,
-            if state.preferences.wallpaper_cycle {
-                "refresh"
-            } else {
-                "refresh-off"
-            },
-            Some(language.t(if state.preferences.wallpaper_cycle {
-                "stateOn"
-            } else {
-                "stateOff"
-            })),
-        ),
-        (
-            Target::WallpaperGradient,
-            Rect::new(
-                right - cycle_width - 20. - gradient_width,
-                y,
-                gradient_width,
-                TITLE_LINE_H,
-            ),
-            gradient_label,
-            if state.preferences.wallpaper_gradient {
-                "eye"
-            } else {
-                "eye-off"
-            },
-            Some(language.t(if state.preferences.wallpaper_gradient {
-                "stateOn"
-            } else {
-                "stateOff"
-            })),
-        ),
-        (
-            Target::UploadWallpaper,
-            Rect::new(
-                right - cycle_width - 40. - gradient_width - upload_width,
-                y,
+    row(
+        out,
+        state,
+        assets,
+        Row {
+            target: Target::UploadWallpaper,
+            rect: Rect::new(
+                right - upload_width,
+                SETTINGS_TITLE_Y,
                 upload_width,
                 TITLE_LINE_H,
             ),
-            upload_label,
-            "upload",
-            None,
-        ),
-    ] {
-        row(
-            out,
-            state,
-            assets,
-            Row {
-                target,
-                rect,
-                title,
-                icon: Some(icon),
-                value,
-                description: None,
-                selected: false,
-                chevron: false,
-            },
-        );
-    }
+            title: upload_label,
+            icon: Some("upload"),
+            value: None,
+            description: None,
+            selected: false,
+            chevron: false,
+        },
+    );
 }
 
 fn inputs_settings(out: &mut Scene, state: &State, assets: &Assets) {
@@ -3651,17 +3489,7 @@ fn options(out: &mut Scene, state: &State, assets: &Assets, id: &str, anchor: Op
             (Target::TileRemove(id.into()), language.t("removeTile")),
         ]
     } else if background {
-        let mut actions = vec![
-            (Target::UseBackground, language.t("useBackground")),
-            (
-                Target::NightBackground,
-                if state.preferences.night_background.as_deref() == Some(id) {
-                    language.t("stopNightBackground")
-                } else {
-                    language.t("useAtNight")
-                },
-            ),
-        ];
+        let mut actions = vec![(Target::UseBackground, language.t("useBackground"))];
         if deletable {
             actions.push((Target::DeleteBackground, language.t("deleteBackground")));
         }
@@ -3760,7 +3588,6 @@ fn options(out: &mut Scene, state: &State, assets: &Assets, id: &str, anchor: Op
             match &target {
                 Target::OpenApp | Target::TileTest(_) => "arrow",
                 Target::UseBackground => "check",
-                Target::NightBackground => "weather-moon",
                 Target::Option(0) => "grid",
                 Target::Option(1) => {
                     if hidden {
@@ -4151,9 +3978,7 @@ fn toast(out: &mut Scene, state: &State, assets: &Assets, notice: &str) {
     let text_height =
         assets.lines(notice, style, width - 48.) as f32 * style.size * style.line_height;
     let height = 20. + text_height;
-    let appear = if state.preferences.reduced_motion {
-        1.
-    } else {
+    let appear = {
         state.notice.as_ref().map_or(1., |(_, opened)| {
             let t = (opened.elapsed().as_secs_f32() / 0.24).min(1.);
             1. - (1. - t).powi(3)
@@ -4298,54 +4123,6 @@ mod tests {
                 .unwrap();
             let right_padding = button.x + button.w - title.x - label_width;
             assert!((ROW_PAD..ROW_PAD + 1.4).contains(&right_padding));
-        }
-    }
-
-    #[test]
-    fn auto_rotation_keeps_a_compact_gap_and_right_aligned_state() {
-        let assets = assets();
-        let mut state = State::new(Preferences::default());
-        state.open(Page::Settings);
-        state.section = 1;
-        let label = state.preferences.language.t("wallpaperCycle");
-        let label_width = assets.width(label, BODY);
-        for enabled in [false, true] {
-            state.preferences.wallpaper_cycle = enabled;
-            let mut scene = Scene::new();
-            settings(&mut scene, &state, &assets);
-            let button = scene
-                .controls
-                .iter()
-                .find(|control| control.target == Target::WallpaperCycle)
-                .unwrap()
-                .rect;
-            let title = scene
-                .draw
-                .iter()
-                .find_map(|draw| match draw {
-                    Draw::Text(value, rect, ..) if value == label => Some(rect),
-                    _ => None,
-                })
-                .unwrap();
-            let state_label =
-                state
-                    .preferences
-                    .language
-                    .t(if enabled { "stateOn" } else { "stateOff" });
-            let (value, style) = scene
-                .draw
-                .iter()
-                .find_map(|draw| match draw {
-                    Draw::Text(label, rect, style, ..) if label == state_label => {
-                        Some((rect, style))
-                    }
-                    _ => None,
-                })
-                .unwrap();
-            assert!(style.align_right);
-            assert!((button.x + button.w - value.x - value.w - ROW_PAD).abs() < 0.001);
-            assert!((20. ..21.).contains(&(value.x - title.x - label_width)));
-            assert!(button.w < 360.);
         }
     }
 

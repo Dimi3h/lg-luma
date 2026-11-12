@@ -26,7 +26,7 @@ try {
   const dump = path.join(scratch, 'state.json');
   const diagnostics = path.join(scratch, 'render.json');
   const screenshot = path.join(scratch, 'card.png');
-  await fs.writeFile(preferences, JSON.stringify({ reduced_motion: true, show_weather: false }));
+  await fs.writeFile(preferences, JSON.stringify({ show_weather: false }));
   run(binary, [
     '--preferences',
     preferences,
@@ -47,10 +47,7 @@ try {
     const app = inventory.find((app) => app.brand === logo);
     assert.ok(app, `Desktop demo is missing ${logo}`);
     // As the only former favourite, the app starts the migrated order and has focus.
-    await fs.writeFile(
-      preferences,
-      JSON.stringify({ reduced_motion: true, show_weather: false, favorites: [app.id] }),
-    );
+    await fs.writeFile(preferences, JSON.stringify({ show_weather: false, favorites: [app.id] }));
     run(binary, [
       '--preferences',
       preferences,

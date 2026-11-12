@@ -192,7 +192,7 @@ impl Recents {
         }
     }
 
-    pub fn animate(&mut self, open: bool, reduced: bool, pointer: bool, now: Instant) -> bool {
+    pub fn animate(&mut self, open: bool, pointer: bool, now: Instant) -> bool {
         let dt = now
             .saturating_duration_since(self.updated)
             .as_secs_f32()
@@ -201,7 +201,7 @@ impl Recents {
         let visibility = if open { 1. } else { 0. };
         let changed = self.visibility != visibility || self.cards_animating(pointer);
         let approach = |current: &mut f32, target: f32, speed: f32| {
-            if reduced || (*current - target).abs() < 0.002 {
+            if (*current - target).abs() < 0.002 {
                 *current = target;
             } else {
                 *current += (target - *current) * (1. - (-speed * dt).exp());
@@ -218,13 +218,7 @@ impl Recents {
             }
         }
         for dismissal in &mut self.dismissals {
-            dismissal.progress = if reduced {
-                if dismissal.outcome == DismissalOutcome::Returning {
-                    0.
-                } else {
-                    1.
-                }
-            } else if dismissal.outcome == DismissalOutcome::Returning {
+            dismissal.progress = if dismissal.outcome == DismissalOutcome::Returning {
                 (dismissal.progress - dt / 0.28).max(0.)
             } else {
                 (dismissal.progress + dt / 0.38).min(1.)
@@ -280,9 +274,8 @@ impl State {
                 .map(|entry| Target::Recent(entry.app.id.clone()))
                 .unwrap_or(Target::RecentEmpty)
         });
-        if self.preferences.reduced_motion {
-            self.recents.visibility = 1.;
-        }
+        // Shown complete in the very frame it opens (no fade).
+        self.recents.visibility = 1.;
         self.pointer = false;
         self.pressed = None;
         self.notice = None;
@@ -302,13 +295,12 @@ impl State {
             {
                 return vec![];
             }
-            if !self.preferences.reduced_motion
-                && let Some((index, entry)) = self
-                    .recents
-                    .entries
-                    .iter()
-                    .enumerate()
-                    .find(|(_, entry)| &entry.app.id == id)
+            if let Some((index, entry)) = self
+                .recents
+                .entries
+                .iter()
+                .enumerate()
+                .find(|(_, entry)| &entry.app.id == id)
             {
                 self.recents.dismissals.push(Dismissal {
                     entry: entry.clone(),

@@ -281,8 +281,7 @@ card is centred, lifted with a deep shadow
 and titled beneath; its neighbours are smaller and dimmer at the sides, without overlapping. Cards
 are painted and hit-tested back-to-front.
 Dismissal restores parent input and the parent interface immediately. Card hit targets never
-move; pointer interruption pauses carousel movement. Reduced motion makes navigation and close
-transitions immediate too.
+move; pointer interruption pauses carousel movement.
 Pointer hover/down preserves the current card positions and interrupts remote carousel movement.
 The backdrop is the blurred wallpaper under a 50% dimming layer. Only the focused card has a caption; there are no action buttons,
 empty-state subtitle, heading, separate dismiss button, card count, footer instructions or Home
@@ -335,7 +334,7 @@ pnpm dev --script recents,await-recents
 
 `hold-back` is also a scripted opening action. Desktop smoke scenarios render normal, close-one,
 empty, launch, pointer and Home Back flows; unit tests cover hold timing, cancelled
-presses, stale responses, failures, navigation, reduced motion, the instant open and close, and consistent card artwork.
+presses, stale responses, failures, navigation, the instant open and close, and consistent card artwork.
 
 ## Custom wallpaper uploads
 
@@ -364,24 +363,14 @@ updates, and normal/takeover launches using the shared preferences location use 
 Custom images are not used as LG's launch splash: runtime splash updates are skipped for them,
 and takeover boot staging uses a bundled fallback.
 
-The fixed actions are **Upload**, **Gradient**, and **Rotation**, from left to right.
-**Gradient** toggles readability shading immediately without moving the controls. Its
-`wallpaper_gradient` preference defaults to On for new and existing installations. Bundled assets
-include full-resolution `-plain` variants; new uploads retain a metadata-stripped `original.jpg`
-alongside the shaded image. Discovery checks for originals on the worker, not the SDL thread.
-Older uploads keep their full-resolution shaded image when Off if no unshaded original exists.
-The setting does not affect gallery thumbnails or LG's static launch splash.
-
-The fixed **Rotation** button toggles cycling On/Off,
-defaulting to Off, without opening a subpage. All available images participate in gallery order;
-deleted and pending-deletion entries are excluded. The fixed 15-minute interval uses a persisted
-Unix timestamp; manual selection or enabling cycling restarts it, and a clock behind the last
-change waits. On process start, rotation advances once after the gallery catalog loads, or after
-three seconds if the catalog is delayed. Changes wait until Luma is focused, visible, idle, and outside overlays. Automatic
-changes use a 1.6-second fade (instant with reduced motion) and save without refreshing LG's splash.
-`splash_background` preserves the manual selection across unrelated saves, package restaging, and
-process restarts; old preferences fall back to `background`. Old duration preferences load as On,
-while former per-image exclusions are ignored.
+The only fixed action is **Upload**, at the right of the title line. Backgrounds always show
+with their readability shading (the former Gradient toggle and its unshaded `-plain` wallpapers
+are no longer used; new uploads still keep a metadata-stripped `original.jpg` beside the shaded
+image). The former Rotation (`wallpaper_cycle`), Night wallpaper (`night_background`), Text size
+(`larger_text`) and Reduced motion (`reduced_motion`) settings are gone too; preference files
+that still carry them load and drop them. `splash_background` preserves the manual selection
+across unrelated saves, package restaging and process restarts; old preferences fall back to
+`background`.
 
 The native process binds an ephemeral port on one private/link-local IPv4 interface only while
 the upload modal is open and visible, with a fixed ten-minute session lifetime. Closing the modal,
@@ -506,8 +495,8 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   complete, with its wallpaper dim, glass and text. That frame is redrawn in full (partial
   redraw's damage history is reset) and waits for any of the new page's glyphs the worker has
   not finished (normally none: idle preparation has rasterised them). Controls always use the logical, unanimated
-  positions; the drawn content follows. Wheel and pointer scrolling, list changes and **Reduced
-  motion** snap immediately. `State::animating()` keeps presenting only while a value is moving.
+  positions; the drawn content follows. Wheel and pointer scrolling and list changes snap
+  immediately. `State::animating()` keeps presenting only while a value is moving.
 - **Liquid Glass**: GLES2 has no backdrop blur, so `pnpm assets` writes a 480 × 270 blurred copy
   of every background, with 30% more saturation, slightly lower contrast and a light glass tint
   baked in (rather than dimming) (`wallpapers/<id>-blur.jpg` and `<id>-plain-blur.jpg`), and the
@@ -525,7 +514,7 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   circles keep circular ends. App faces, glass, buttons and shadows share the shape. The cost is
   three `pow` calls per pixel of every rounded shape (unmeasured on Mali-class TVs).
 - **Notices**: a compact glass pill in Caption 1, centred with its bottom on the safe-area line
-  (y 1020). It fades in and rises 10 px (240 ms; neither under Reduced motion), dismisses itself
+  (y 1020). It fades in and rises 10 px (240 ms), dismisses itself
   as before, and a new notice replaces the current one. It may cover part of the bottom card row
   while shown.
 - **Wallpaper dim**: the main screen dims its wallpaper by a constant 20% (near-black,
@@ -533,16 +522,6 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   animate or react to focus or to any app. It lies directly on the wallpaper, so the renderer
   folds it into the wallpaper's own pass at no extra full-screen cost. Settings and Light keep
   their own treatment.
-- **Night wallpaper** (off by default): a background's options offer **Use at night** (and
-  **Don't use at night** for the current one). Between sunset and sunrise, decided as for
-  Automatic appearance, that wallpaper and its blurred glass copy replace the chosen one; the day
-  choice, rotation and the splash are unchanged. A deleted night wallpaper falls back to the day
-  one.
-- **Text size** (Settings › General: Default or Larger): Larger scales every text style of
-  40 px and below (Headline, Callout, Body, Captions) by 1.15; titles keep their size. The scale
-  is applied in one place for measuring (`Assets::width`/`lines`, so fitting and ellipsis follow
-  it) and drawing (`Scene::text`, whose box grows around its vertical centre). The main screen
-  still fits three rows: the third row's focused caption ends near y 993, inside the safe area.
 - **Appearance** (Settings › General: Dark (default), Light or Automatic): Light brightens the
   finished scene in one pass (`light_appearance` in `src/view.rs`): a white scrim over the
   wallpaper, a white layer on each glass panel, near-black text and interface icons instead of
@@ -561,8 +540,7 @@ Luma follows current Apple tvOS (tvOS 26/27, Liquid Glass) in look and motion, a
   80 × 60 safe area. Around each jump it fades out at the old place and in at the new one
   (`SCREENSAVER_FADE`, 350 ms each, smoothstep ease-in-out): only its opacity changes, never
   above the resting grey, and it never slides. Frames are drawn only during those two fades and
-  when the minute changes; in between the loop sleeps until the next fade-out is due. Under
-  Reduced motion the clock just jumps. It replaces the whole scene, so nothing behind it is reachable; any key or
+  when the minute changes; in between the loop sleeps until the next fade-out is due. It replaces the whole scene, so nothing behind it is reachable; any key or
   pointer movement only ends it. Hidden or unfocused, the timer does not run, and returning to
   Luma restarts it. The former Screensaver clock toggle and the wallpaper slideshow are gone.
   Scripts can start it with the `screensaver` action.

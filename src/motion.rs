@@ -4,7 +4,7 @@
 //! Logical state (focus, scroll offsets, hit regions) still changes at once; these values only
 //! follow it on screen. A gained focus lifts on a light spring (about 3% overshoot, settled in
 //! about 200 ms); everything else approaches its target with a critically damped exponential.
-//! All of it is driven by the frame loop's `Instant`, snaps when motion is reduced, and stops
+//! All of it is driven by the frame loop's `Instant`, and stops
 //! exactly so idle frames stop redrawing.
 use crate::state::{Page, Subpage, Target};
 use std::time::Instant;
@@ -72,7 +72,6 @@ pub struct Inputs<'a> {
     pub section: usize,
     pub subpage: &'a Option<Subpage>,
     pub scroll: f32,
-    pub reduced: bool,
     /// Wheel scrolling and pointer hover keep display and hit regions identical.
     pub pointer: bool,
     /// An overlay (menu, alert, keyboard, Recents) is open: its focus is instant too.
@@ -126,7 +125,7 @@ impl Motion {
         }
         self.seen = Some(input.focus.clone());
         if !self.levels.iter().any(|(target, ..)| target == input.focus) {
-            let start = if input.reduced { 1. } else { 0. };
+            let start = 0.;
             self.levels.push((input.focus.clone(), start, 0.));
         }
         // Small controls change visibly in the very frame focus moves, before the next tick;
@@ -143,13 +142,6 @@ impl Motion {
                 }
             }
         }
-        if input.reduced {
-            self.levels.retain(|(target, ..)| target == input.focus);
-            for level in &mut self.levels {
-                level.1 = 1.;
-                level.2 = 0.;
-            }
-        }
         self.active = true;
     }
 
@@ -163,7 +155,7 @@ impl Motion {
         let mut changed = false;
         for (target, level, velocity) in &mut self.levels {
             let goal = if target == input.focus { 1. } else { 0. };
-            if input.reduced || instant(target, input.page, input.overlay) {
+            if instant(target, input.page, input.overlay) {
                 changed |= *level != goal;
                 *level = goal;
                 *velocity = 0.;
@@ -192,7 +184,7 @@ impl Motion {
         let switched = self.context.as_ref() != Some(&context);
         self.context = Some(context);
 
-        let snap = switched || input.reduced || input.pointer;
+        let snap = switched || input.pointer;
         match &mut self.scroll {
             Some(value) if !snap => {
                 let rate = if input.page == Page::Settings {
@@ -237,14 +229,13 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    fn input<'a>(focus: &'a Target, subpage: &'a Option<Subpage>, reduced: bool) -> Inputs<'a> {
+    fn input<'a>(focus: &'a Target, subpage: &'a Option<Subpage>) -> Inputs<'a> {
         Inputs {
             focus,
             page: Page::Home,
             section: 0,
             subpage,
             scroll: 0.,
-            reduced,
             pointer: false,
             overlay: false,
         }
@@ -257,32 +248,19 @@ mod tests {
         let a = Target::Setting(0);
         let b = Target::Setting(1);
         let start = Instant::now();
-        motion.advance(&input(&a, &none, false), start);
-        motion.sync(&input(&b, &none, false));
+        motion.advance(&input(&a, &none), start);
+        motion.sync(&input(&b, &none));
         assert_eq!(motion.focus_level(&b, &b), 0.);
         let mut now = start;
         for _ in 0..30 {
             now += Duration::from_millis(16);
-            motion.advance(&input(&b, &none, false), now);
+            motion.advance(&input(&b, &none), now);
         }
         assert_eq!(motion.focus_level(&b, &b), 1.);
         assert_eq!(motion.focus_level(&a, &b), 0.);
         now += Duration::from_millis(16);
-        assert!(!motion.advance(&input(&b, &none, false), now));
+        assert!(!motion.advance(&input(&b, &none), now));
         assert!(!motion.animating());
-    }
-
-    #[test]
-    fn reduced_motion_snaps_focus_and_scroll() {
-        let mut motion = Motion::default();
-        let none = None;
-        let a = Target::App("a".into());
-        let mut values = input(&a, &none, true);
-        motion.advance(&values, Instant::now());
-        values.scroll = 300.;
-        motion.advance(&values, Instant::now());
-        assert_eq!(motion.scroll(300.), 300.);
-        assert_eq!(motion.focus_level(&a, &a), 1.);
     }
 
     #[test]
@@ -291,7 +269,7 @@ mod tests {
         let none = None;
         let a = Target::App("a".into());
         let start = Instant::now();
-        let mut values = input(&a, &none, false);
+        let mut values = input(&a, &none);
         motion.advance(&values, start);
         values.scroll = 300.;
         motion.advance(&values, start + Duration::from_millis(16));
@@ -309,12 +287,12 @@ mod tests {
         let none = None;
         let a = Target::Setting(0);
         let start = Instant::now();
-        motion.advance(&input(&a, &none, false), start);
+        motion.advance(&input(&a, &none), start);
         let mut peak: f32 = 0.;
         let mut now = start;
         for _ in 0..15 {
             now += Duration::from_millis(16);
-            motion.advance(&input(&a, &none, false), now);
+            motion.advance(&input(&a, &none), now);
             peak = peak.max(motion.focus_level(&a, &a));
         }
         // Sampled per frame, so the observed peak sits a little under the true 2.3%.
@@ -330,21 +308,21 @@ mod tests {
         let card = Target::App("a".into());
         let mut motion = Motion::default();
         let start = Instant::now();
-        motion.advance(&input(&settings, &none, false), start);
+        motion.advance(&input(&settings, &none), start);
         let mut now = start;
         for _ in 0..20 {
             now += Duration::from_millis(16);
-            motion.advance(&input(&settings, &none, false), now);
+            motion.advance(&input(&settings, &none), now);
         }
         assert_eq!(motion.focus_level(&settings, &settings), 1.);
         // The press: synchronised before any tick, the change is already visible.
-        motion.sync(&input(&control, &none, false));
+        motion.sync(&input(&control, &none));
         assert!(motion.focus_level(&control, &control) >= SMALL_START);
         assert!(motion.focus_level(&settings, &control) <= 1. - SMALL_START);
         let mut settled = None;
         for frame in 1..=12 {
             now += Duration::from_millis(16);
-            motion.advance(&input(&control, &none, false), now);
+            motion.advance(&input(&control, &none), now);
             if settled.is_none()
                 && motion.focus_level(&control, &control) == 1.
                 && motion.focus_level(&settings, &control) == 0.
@@ -355,11 +333,11 @@ mod tests {
         let settled = settled.expect("small controls settle");
         assert!(settled <= 144, "settled after {settled} ms");
         // App cards change completely in that frame, and the card they leave at once.
-        motion.sync(&input(&card, &none, false));
+        motion.sync(&input(&card, &none));
         assert_eq!(motion.focus_level(&card, &card), 1.);
         assert_eq!(motion.focus_level(&control, &card), 1. - SMALL_START);
         let other = Target::App("b".into());
-        motion.sync(&input(&other, &none, false));
+        motion.sync(&input(&other, &none));
         assert_eq!(motion.focus_level(&card, &other), 0.);
         assert_eq!(motion.focus_level(&other, &other), 1.);
     }

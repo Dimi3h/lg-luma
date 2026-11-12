@@ -511,41 +511,12 @@ try {
   assert.ok(scrolledClick.focus.App, 'The visible card under the pointer takes focus');
   const scrolledBack = await scenario('grid-shelf-returns', 'home,down,down,down,up,up,up');
   assert.equal(scrolledBack.scroll, 0, 'The first row brings the shelf back');
+  // The Background page has only Upload above the gallery (no Gradient or Rotation).
   await fs.writeFile(preferences, JSON.stringify({ show_weather: false }));
-  const gradientDisabled = await scenario(
-    'wallpaper-gradient-disabled',
-    'settings,down,enter,up,up,right,enter',
-  );
-  assert.equal(gradientDisabled.focus, 'WallpaperGradient');
-  assert.equal(gradientDisabled.preferences.wallpaper_gradient, false);
-  assert.ok(gradientDisabled.ui_text.includes('Gradient'));
-  const gradientRestored = await scenario('wallpaper-gradient-restored', 'home');
-  assert.equal(gradientRestored.preferences.wallpaper_gradient, false);
-  const gradientEnabled = await scenario(
-    'wallpaper-gradient-enabled',
-    'settings,down,enter,up,up,right,enter',
-  );
-  assert.equal(gradientEnabled.preferences.wallpaper_gradient, true);
-  const cycleEnabled = await scenario(
-    'wallpaper-cycle-enabled',
-    'settings,down,enter,up,up,right,right,enter',
-  );
-  assert.equal(cycleEnabled.subpage, null);
-  assert.equal(cycleEnabled.focus, 'WallpaperCycle');
-  assert.equal(cycleEnabled.preferences.wallpaper_cycle, true);
-  assert.ok(cycleEnabled.ui_text.includes('Rotation'));
-  const cycledAfterRestart = await scenario('wallpaper-cycle-restart', 'home');
-  assert.equal(
-    cycledAfterRestart.preferences.background,
-    'san-francisco',
-    'enabled rotation advances to the next wallpaper when Luma restarts',
-  );
-  const cycleDisabled = await scenario(
-    'wallpaper-cycle-disabled',
-    'settings,down,enter,up,up,right,right,enter',
-  );
-  assert.equal(cycleDisabled.preferences.wallpaper_cycle, false);
-  assert.ok(cycleDisabled.ui_text.includes('Rotation'));
+  const backgroundActions = await scenario('background-actions', 'settings,down,enter,up,up,right');
+  assert.equal(backgroundActions.focus, 'UploadWallpaper');
+  assert.ok(!backgroundActions.ui_text.includes('Gradient'));
+  assert.ok(!backgroundActions.ui_text.includes('Rotation'));
   console.log(
     'Native smoke checks passed: rendering/alpha, navigation, persistence, SDL pointer input, DPI-aware glyphs, 4K capture and presentation profiling.',
   );

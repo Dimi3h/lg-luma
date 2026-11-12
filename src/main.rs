@@ -32,7 +32,6 @@ mod tile_editor;
 mod update;
 mod vector;
 mod view;
-mod wallpaper_cycle;
 mod wallpapers;
 mod weather;
 #[path = "weather-service.rs"]
@@ -1004,9 +1003,6 @@ fn run() -> Result<(), String> {
     let mut queued_event = None;
     let mut text_active = false;
     let mut initial_focus = options.script.is_empty();
-    let mut startup_cycle_pending = state.preferences.wallpaper_cycle;
-    let mut wallpapers_scanned = false;
-    let launched = Instant::now();
     // When to ask for the inventory again after a failed load (State::inventory_failed).
     let mut inventory_retry: Option<Instant> = None;
     let mut input_refresh = input_refresh::Refresh::default();
@@ -1034,10 +1030,7 @@ fn run() -> Result<(), String> {
         wallpaper_service.set_active(wallpaper_upload_active(&state, webos, focused, visible));
         while let Ok(event) = wallpaper_service.receiver.try_recv() {
             match event {
-                wallpapers::Event::Catalog(items) => {
-                    wallpapers_scanned = true;
-                    state.set_wallpapers(items);
-                }
+                wallpapers::Event::Catalog(items) => state.set_wallpapers(items),
                 wallpapers::Event::Deleted(id, result) => state.wallpaper_deleted(id, result),
                 wallpapers::Event::Session(generation, result)
                     if generation == wallpaper_service.generation()
@@ -1106,34 +1099,6 @@ fn run() -> Result<(), String> {
         if renderer.poll_glyphs() {
             state.dirty = true;
             damage_tracker.reset();
-        }
-        let unix = state::unix_now();
-        let startup_cycle = wallpaper_cycle::startup_due(
-            state.preferences.wallpaper_cycle,
-            startup_cycle_pending,
-            wallpapers_scanned,
-            launched.elapsed(),
-        );
-        if focused
-            && visible
-            && state.overlay.is_none()
-            && state.moving.is_none()
-            && state.deleting_wallpaper.is_none()
-            && !state.animating()
-            && (startup_cycle
-                || wallpaper_cycle::due(
-                    state.preferences.wallpaper_cycle,
-                    state.preferences.wallpaper_changed,
-                    unix,
-                ))
-        {
-            let cycled = state.cycle_wallpaper(unix);
-            if startup_cycle {
-                startup_cycle_pending = false;
-            }
-            if cycled && let Err(error) = storage::save(&preferences_path, &state.preferences) {
-                eprintln!("{error}");
-            }
         }
         while let Ok(response) = updates.receiver.try_recv() {
             state.install_response(response);
