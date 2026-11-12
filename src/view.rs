@@ -904,6 +904,13 @@ fn light_appearance(out: &mut Scene, from: usize) {
                 *color = [0.96, 0.96, 0.97, color[3] * 0.9];
             }
             Draw::Shadow(_, _, _, color) => color[3] *= 0.5,
+            // A strong focus rim reads on a light wallpaper in dark ink.
+            Draw::Rim(_, _, width, top, bottom)
+                if *width >= FOCUS_RIM_STRONG && near_white(top) =>
+            {
+                *top = ink(*top);
+                *bottom = ink(*bottom);
+            }
             Draw::Backdrop(_, rect, radius, color) => {
                 glass = Some(Draw::Shape(
                     *rect,
@@ -1080,11 +1087,12 @@ fn tile(out: &mut Scene, state: &State, assets: &Assets, app: &App, rect: Rect, 
     };
     // Nothing moves: focus changes instantly and the focused card only brightens. The card
     // being moved keeps that highlight with a slightly stronger rim; no jiggle, no arrows.
-    let drawn = rect;
     let radius = CARD_RADIUS;
-    if !unavailable {
-        out.resting_shadow(drawn, radius);
-    }
+    let drawn = if unavailable {
+        rect
+    } else {
+        focus_card(out, rect, radius, level)
+    };
     app_face(out, assets, app, drawn, state.preferences.language, radius);
     card_glass(out, drawn, radius, level);
     if state.moving.as_ref() == Some(&app.id) {
@@ -1134,15 +1142,97 @@ fn card_glass(out: &mut Scene, rect: Rect, radius: f32, level: f32) {
         return;
     }
     let level = level.min(1.);
-    out.shape(rect, radius, c(0xffffff, FOCUS_OVERLAY * level));
+    let look = focus_look();
+    out.shape(rect, radius, c(0xffffff, look.overlay * level));
     out.draw.push(Draw::Rim(
         rect,
         radius,
-        FOCUS_RIM,
-        c(0xffffff, 0.62 * level),
-        c(0xffffff, 0.38 * level),
+        look.rim,
+        c(0xffffff, look.rim_alpha[0] * level),
+        c(0xffffff, look.rim_alpha[1] * level),
     ));
 }
+
+/// A card's shadow and drawn rectangle for its focus `level`: the resting shadow, or under the
+/// stronger styles a deep drop shadow and (style C) a static 5% size step. The hit region is
+/// never changed; nothing animates.
+fn focus_card(out: &mut Scene, rect: Rect, radius: f32, level: f32) -> Rect {
+    let look = focus_look();
+    let focused = level > 0.;
+    let drawn = if focused { grow(rect, look.grow) } else { rect };
+    if focused && look.shadow {
+        out.lift_shadow(drawn, radius, 1.);
+    } else {
+        out.resting_shadow(drawn, radius);
+    }
+    drawn
+}
+
+/// How strongly focus reads on cards (app and wallpaper cards). `Current` until the user picks
+/// one of the stronger previews: switching is this one line. `LUMA_FOCUS_VARIANT` (A, B or C)
+/// overrides it for preview renders only.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FocusStyle {
+    /// A 2.5 px light rim and the card 7% brighter.
+    Current,
+    /// A 4 px near-white rim (dark ink under Light appearance) and the card 12% brighter.
+    A,
+    /// A plus a deep drop shadow that separates the card from the wallpaper.
+    B,
+    /// B plus a static 5% larger card.
+    C,
+}
+pub const FOCUS_STYLE: FocusStyle = FocusStyle::Current;
+
+pub fn focus_style() -> FocusStyle {
+    static STYLE: std::sync::OnceLock<FocusStyle> = std::sync::OnceLock::new();
+    *STYLE.get_or_init(|| match std::env::var("LUMA_FOCUS_VARIANT").as_deref() {
+        Ok("A") => FocusStyle::A,
+        Ok("B") => FocusStyle::B,
+        Ok("C") => FocusStyle::C,
+        _ => FOCUS_STYLE,
+    })
+}
+
+struct FocusLook {
+    overlay: f32,
+    rim: f32,
+    rim_alpha: [f32; 2],
+    shadow: bool,
+    grow: f32,
+}
+
+fn focus_look() -> FocusLook {
+    let strong = FocusLook {
+        overlay: 0.12,
+        rim: FOCUS_RIM_STRONG,
+        rim_alpha: [0.96, 0.9],
+        shadow: false,
+        grow: 0.,
+    };
+    match focus_style() {
+        FocusStyle::Current => FocusLook {
+            overlay: FOCUS_OVERLAY,
+            rim: FOCUS_RIM,
+            rim_alpha: [0.62, 0.38],
+            shadow: false,
+            grow: 0.,
+        },
+        FocusStyle::A => strong,
+        FocusStyle::B => FocusLook {
+            shadow: true,
+            ..strong
+        },
+        FocusStyle::C => FocusLook {
+            shadow: true,
+            grow: 0.05,
+            ..strong
+        },
+    }
+}
+
+/// The stronger styles' rim width; Light appearance draws rims this wide in dark ink.
+pub const FOCUS_RIM_STRONG: f32 = 4.;
 
 /// The card being moved: its rim, a little stronger than the focus rim.
 const MOVING_RIM: f32 = 3.5;
@@ -2759,9 +2849,8 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                 let rect = gallery_rect(index, s);
                 let target = Target::Background(index);
                 let level = state.display_level(&target);
-                let drawn = rect;
                 let radius = CARD_RADIUS;
-                out.resting_shadow(drawn, radius);
+                let drawn = focus_card(out, rect, radius, level);
                 out.image(
                     custom.map_or_else(
                         || assets.path(format!("thumbnails/{id}.jpg")),
