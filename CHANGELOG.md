@@ -1,5 +1,15 @@
 # lg-luma
 
+## 3.1.0
+
+### Minor Changes
+
+- ef9a933: Optionally replace the TV's own screensaver with Luma's clock on webOS 25/26: `screensaver.sh enable` (as root) bind-mounts a small web app over LG's screensaver, reapplies it at cold boot, and turns Luma's in-app screensaver timer off while it is active. `screensaver.sh disable` restores LG's screensaver.
+
+### Patch Changes
+
+- ef9a933: After an update through Homebrew Channel, Luma running as Home no longer keeps running the old version: once its program has been replaced, it asks the TV to close it while another app is in front (or its window is hidden), so the next Home press starts the new version. It does this at most once per version, so a new version that fails to start cannot cause a restart loop.
+
 ## 3.0.0
 
 ### Major Changes
