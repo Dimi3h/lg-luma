@@ -4052,14 +4052,13 @@ fn startup_diagnostics_are_written_as_json_next_to_the_preferences() {
 
 #[test]
 fn focused_card_pops_in_place_and_focus_moves_instantly() {
-    use crate::model::FocusGrow;
     use crate::renderer::Draw;
     use crate::state::Rect;
     let mut state = ready();
     state.open(Page::Home);
     state.sync_motion();
-    // One rimless style: 10% larger by default, a soft shadow and about 6% brighter.
-    assert_eq!(state.preferences.focus_grow, FocusGrow(10));
+    // One rimless style: 10% larger, a soft shadow and about 6% brighter.
+    assert_eq!(view::FOCUS_GROW, 0.10);
     let netflix = Target::App("netflix".into());
     assert_eq!(state.focus, netflix);
     let card = |state: &State, target: &Target| {
@@ -4070,7 +4069,7 @@ fn focused_card_pops_in_place_and_focus_moves_instantly() {
             .rect
     };
     let grown = |rect: Rect| {
-        let share = FocusGrow::default().share();
+        let share = view::FOCUS_GROW;
         let (dx, dy) = (rect.w * share / 2., rect.h * share / 2.);
         Rect::new(rect.x - dx, rect.y - dy, rect.w + 2. * dx, rect.h + 2. * dy)
     };
@@ -4666,12 +4665,11 @@ fn removed_settings_still_load_from_old_preference_files_and_their_rows_are_gone
             _ => None,
         })
         .collect();
-    assert_eq!(rows, [0, 1, 4, 11, 14, 12, 16]);
+    assert_eq!(rows, [0, 1, 4, 11, 14, 12]);
 }
 
 #[test]
-fn every_focus_size_keeps_the_card_and_caption_inside_the_margin_and_clear_of_neighbours() {
-    use crate::model::FocusGrow;
+fn the_focused_card_and_caption_stay_inside_the_margin_and_clear_of_neighbours() {
     use crate::renderer::Draw;
     use crate::state::Rect;
     let overlaps = |a: Rect, b: Rect| {
@@ -4680,10 +4678,10 @@ fn every_focus_size_keeps_the_card_and_caption_inside_the_margin_and_clear_of_ne
             && a.y < b.y + b.h - 0.01
             && b.y < a.y + a.h - 0.01
     };
-    for level in FocusGrow::LEVELS {
+    let level = 10;
+    {
         for light in [false, true] {
             let mut state = ready();
-            state.preferences.focus_grow = FocusGrow(level);
             if light {
                 state.preferences.appearance = crate::model::Appearance::Light;
             }
@@ -4696,7 +4694,7 @@ fn every_focus_size_keeps_the_card_and_caption_inside_the_margin_and_clear_of_ne
                 .take(3 * crate::state::APPS_COLUMNS)
                 .collect();
             assert_eq!(cards.len(), 18);
-            let share = FocusGrow(level).share();
+            let share = view::FOCUS_GROW;
             for card in &cards {
                 state.focus = card.target.clone();
                 state.sync_motion();
@@ -4769,17 +4767,9 @@ fn every_focus_size_keeps_the_card_and_caption_inside_the_margin_and_clear_of_ne
             }
         }
     }
-    // At 14% the 40 px gap between neighbours keeps a clear space on each side.
+    // At 10% the 40 px gap between neighbours keeps 27 px clear.
     let gap = view::CARD_PITCH - view::CARD_WIDTH;
-    assert!(gap - view::CARD_WIDTH * 0.14 / 2. > 20.);
-    // The shadow grows with the size: wider, lower and deeper at each level.
-    let shadows: Vec<_> = FocusGrow::LEVELS
-        .iter()
-        .map(|level| view::focus_shadow(FocusGrow(*level)))
-        .collect();
-    for pair in shadows.windows(2) {
-        assert!(pair[1].0 > pair[0].0 && pair[1].1 > pair[0].1 && pair[1].2 > pair[0].2);
-    }
+    assert!(gap - view::CARD_WIDTH * view::FOCUS_GROW / 2. > 26.);
 }
 
 #[test]
@@ -4797,40 +4787,30 @@ fn luma_leaves_its_screensaver_timer_off_while_the_tv_screensaver_is_its_clock()
 }
 
 #[test]
-fn the_temporary_focus_size_row_cycles_five_levels_and_old_preferences_still_load() {
-    use crate::model::FocusGrow;
+fn preference_files_from_the_focus_trials_still_load() {
+    // focus_style (the S1–S6 trial) and focus_grow (the size trial) are no longer settings.
+    for value in [
+        json!({"focus_style": "s3"}),
+        json!({"focus_grow": 14}),
+        json!({"focus_style": "c", "focus_grow": "x", "show_app_names": false}),
+    ] {
+        let loaded: Preferences = serde_json::from_value(value.clone()).unwrap();
+        let saved = serde_json::to_value(&loaded).unwrap();
+        assert!(
+            saved.get("focus_style").is_none() && saved.get("focus_grow").is_none(),
+            "{value}"
+        );
+    }
+    let loaded: Preferences =
+        serde_json::from_value(json!({"focus_grow": 6, "show_app_names": false})).unwrap();
+    assert!(!loaded.show_app_names, "the other settings are kept");
+    // The General list has no focus row any more.
     let mut state = ready();
     state.open(Page::Settings);
     state.section = 0;
-    state.focus = Target::Setting(16);
-    let mut seen = vec![state.preferences.focus_grow.0];
-    for _ in 0..5 {
-        assert_eq!(state.activate(), vec![Effect::Save]);
-        seen.push(state.preferences.focus_grow.0);
-    }
-    assert_eq!(seen, [10, 12, 14, 6, 8, 10]);
-    state.preferences.focus_grow = FocusGrow(14);
-    let frame = scene(&state);
     assert!(
-        frame
-            .draw
+        !controls(&state)
             .iter()
-            .any(|d| matches!(d, crate::renderer::Draw::Text(t, ..) if t == "14%"))
+            .any(|c| c.target == Target::Setting(16))
     );
-    // Stored as "focus_grow"; other values load as 10%, and the earlier focus_style key
-    // (from the style trial) is ignored without error.
-    let saved = serde_json::to_value(&state.preferences).unwrap();
-    assert_eq!(saved["focus_grow"], 14);
-    assert!(saved.get("focus_style").is_none());
-    let loaded: Preferences =
-        serde_json::from_value(json!({"focus_grow": 6, "focus_style": "s3"})).unwrap();
-    assert_eq!(loaded.focus_grow, FocusGrow(6));
-    for value in [json!(7), json!("10"), json!(-1), json!(null), json!(1e20)] {
-        let loaded: Preferences = serde_json::from_value(json!({"focus_grow": value})).unwrap();
-        assert_eq!(loaded.focus_grow, FocusGrow(10), "{value}");
-    }
-    for style in ["s1", "s6", "c"] {
-        let loaded: Preferences = serde_json::from_value(json!({"focus_style": style})).unwrap();
-        assert_eq!(loaded.focus_grow, FocusGrow(10));
-    }
 }

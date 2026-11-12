@@ -2460,12 +2460,6 @@ impl State {
                         return vec![];
                     }
                     5 => return vec![Effect::Quit],
-                    // Temporary focus size choice: OK cycles 6% to 14% and applies at once.
-                    16 => {
-                        self.preferences.focus_grow = self.preferences.focus_grow.next();
-                        self.dirty = true;
-                        return vec![Effect::Save];
-                    }
                     _ => return vec![Effect::Reload],
                 }
             }
