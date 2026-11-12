@@ -17,6 +17,7 @@ function run({
   method = 'executable',
   homeId = 'com.webos.app.home',
   pretty = false,
+  screensaver = null,
 } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'luma-installer-'));
   const app = `${dir}/app`;
@@ -51,6 +52,14 @@ esac
 `,
   );
   write(`${app}/home.sh`, `#!/bin/sh\necho refresh >> '${dir}/calls'\nexit ${reapply ? 0 : 1}\n`);
+  // The screensaver takeover's state and the new package's script (records what it was given).
+  fs.mkdirSync(`${dir}/screensaver`);
+  if (screensaver !== null)
+    write(`${dir}/screensaver/state.json`, json({ enabled: screensaver.enabled, appDir: app }));
+  write(
+    `${app}/screensaver.sh`,
+    `#!/bin/sh\nread answer\necho "screensaver $1 $2 $answer" >> '${dir}/calls'\nexit ${screensaver?.fails ? 1 : 0}\n`,
+  );
   write(
     `${homeState}/home.sh`,
     `#!/bin/sh\necho restore >> '${dir}/calls'\nexit ${recover ? 0 : 1}\n`,
@@ -58,6 +67,7 @@ esac
   const script = source
     .replaceAll('/var/lib/luma-update', state)
     .replaceAll('/var/lib/luma-home', homeState)
+    .replaceAll('/var/lib/luma-screensaver', `${dir}/screensaver`)
     .replaceAll('/media/developer/apps/usr/palm/applications/com.ecklf.luma', app)
     .replaceAll('/proc/mounts', `${dir}/mounts`)
     .replaceAll('/var/run/luma-home', `${dir}/marker`);
@@ -134,5 +144,18 @@ test('pretty-printed manifests and old configurations without a target are read 
     assert.equal(result.exit, 0, result.status.message);
     assert.equal(result.status.state, 'success');
     assert.match(result.calls, new RegExp(`launch.*${homeId ?? 'com.webos.app.home'}"`));
+  }
+});
+
+test('an enabled screensaver takeover is refreshed from the new package and never fails the update', () => {
+  const app = (result) => result.calls.match(/screensaver enable (\S+) y/)?.[1];
+  const refreshed = run({ screensaver: { enabled: true } });
+  assert.equal(refreshed.status.state, 'success');
+  assert.match(refreshed.calls, /screensaver enable \S+ y/);
+  assert.ok(app(refreshed).endsWith('/app'));
+  const failed = run({ screensaver: { enabled: true, fails: true } });
+  assert.equal(failed.status.state, 'success');
+  for (const screensaver of [null, { enabled: false }]) {
+    assert.doesNotMatch(run({ screensaver }).calls, /screensaver/);
   }
 });

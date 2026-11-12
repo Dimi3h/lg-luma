@@ -148,6 +148,15 @@ pub fn install_dir() -> Result<std::path::PathBuf, String> {
         .clone()
 }
 
+/// Present while LG's screensaver is replaced by Luma's clock this boot (written by
+/// `luma-helper screensaver apply`, cleared by disable; /var/run starts empty at each boot).
+pub const SYSTEM_SCREENSAVER_MARKER: &str = "/var/run/luma-screensaver";
+
+/// Whether the TV's own screensaver currently shows Luma's clock.
+pub fn system_screensaver() -> bool {
+    std::fs::read_to_string(SYSTEM_SCREENSAVER_MARKER).is_ok_and(|marker| marker.trim() == APP_ID)
+}
+
 pub fn redirect_to_home() -> Result<bool, String> {
     // The root-only integration mounts this marker with its native Home
     // manifest, or writes it to /var/run on webOS 5/6, where it mounts this

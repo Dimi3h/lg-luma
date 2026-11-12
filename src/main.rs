@@ -697,6 +697,8 @@ fn run() -> Result<(), String> {
         options.test_update_version.is_some(),
     );
     let mut state = State::new(initial_preferences);
+    // The TV's own screensaver may already be Luma's clock (screensaver.sh enable).
+    state.system_screensaver = webos && platform::system_screensaver();
     if let Some(version) = &options.test_update_version {
         eprintln!(
             "Luma update preview: simulated version {version}; public release check disabled"
@@ -1391,8 +1393,12 @@ fn run() -> Result<(), String> {
                     }
                     WindowEvent::Shown | WindowEvent::Restored | WindowEvent::FocusGained => {
                         visible = true;
-                        // Returning to Luma restarts the idle timer.
+                        // Returning to Luma restarts the idle timer, unless the TV's own
+                        // screensaver is Luma's clock (checked again: it can change any time).
                         state.last_input = Instant::now();
+                        if webos {
+                            state.system_screensaver = platform::system_screensaver();
+                        }
                         // Shown and Restored can come from SDL itself; only focus confirms.
                         if matches!(win_event, WindowEvent::FocusGained) {
                             focused = true;

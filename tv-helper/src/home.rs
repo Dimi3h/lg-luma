@@ -200,78 +200,8 @@ impl<'a, S: System> Home<'a, S> {
         }
         Err("Home did not come to the front".into())
     }
-    fn release(&self) -> Result<()> {
-        let mut last = String::new();
-        for _ in 0..3 {
-            match self.luna("releaseBlockSystemApp", json!({"id":self.id})) {
-                Ok(reply) => {
-                    let text = reply["errorText"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_ascii_lowercase();
-                    if reply["returnValue"] == true
-                        || (text.contains("not") && text.contains("blocked"))
-                    {
-                        return Ok(());
-                    }
-                    last = reply.to_string();
-                }
-                Err(error) => last = error,
-            }
-            for _ in 0..3 {
-                self.system.poll();
-            }
-        }
-        Err(format!("Could not release Home: {last}"))
-    }
     fn reread(&self, expected: &Value) -> Result<()> {
-        let mut payload = json!({"id":self.id});
-        if self
-            .read("/etc/palm/schemas/sam/applicationManager.blockSystemApp.schema")
-            .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains("\"forceBlockSystemApp\""))
-        {
-            payload["forceBlockSystemApp"] = json!(false);
-        }
-        // Release even if the request timed out after taking effect; preserve the original error.
-        let blocked = self.luna("blockSystemApp", payload).and_then(|reply| {
-            let text = reply["errorText"]
-                .as_str()
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            if text.contains("already") && text.contains("blocked") {
-                Ok(reply)
-            } else {
-                accepted(reply)
-            }
-        });
-        let released = self.release();
-        match (blocked, released) {
-            (Err(block), Err(release)) => {
-                return Err(format!("{block}; release also failed: {release}"));
-            }
-            (Err(error), _) | (_, Err(error)) => return Err(error),
-            _ => {}
-        }
-        for _ in 0..15 * POLLS_PER_SECOND {
-            let reply = accepted(self.luna("getAppInfo", json!({"id":self.id}))?)?;
-            let info = &reply["appInfo"];
-            let main = expected["main"].as_str();
-            if info.is_object()
-                && info["type"] == expected["type"]
-                && main.is_none_or(|main| {
-                    Path::new(info["main"].as_str().unwrap_or("")).file_name()
-                        == Path::new(main).file_name()
-                })
-                && (main != Some("luma")
-                    || info["appCategory"]
-                        .as_array()
-                        .is_some_and(|a| a.iter().any(|v| v == "home")))
-            {
-                return Ok(());
-            }
-            self.system.poll();
-        }
-        Err("SAM did not read the expected Home manifest".into())
+        reread(self.system, &self.id, expected)
     }
     fn normal_running(&self) -> Result<bool> {
         let reply = accepted(self.luna("running", json!({}))?)?;
@@ -602,7 +532,88 @@ impl<'a, S: System> Home<'a, S> {
         system::write_json(self.system, CONFIG, &config)
     }
 }
-fn unescape(s: &str) -> String {
+pub(crate) fn app_manager(system: &impl System, method: &str, payload: Value) -> Result<Value> {
+    system::luna(system, "com.webos.applicationManager", method, &payload)
+}
+pub(crate) fn release(system: &impl System, id: &str) -> Result<()> {
+    let mut last = String::new();
+    for _ in 0..3 {
+        match app_manager(system, "releaseBlockSystemApp", json!({"id":id})) {
+            Ok(reply) => {
+                let text = reply["errorText"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if reply["returnValue"] == true
+                    || (text.contains("not") && text.contains("blocked"))
+                {
+                    return Ok(());
+                }
+                last = reply.to_string();
+            }
+            Err(error) => last = error,
+        }
+        for _ in 0..3 {
+            system.poll();
+        }
+    }
+    Err(format!("Could not release Home: {last}"))
+}
+/// Makes SAM read a system app's manifest again: block the app, release it, then wait until
+/// `getAppInfo` reports the expected type and main file.
+pub(crate) fn reread(system: &impl System, id: &str, expected: &Value) -> Result<()> {
+    let mut payload = json!({"id":id});
+    if system::read(
+        system,
+        "/etc/palm/schemas/sam/applicationManager.blockSystemApp.schema",
+        2 * 1024 * 1024,
+    )
+    .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains("\"forceBlockSystemApp\""))
+    {
+        payload["forceBlockSystemApp"] = json!(false);
+    }
+    // Release even if the request timed out after taking effect; preserve the original error.
+    let blocked = app_manager(system, "blockSystemApp", payload).and_then(|reply| {
+        let text = reply["errorText"]
+            .as_str()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if text.contains("already") && text.contains("blocked") {
+            Ok(reply)
+        } else {
+            accepted(reply)
+        }
+    });
+    let released = release(system, id);
+    match (blocked, released) {
+        (Err(block), Err(release)) => {
+            return Err(format!("{block}; release also failed: {release}"));
+        }
+        (Err(error), _) | (_, Err(error)) => return Err(error),
+        _ => {}
+    }
+    for _ in 0..15 * POLLS_PER_SECOND {
+        let reply = accepted(app_manager(system, "getAppInfo", json!({"id":id}))?)?;
+        let info = &reply["appInfo"];
+        let main = expected["main"].as_str();
+        if info.is_object()
+            && info["type"] == expected["type"]
+            && main.is_none_or(|main| {
+                Path::new(info["main"].as_str().unwrap_or("")).file_name()
+                    == Path::new(main).file_name()
+            })
+            && (main != Some("luma")
+                || info["appCategory"]
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|v| v == "home")))
+        {
+            return Ok(());
+        }
+        system.poll();
+    }
+    Err("SAM did not read the expected Home manifest".into())
+}
+pub(crate) fn unescape(s: &str) -> String {
     s.replace("\\040", " ")
         .replace("\\011", "\t")
         .replace("\\012", "\n")

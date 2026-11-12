@@ -4749,3 +4749,17 @@ fn focused_cards_grow_within_the_screen_margin_with_a_dual_tone_rim_in_both_appe
         }
     }
 }
+
+#[test]
+fn luma_leaves_its_screensaver_timer_off_while_the_tv_screensaver_is_its_clock() {
+    let mut state = ready();
+    state.preferences.screensaver_minutes = 10;
+    assert_eq!(
+        state.screensaver_after(),
+        Some(std::time::Duration::from_secs(600))
+    );
+    state.system_screensaver = true;
+    assert_eq!(state.screensaver_after(), None);
+    // Desktop builds never see the TV marker.
+    assert!(!crate::platform::system_screensaver() || cfg!(feature = "webos"));
+}

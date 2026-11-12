@@ -96,7 +96,21 @@ for (const file of await fs.readdir(path.join(out, 'assets/splash')))
   await fs.copyFile(path.join(out, 'assets/splash', file), path.join(stage, 'splash', file));
 await fs.copyFile(path.join(out, 'assets/splash/dunes.png'), path.join(stage, 'splash.png'));
 await fs.chmod(path.join(stage, 'autostart.sh'), 0o755);
-for (const file of ['home.sh', 'luma-helper']) {
+// The optional screensaver takeover: its script and the page staged over LG's screensaver.
+await fs.mkdir(path.join(stage, 'screensaver'));
+await fs.copyFile(
+  path.join(root, 'tv/screensaver/index.html'),
+  path.join(stage, 'screensaver/index.html'),
+);
+await fs.copyFile(
+  path.join(root, '.build/screensaver/inter-clock.ttf'),
+  path.join(stage, 'screensaver/inter-clock.ttf'),
+);
+await fs.copyFile(
+  path.join(root, 'assets/fonts/ofl.txt'),
+  path.join(stage, 'screensaver/font-license.txt'),
+);
+for (const file of ['home.sh', 'screensaver.sh', 'luma-helper']) {
   await fs.copyFile(
     path.join(
       root,

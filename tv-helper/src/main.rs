@@ -2,7 +2,7 @@
 #[path = "../../src/webos-compat.rs"]
 mod webos_compat;
 use luma_tv_helper::{
-    files, home, input,
+    files, home, input, screensaver,
     system::{System, Tv},
     uninstall,
 };
@@ -11,7 +11,7 @@ fn run() -> luma_tv_helper::Result<Value> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|s| s == "--help") {
         println!(
-            "luma-helper: home COMMAND [APP_DIR] [HOME_ID] | read-app-icon JSON | sync-splash JSON | uninstall-app ID | tv-input COMMAND [APP_DIR]"
+            "luma-helper: home COMMAND [APP_DIR] [HOME_ID] | screensaver COMMAND [APP_DIR] | read-app-icon JSON | sync-splash JSON | uninstall-app ID | tv-input COMMAND [APP_DIR]"
         );
         return Ok(serde_json::json!({"returnValue":true}));
     }
@@ -51,6 +51,7 @@ fn run() -> luma_tv_helper::Result<Value> {
             args.get(2).map(String::as_str),
             args.get(3).map(String::as_str),
         ),
+        "screensaver" => screensaver::dispatch(&sys, arg(1)?, args.get(2).map(String::as_str)),
         "tv-input" => {
             let directory = args
                 .get(2)

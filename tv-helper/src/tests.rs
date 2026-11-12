@@ -1027,3 +1027,163 @@ fn boot_apply_polls_briefly_and_refreshes_only_trusted_newer_scripts() {
         b"#!/bin/sh\n# 2.18.1\n"
     );
 }
+
+fn screensaver_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.put("/etc/starfish-release", b"Rockhopper release 10.3.2-6");
+    f.put_json(
+        &format!("{}/appinfo.json", screensaver::TARGET),
+        json!({"id":screensaver::ID,"type":"native","main":"flutter-client","title":"Screen Saver","version":"2.0.1","icon":"icon.png"}),
+    );
+    f.put(&format!("{}/icon.png", screensaver::TARGET), b"lg-icon");
+    f.put(
+        &format!("{DIR}/screensaver/index.html"),
+        b"<html>clock</html>",
+    );
+    f.put(&format!("{DIR}/screensaver/inter-clock.ttf"), b"font");
+    f.put(&format!("{DIR}/screensaver.sh"), b"#!/bin/sh\n");
+    f
+}
+
+#[test]
+fn screensaver_enable_stages_a_hidden_web_app_and_disable_restores_lg_screensaver() {
+    let f = screensaver_fixture();
+    screensaver::dispatch(&f, "enable", Some(DIR)).unwrap();
+    assert!(screensaver::mounted(&f));
+    let staged = system::json(&f, format!("{}/appinfo.json", screensaver::TARGET)).unwrap();
+    assert_eq!(staged["id"], screensaver::ID);
+    assert_eq!(staged["type"], "web");
+    assert_eq!(staged["main"], "index.html");
+    assert_eq!(staged["defaultWindowType"], "screenSaver");
+    assert_eq!(staged["visible"], false);
+    assert_eq!(staged["noSplashOnLaunch"], true);
+    assert_eq!(staged["title"], "Screen Saver");
+    assert_eq!(staged["icon"], "icon.png");
+    // Copies, not links into the package: an update cannot leave the mount stale.
+    let page = f.p(&format!("{}/index.html", screensaver::STAGE));
+    assert!(
+        !fs::symlink_metadata(&page)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(fs::read(&page).unwrap(), b"<html>clock</html>");
+    assert_eq!(
+        f.read(&format!("{}/icon.png", screensaver::STAGE)),
+        b"lg-icon"
+    );
+    // SAM was made to reread the screensaver's manifest.
+    let calls = f.calls().join("\n");
+    assert!(calls.contains(&format!(
+        "blockSystemApp {{\"id\":\"{}\"}}",
+        screensaver::ID
+    )));
+    assert!(calls.contains("releaseBlockSystemApp"));
+    assert_eq!(f.read(screensaver::MARKER), format!("{APP}\n").as_bytes());
+    assert!(screensaver::hook_owned(&f));
+    let status = screensaver::dispatch(&f, "status", None).unwrap();
+    assert_eq!(
+        (
+            &status["enabled"],
+            &status["mounted"],
+            &status["applied"],
+            &status["bootHook"],
+            &status["supported"]
+        ),
+        (
+            &json!(true),
+            &json!(true),
+            &json!(true),
+            &json!(true),
+            &json!(true)
+        )
+    );
+    assert_eq!(status["stockType"], "native");
+
+    screensaver::dispatch(&f, "disable", None).unwrap();
+    assert!(!screensaver::mounted(&f));
+    assert!(!system::exists(&f, screensaver::MARKER));
+    assert!(!system::exists(&f, screensaver::HOOK));
+    let lg = system::json(&f, format!("{}/appinfo.json", screensaver::TARGET)).unwrap();
+    assert_eq!(lg["type"], "native");
+    let status = screensaver::dispatch(&f, "status", None).unwrap();
+    assert_eq!(
+        (&status["enabled"], &status["mounted"]),
+        (&json!(false), &json!(false))
+    );
+    // Enabling again works from LG's manifest.
+    screensaver::dispatch(&f, "enable", Some(DIR)).unwrap();
+    assert!(screensaver::mounted(&f));
+}
+
+#[test]
+fn screensaver_apply_at_boot_or_after_an_update_copies_the_new_page() {
+    let f = screensaver_fixture();
+    screensaver::dispatch(&f, "enable", Some(DIR)).unwrap();
+    // An app update while mounted: the next apply refreshes the stage in place.
+    f.put(&format!("{DIR}/screensaver/index.html"), b"<html>v2</html>");
+    screensaver::dispatch(&f, "apply", None).unwrap();
+    assert_eq!(
+        f.read(&format!("{}/index.html", screensaver::TARGET)),
+        b"<html>v2</html>"
+    );
+    // A cold boot: no mount, no marker; the hook's apply mounts again.
+    f.unmount(screensaver::TARGET);
+    fs::remove_file(f.p(screensaver::MARKER)).unwrap();
+    f.put(&format!("{DIR}/screensaver/index.html"), b"<html>v3</html>");
+    screensaver::dispatch(&f, "apply", None).unwrap();
+    assert!(screensaver::mounted(&f));
+    assert!(system::exists(&f, screensaver::MARKER));
+    assert_eq!(
+        f.read(&format!("{}/index.html", screensaver::TARGET)),
+        b"<html>v3</html>"
+    );
+    // With Luma removed, the copied page keeps working.
+    fs::remove_dir_all(f.p(&format!("{DIR}/screensaver"))).unwrap();
+    screensaver::dispatch(&f, "apply", None).unwrap();
+    assert_eq!(
+        f.read(&format!("{}/index.html", screensaver::TARGET)),
+        b"<html>v3</html>"
+    );
+}
+
+#[test]
+fn screensaver_refuses_old_firmware_foreign_mounts_and_non_root() {
+    let f = screensaver_fixture();
+    f.put("/etc/starfish-release", b"Rockhopper release 9.2.4-48");
+    assert!(screensaver::dispatch(&f, "enable", Some(DIR)).is_err());
+    assert!(!screensaver::mounted(&f));
+    assert!(!system::exists(&f, screensaver::HOOK));
+    let status = screensaver::dispatch(&f, "status", None).unwrap();
+    assert_eq!(status["supported"], false);
+
+    let f = screensaver_fixture();
+    f.mounts
+        .borrow_mut()
+        .insert(screensaver::TARGET.into(), "/var/lib/other".into());
+    f.sync_mounts();
+    let error = screensaver::dispatch(&f, "enable", Some(DIR)).unwrap_err();
+    assert!(error.contains("Another integration"), "{error}");
+
+    let f = screensaver_fixture();
+    f.uid.set(501);
+    assert!(screensaver::dispatch(&f, "enable", Some(DIR)).is_err());
+    assert!(screensaver::dispatch(&f, "apply", None).is_err());
+}
+
+#[test]
+fn screensaver_restores_lg_screensaver_when_sam_refuses_the_reread() {
+    let f = screensaver_fixture();
+    f.reply(
+        "blockSystemApp",
+        Ok(json!({"returnValue":false,"errorText":"denied"})),
+    );
+    let error = screensaver::dispatch(&f, "enable", Some(DIR)).unwrap_err();
+    assert!(error.contains("denied"), "{error}");
+    assert!(!screensaver::mounted(&f));
+    assert!(!system::exists(&f, screensaver::MARKER));
+    let status = screensaver::dispatch(&f, "status", None).unwrap();
+    assert_eq!(status["enabled"], false);
+    let lg = system::json(&f, format!("{}/appinfo.json", screensaver::TARGET)).unwrap();
+    assert_eq!(lg["type"], "native");
+}

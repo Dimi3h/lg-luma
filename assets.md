@@ -16,6 +16,7 @@
 - `assets/wallpapers/northern-lights.jpg`: Unsplash photo `1531366936337-7c912a4589a7`,
   https://images.unsplash.com/photo-1531366936337-7c912a4589a7, Unsplash License.
 - Inter variable font 4.1 (Latin, Latin Extended-A, Vietnamese + Cyrillic subset with the `wght` and `opsz` axes; `pnpm assets` freezes text at `opsz` 14 and Inter Display at `opsz` 32 for text of 32 px and up): Rasmus Andersson, SIL Open Font License 1.1, `assets/fonts/ofl.txt`.
+- The screensaver takeover's `screensaver/inter-clock.ttf` is a Basic Latin subset of the same Inter (Display, weight 500), made by `pnpm assets` with fontTools; the OFL travels beside it as `screensaver/font-license.txt`.
 - No CJK fallback font ships: this fork's UI is English and Dutch only, so the Noto Sans SC/KR
   fonts were removed. Characters Inter lacks (for example CJK in an app title) draw as Inter's
   missing-glyph box.

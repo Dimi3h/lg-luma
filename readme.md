@@ -228,6 +228,27 @@ LG Home's original files remain underneath, using the same approach as
 
 </details>
 
+### Screensaver takeover (webOS 25/26)
+
+Optionally, the TV's own screensaver can show Luma's clock instead of LG's, wherever the TV starts
+it and with the TV's own timing. Luma's in-app screensaver timer then stays off. As root:
+
+```sh
+APP=/media/developer/apps/usr/palm/applications/com.ecklf.luma
+sh "$APP/screensaver.sh" enable
+sh /var/lib/luma-screensaver/screensaver.sh status
+```
+
+To restore LG's screensaver:
+
+```sh
+sh /var/lib/luma-screensaver/screensaver.sh disable
+```
+
+It bind-mounts a small web app over `com.webos.app.screensaver` (LG's files stay underneath) and
+reapplies it at cold boot through `/var/lib/webosbrew/init.d/10-luma-screensaver`. Not yet
+verified on a TV; see the [development guide](development.md#optional-screensaver-takeover-webos-2526).
+
 ### Autostart Method
 
 Open Luma 25 seconds after a full cold boot. Run in the TV's root SSH shell:
