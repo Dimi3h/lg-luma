@@ -148,6 +148,43 @@ pub fn install_dir() -> Result<std::path::PathBuf, String> {
         .clone()
 }
 
+/// Written before Luma closes itself after an update replaced its executable, with the version
+/// that closed. /tmp starts empty at each boot.
+pub const UPDATE_RESTART_MARKER: &str = "/tmp/luma-update-restart";
+
+/// Whether this process should close so its replaced program can start: `exe` is the
+/// `/proc/self/exe` link (the kernel appends " (deleted)" once an update unlinked the file
+/// this process runs) and `marker` what an earlier close in this boot recorded. Only one close
+/// per running version, so a replacement that keeps failing (or a Home bind mount still on the
+/// old file) can never turn into a restart loop.
+pub fn should_restart_after_update(exe: &str, marker: Option<&str>, running: &str) -> bool {
+    exe.ends_with(" (deleted)") && marker.map(str::trim) != Some(running)
+}
+
+/// Checks whether an update replaced Luma's executable; when it did (once per running version)
+/// records that and returns true. Reads one link and at most one small file.
+pub fn executable_replaced_by_update() -> bool {
+    let Ok(exe) = std::fs::read_link("/proc/self/exe") else {
+        return false;
+    };
+    let marker = std::fs::read_to_string(UPDATE_RESTART_MARKER).ok();
+    let running = env!("CARGO_PKG_VERSION");
+    if !should_restart_after_update(&exe.to_string_lossy(), marker.as_deref(), running) {
+        return false;
+    }
+    std::fs::write(UPDATE_RESTART_MARKER, format!("{running}\n")).is_ok()
+}
+
+/// Asks SAM to close this app by its running identity (the Home id as Home), as closing it
+/// from another app would; the next launch or Home press starts the installed program.
+pub fn close_self(id: &str) -> Result<(), String> {
+    call(
+        "luna://com.webos.applicationManager/closeByAppId",
+        json!({ "id": id }),
+    )
+    .map(|_| ())
+}
+
 /// Present while LG's screensaver is replaced by Luma's clock this boot (written by
 /// `luma-helper screensaver apply`, cleared by disable; /var/run starts empty at each boot).
 pub const SYSTEM_SCREENSAVER_MARKER: &str = "/var/run/luma-screensaver";

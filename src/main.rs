@@ -888,6 +888,11 @@ fn run() -> Result<(), String> {
     let mut frame_stats = diagnostics::FrameStats::default();
     let diagnostics_writer = diagnostics::Writer::spawn(diagnostics_path);
     let mut stats_written = Instant::now();
+    // After an update replaced Luma's program (Homebrew Channel only closes the normal app,
+    // not Luma running as Home), Luma closes itself while out of sight, once per version.
+    let mut update_checked = Instant::now();
+    let mut update_check_now = false;
+    let update_quit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     frame_stats.set_foreground(stats_written, true);
     let mut presented = 0usize;
     let mut captured = None;
@@ -1369,6 +1374,7 @@ fn run() -> Result<(), String> {
                         tile_editor_service.set_active(false, &[]);
                         visible = false;
                         focused = false;
+                        update_check_now = true;
                         press = None;
                         back_button.cancel();
                         if matches!(state.overlay, Some(Overlay::SystemKeyboard)) {
@@ -1388,6 +1394,7 @@ fn run() -> Result<(), String> {
                             tile_editor_service.set_active(false, &[]);
                         }
                         focused = false;
+                        update_check_now = true;
                         press = None;
                         back_button.cancel();
                     }
@@ -1995,6 +2002,32 @@ fn run() -> Result<(), String> {
         if checked.duration_since(stats_written) >= diagnostics::WRITE_INTERVAL {
             diagnostics_writer.frames(frame_stats.summary(checked));
             stats_written = checked;
+        }
+        if webos
+            && !(visible && focused)
+            && (update_check_now
+                || checked.duration_since(update_checked) >= Duration::from_secs(30))
+        {
+            update_check_now = false;
+            update_checked = checked;
+            if platform::executable_replaced_by_update() {
+                let id = if options.webos_home {
+                    platform::home_id()
+                } else {
+                    platform::APP_ID
+                };
+                eprintln!("Luma update: the installed program was replaced; closing {id}");
+                let quit = update_quit.clone();
+                std::thread::spawn(move || {
+                    // If SAM refuses, quit directly; SAM starts the new program next time.
+                    if platform::close_self(id).is_err() {
+                        quit.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                });
+            }
+        }
+        if update_quit.load(std::sync::atomic::Ordering::SeqCst) {
+            running = false;
         }
         if foreground.failed(Instant::now())
             && let Some(end_registration) = &end_registration

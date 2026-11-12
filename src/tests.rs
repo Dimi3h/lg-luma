@@ -4814,3 +4814,22 @@ fn preference_files_from_the_focus_trials_still_load() {
             .any(|c| c.target == Target::Setting(16))
     );
 }
+
+#[test]
+fn a_replaced_executable_closes_luma_once_per_version_and_never_loops() {
+    use crate::platform::should_restart_after_update as restart;
+    let running = "2.18.3";
+    let live = "/media/developer/apps/usr/palm/applications/com.ecklf.luma/luma";
+    let replaced = format!("{live} (deleted)");
+    // Running the installed program: nothing to do.
+    assert!(!restart(live, None, running));
+    // Homebrew Channel replaced the package under a running Home instance.
+    assert!(restart(&replaced, None, running));
+    // Once this version has closed in this boot, it never closes again: if the new program
+    // fails to start, or a bind mount still serves the old file, there is no loop.
+    assert!(!restart(&replaced, Some("2.18.3\n"), running));
+    // A later update replacing the program again does close the next version once.
+    assert!(restart(&replaced, Some("2.18.3\n"), "3.0.0"));
+    // Desktop builds never see a replaced program in tests.
+    assert!(!crate::platform::executable_replaced_by_update() || cfg!(feature = "webos"));
+}

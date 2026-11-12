@@ -1032,6 +1032,17 @@ a cold boot. SDL's own registration logs `Failed to register app: Failed to get
 nativeLifeCycleInterfaceVersion` at startup there, without effect. That the compositor sends
 `FocusGained` after such a relaunch, which the watchdog relies on, shows in the `Luma window:` log.
 
+**After an update.** Homebrew Channel's installer closes the normal app (`com.ecklf.luma`)
+before replacing the package, but not Luma running as Home, which then keeps running the old,
+unlinked program (`/proc/self/exe` ends in " (deleted)"). Luma checks for that whenever it loses
+the front or its window is hidden, and every 30 s while it stays out of sight. When it finds it,
+it writes the running version to `/tmp/luma-update-restart` and asks SAM to close its running
+identity (`closeByAppId` with the Home id as Home), as closing it from another app does; if SAM
+refuses, it quits by itself. The next Home press or launch starts the installed program, and
+preferences are already on disk. The marker allows one close per running version and boot, so a
+new program that fails to start, or a webOS 5/6 bind mount still serving the old file, cannot
+cause a restart loop. Only the detection is unit-tested; the close itself is TV behaviour.
+
 ### Optional screensaver takeover (webOS 25/26)
 
 `tv/screensaver.sh` replaces LG's system screensaver app, `com.webos.app.screensaver` (a Flutter
