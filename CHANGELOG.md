@@ -1,5 +1,18 @@
 # lg-luma
 
+## 3.0.0
+
+### Major Changes
+
+- 3592aca: Luma 3.0 marks this as Dimi3h's personal fork of ecklf/lg-luma, with its own interface and feature set (see the readme). Settings removed in this release (Text size, Night wallpaper, wallpaper Rotation, the Gradient toggle and Reduced motion) no longer exist; existing preference files keep loading. The app ID is unchanged (`com.ecklf.luma`), so it updates the installed app in place.
+
+### Minor Changes
+
+- 3592aca: Give app cards one optical logo size: TV artwork is trimmed to its logo (transparent or flat margins removed) and scaled to a shared optical area on a background taken from the icon's edge colour. Add curated vector logos for Stremio (`io.strem.tv`) and VTM GO (`be.vtmgo.app`).
+- 3592aca: Focused app and wallpaper cards stand out without an outline: the card pops out 10% larger, slightly brighter, with a soft shadow. Nothing animates and hit regions are unchanged.
+- 3592aca: Record rolling frame statistics while Luma is in front (frames, interval mean/p95/max, intervals above 20 ms and 33 ms, partial vs full redraws, idle time) in `luma-diagnostics.json`, written off the SDL thread at most once a minute and at exit.
+- 3592aca: Settings are simpler: Text size, the Night wallpaper, wallpaper Rotation, the Gradient toggle and Reduced motion are gone. Backgrounds always keep their readability shading, the chosen background stays until you pick another, and the remaining motion (eased grid scrolling, the screensaver clock's short fade) is the same for everyone. Recent apps now opens and closes in the very first frame. Saved settings files that still contain the removed options keep loading.
+
 ## 2.18.3
 
 ### Patch Changes
