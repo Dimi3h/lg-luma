@@ -2456,6 +2456,12 @@ impl State {
                         return vec![];
                     }
                     5 => return vec![Effect::Quit],
+                    // Temporary focus style choice: OK cycles S1 to S6 and applies at once.
+                    16 => {
+                        self.preferences.focus_style = self.preferences.focus_style.next();
+                        self.dirty = true;
+                        return vec![Effect::Save];
+                    }
                     _ => return vec![Effect::Reload],
                 }
             }
