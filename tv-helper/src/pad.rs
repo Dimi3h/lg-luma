@@ -114,11 +114,12 @@ pub const HIDE_RULE_TEXT: &str = "SUBSYSTEM==\"input\", ATTRS{id/vendor}==\"18d1
 
 /// The controller's present `eventN` and `jsN` under /sys/class/input.
 fn controller_nodes(system: &impl System) -> Vec<String> {
+    // sysfs attributes report a size of 4096 bytes whatever they hold.
     let id = |name: &str, field: &str| {
         system::read(
             system,
             format!("/sys/class/input/{name}/device/id/{field}"),
-            64,
+            4096,
         )
         .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
         .unwrap_or_default()
