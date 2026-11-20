@@ -1,5 +1,16 @@
 # lg-luma
 
+## 3.2.0
+
+### Minor Changes
+
+- 5ed2679: Preload apps (Settings › General, on by default): while Luma is in front and idle, it starts up to three of your most used web apps hidden so they open at once, only when enough memory and swap are free and fewer than three of your apps already run, and turns off LG's own preloads of apps you hid in Luma (and back on when you show them again or switch the setting off).
+
+### Patch Changes
+
+- 5ed2679: Frame statistics in `luma-diagnostics.json` now measure what matters for a launcher that draws only on change: the time from a key or pointer event to the frame that shows it, and each frame's render time (scene build, submission and swap), with counts of frames over 16.7 ms and 33 ms. The gaps between sporadic frames are no longer reported.
+- 5ed2679: Luma as Home stays running across Home presses again: the lifecycle latch that made every Home press start a new Luma (set once after a failed relaunch and never cleared) now lasts at most until the next cold boot or update. A relaunch returns to the main screen with the focused card kept, a cold start shows the wallpaper splash without LG's spinner, a stuck Home is ended after 6 s so the next press starts it afresh, and the Home log keeps the previous process's lines.
+
 ## 3.1.0
 
 ### Minor Changes
