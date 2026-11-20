@@ -1192,10 +1192,18 @@ find …" for other apps), so Luma starts the others itself (`src/preload.rs`).
   its policy at boot) and on every change, and nothing is preloaded before the first reply, which
   also says which entries are periodic.
 - **How:** `launch` with `{"preload": "partial", "noSplash": true, "launchHidden": true}` from
-  Luma's own connection (accepted on webOS 25). 3 s later the foreground is checked: an app that
-  came forward is closed, Luma's running identity is launched again, and the app joins
-  `preload_blocked` ("Can't start hidden"; OK on it in Settings, or Preload in its menu, tries it
-  again). Whether an app takes audio focus while hidden is not checked yet.
+  Luma's own connection (accepted on webOS 25). 3 s later the foreground is checked, and the app
+  stays watched for 90 s after the launch (`preload::RAISE_WINDOW`): Apple TV stayed hidden at
+  3 s and came to the front later, without being started by the user. Within that window, when
+  Luma loses focus or is hidden, the foreground is checked 1 s later and then every 5 s while
+  Luma stays out of focus. An app found in front is closed, Luma's running identity is launched
+  again, and the app joins `preload_blocked` ("Can't start hidden"; OK on it in Settings, or
+  Preload in its menu, tries it again); the log says how many seconds after the launch it came
+  forward. An app the user opens from Luma (grid or Recents) is not watched further. The window
+  is bounded because the remote's own app buttons open apps without passing through Luma: within
+  90 s, a press on the button of the app just preloaded is indistinguishable from the app raising
+  itself and is closed. No other preload starts while an app is watched. Whether an app takes
+  audio focus while hidden is not checked yet.
 - **When:** one app at a time, at least 20 s apart, only while Luma is visible and focused (so
   never over another app or while the TV's screensaver, Luma's clock included, is up), the
   in-app screensaver is off, no launch is under way, and there was no input for 8 s. An app that
@@ -1213,8 +1221,9 @@ find …" for other apps), so Luma starts the others itself (`src/preload.rs`).
   stop preloading until Luma comes back to the front. Luma never closes an app when memory runs
   low later; LG's memory manager does that.
 - **Diagnostics:** the last 24 decisions (preloaded and what allowed it, skipped or waiting with
-  LG's numbers, came forward, policy and memory compression changes) are in `preload` in
-  `luma-diagnostics.json` and in `/tmp/luma-home.log`. Every 30 s while Luma runs, its preload
+  LG's numbers, came forward and after how many seconds, stayed hidden for the watch window,
+  policy and memory compression changes) are in `preload` in `luma-diagnostics.json` and, with
+  the same UTC time, in `/tmp/luma-home.log`. Every 30 s while Luma runs, its preload
   thread also polls LG's memory state and the running apps; `lg_memory` has the current level
   and usable memory, the medium boundary, how often the level entered medium, low and critical
   since Luma started, and how often each listed app disappeared from the running list without

@@ -265,6 +265,9 @@ pub struct State {
     /// Set by Refresh apps: the next inventory also reloads every app icon.
     pub reload_artwork: bool,
     pub launching: bool,
+    /// The last app the user launched from Luma (grid or Recents), taken by the preload watch:
+    /// that app coming forward is the user's doing, not a hidden launch raising itself.
+    pub launched_by_user: Option<String>,
     pub uninstalling: Option<String>,
     pub notice: Option<(String, Instant)>,
     pub error: Option<String>,
@@ -323,6 +326,7 @@ impl State {
             loading: false,
             reload_artwork: false,
             launching: false,
+            launched_by_user: None,
             uninstalling: None,
             notice: None,
             error: None,

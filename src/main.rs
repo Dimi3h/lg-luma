@@ -334,6 +334,7 @@ fn effects(
                 if !state.launching {
                     if platform.webos {
                         state.launching = true;
+                        state.launched_by_user = Some(id.clone());
                         state.notify(state.preferences.language.t("opening"));
                         // The launch counts choose what to preload (Settings › Preload apps).
                         preload::count_launch(&mut state.preferences.launch_counts, &id);
@@ -368,6 +369,9 @@ fn effects(
                 generation,
                 command,
             } => {
+                if let recents::Command::Launch(id) = &command {
+                    state.launched_by_user = Some(id.clone());
+                }
                 platform.send(Request::Recent {
                     generation,
                     command,
@@ -929,6 +933,9 @@ fn run() -> Result<(), String> {
     // LG's memory state and the listed apps' fate, polled for the diagnostics (preload.rs).
     let mut evidence = preload::Evidence::default();
     let mut watch_last: Option<Instant> = None;
+    // The last hidden launch, watched for raising itself for `preload::RAISE_WINDOW`; no other
+    // preload starts meanwhile.
+    let mut hidden_launch: Option<preload::HiddenLaunch> = None;
     let update_quit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     frame_stats.set_foreground(stats_written, true);
     let mut presented = 0usize;
@@ -1460,6 +1467,9 @@ fn run() -> Result<(), String> {
                         tile_editor_service.set_active(false, &[]);
                         visible = false;
                         focused = false;
+                        if let Some(launch) = &mut hidden_launch {
+                            launch.focus_lost(Instant::now());
+                        }
                         update_check_now = true;
                         press = None;
                         back_button.cancel();
@@ -1480,6 +1490,9 @@ fn run() -> Result<(), String> {
                             tile_editor_service.set_active(false, &[]);
                         }
                         focused = false;
+                        if let Some(launch) = &mut hidden_launch {
+                            launch.focus_lost(Instant::now());
+                        }
                         update_check_now = true;
                         press = None;
                         back_button.cancel();
@@ -2134,11 +2147,12 @@ fn run() -> Result<(), String> {
         }
         if let Some(service) = &preload_service {
             let mut record = |id: &str, result: String| {
-                eprintln!("Luma preload: {id}: {result}");
+                let at = OffsetDateTime::now_utc()
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_default();
+                eprintln!("Luma preload: {at} {id}: {result}");
                 preload_log.push_back(preload::Decision {
-                    at: OffsetDateTime::now_utc()
-                        .format(&time::format_description::well_known::Rfc3339)
-                        .unwrap_or_default(),
+                    at,
                     id: id.to_owned(),
                     result,
                 });
@@ -2150,6 +2164,21 @@ fn run() -> Result<(), String> {
                     serde_json::to_value(&preload_log).unwrap_or_default(),
                 );
             };
+            let own = if options.webos_home {
+                platform::home_id()
+            } else {
+                platform::APP_ID
+            };
+            // An app that raised itself after a hidden launch: closed (by the service), never
+            // preloaded again.
+            let block = |state: &mut State, id: &str| {
+                if !state.preferences.preload_blocked.iter().any(|b| b == id) {
+                    state.preferences.preload_blocked.push(id.to_owned());
+                    if let Err(error) = storage::save(&preferences_path, &state.preferences) {
+                        eprintln!("{error}");
+                    }
+                }
+            };
             while let Ok(reply) = service.receiver.try_recv() {
                 match reply {
                     preload::Reply::Preloaded { id, outcome } => {
@@ -2159,19 +2188,31 @@ fn run() -> Result<(), String> {
                         if outcome.waits() {
                             preload_tried.remove(&id);
                         }
-                        if outcome == preload::Outcome::CameForward {
-                            evidence.closed_by_luma.insert(id.clone());
-                        }
-                        if outcome == preload::Outcome::CameForward
-                            && !state.preferences.preload_blocked.contains(&id)
+                        // Only an app actually started hidden stays watched.
+                        if !matches!(outcome, preload::Outcome::Preloaded { .. })
+                            && hidden_launch.as_ref().is_some_and(|launch| launch.id == id)
                         {
-                            state.preferences.preload_blocked.push(id.clone());
-                            if let Err(error) = storage::save(&preferences_path, &state.preferences)
-                            {
-                                eprintln!("{error}");
-                            }
+                            hidden_launch = None;
+                        }
+                        if matches!(outcome, preload::Outcome::CameForward { .. }) {
+                            evidence.closed_by_luma.insert(id.clone());
+                            block(&mut state, &id);
                         }
                         record(&id, outcome.describe());
+                    }
+                    preload::Reply::Checked { id, after, raised } => {
+                        if raised {
+                            evidence.closed_by_luma.insert(id.clone());
+                            block(&mut state, &id);
+                            if hidden_launch.as_ref().is_some_and(|launch| launch.id == id) {
+                                hidden_launch = None;
+                            }
+                            record(&id, preload::Outcome::CameForward { after }.describe());
+                        } else if let Some(launch) = &mut hidden_launch
+                            && launch.id == id
+                        {
+                            launch.checked(Instant::now(), focused);
+                        }
                     }
                     preload::Reply::Watch {
                         lg,
@@ -2231,6 +2272,32 @@ fn run() -> Result<(), String> {
                     }
                 }
             }
+            // The watch after a hidden launch: an app the user opened from Luma is theirs; one
+            // in front while Luma is out of focus inside the window raised itself.
+            if let Some(id) = state.launched_by_user.take()
+                && hidden_launch.as_ref().is_some_and(|launch| launch.id == id)
+            {
+                hidden_launch = None;
+            }
+            if !preload_busy && let Some(launch) = &mut hidden_launch {
+                let now = Instant::now();
+                if launch.expired(now) {
+                    record(
+                        &launch.id,
+                        format!(
+                            "stayed hidden for {} s; no longer watched",
+                            preload::RAISE_WINDOW.as_secs()
+                        ),
+                    );
+                    hidden_launch = None;
+                } else if launch.due(now, focused) {
+                    service.send(preload::Job::Check {
+                        id: launch.id.clone(),
+                        own,
+                        after: launch.after(now),
+                    });
+                }
+            }
             if watch_last.is_none_or(|last| last.elapsed() >= preload::WATCH) {
                 watch_last = Some(Instant::now());
                 service.send(preload::Job::Watch);
@@ -2272,6 +2339,7 @@ fn run() -> Result<(), String> {
                 && focused
                 && !preload_busy
                 && !preload_paused
+                && hidden_launch.is_none()
                 && !state.launching
                 && state.screensaver.is_none()
                 && !state.inventory.apps.is_empty()
@@ -2290,11 +2358,7 @@ fn run() -> Result<(), String> {
                 preload_tried.insert(id.clone());
                 preload_busy = true;
                 preload_last = Some(Instant::now());
-                let own = if options.webos_home {
-                    platform::home_id()
-                } else {
-                    platform::APP_ID
-                };
+                hidden_launch = Some(preload::HiddenLaunch::new(id.clone(), Instant::now()));
                 let user_apps = state.apps().iter().map(|app| app.id.clone()).collect();
                 let limit = preload::running_limit(&state.preferences.preload_list);
                 service.send(preload::Job::Preload {

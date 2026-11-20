@@ -5013,6 +5013,45 @@ fn preloading_waits_for_enough_available_memory() {
 }
 
 #[test]
+fn a_hidden_launch_is_watched_for_raising_itself_within_a_bounded_window() {
+    use crate::preload::{HiddenLaunch, Outcome, RAISE_CHECK, RAISE_FIRST_CHECK, RAISE_WINDOW};
+    use std::time::{Duration, Instant};
+    let start = Instant::now();
+    let mut launch = HiddenLaunch::new("com.apple.appletv".into(), start);
+    // Nothing is checked while Luma keeps focus: nothing else can be in front.
+    assert!(!launch.due(start + Duration::from_secs(30), true));
+    assert!(!launch.due(start + Duration::from_secs(30), false));
+    // Luma loses focus 47 s after the launch (Apple TV raised itself on the TV): checked
+    // shortly after, once.
+    let lost = start + Duration::from_secs(47);
+    launch.focus_lost(lost);
+    assert!(!launch.due(lost, false));
+    assert!(launch.due(lost + RAISE_FIRST_CHECK, false));
+    assert!(!launch.due(lost + RAISE_FIRST_CHECK, false));
+    assert_eq!(launch.after(lost + RAISE_FIRST_CHECK), 48);
+    // Something else was in front: checked again while Luma stays out of focus...
+    let checked = lost + RAISE_FIRST_CHECK;
+    launch.checked(checked, false);
+    assert!(!launch.due(checked + RAISE_CHECK - Duration::from_millis(1), false));
+    assert!(launch.due(checked + RAISE_CHECK, false));
+    // ...and no longer once Luma has focus again.
+    launch.checked(checked, false);
+    assert!(!launch.due(checked + RAISE_CHECK, true));
+    assert!(!launch.due(checked + RAISE_CHECK * 2, false));
+    // The window is bounded: the remote's own app buttons do not pass through Luma, so a
+    // later press on a preloaded app must not be taken for the app raising itself.
+    assert_eq!(RAISE_WINDOW, Duration::from_secs(90));
+    assert!(!launch.expired(start + RAISE_WINDOW - Duration::from_millis(1)));
+    assert!(launch.expired(start + RAISE_WINDOW));
+    launch.checked(start + RAISE_WINDOW, false);
+    assert!(!launch.due(start + RAISE_WINDOW + RAISE_CHECK, false));
+    assert_eq!(
+        Outcome::CameForward { after: 48 }.describe(),
+        "came to the front 48 s after the hidden launch: closed, never preloaded again"
+    );
+}
+
+#[test]
 fn lg_preloads_follow_the_hidden_apps_the_users_list_and_the_setting() {
     use crate::preload::{lg_policy_change, record_policy_change};
     let ids = |list: &[&str]| list.iter().map(|id| id.to_string()).collect::<Vec<_>>();

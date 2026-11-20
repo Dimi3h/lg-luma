@@ -15,7 +15,7 @@ use std::{
     collections::{BTreeMap, HashSet},
     sync::mpsc,
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// The automatic choice (no list of the user's own) keeps at most this many apps alive.
@@ -31,6 +31,15 @@ pub const SPACING: Duration = Duration::from_secs(20);
 pub const WATCH: Duration = Duration::from_secs(30);
 /// How long after a hidden launch the foreground is checked.
 pub const FOREGROUND_CHECK: Duration = Duration::from_secs(3);
+/// How long after a hidden launch the app is still watched for raising itself (Apple TV came
+/// forward later than the first check). Bounded, because the remote's own app buttons
+/// (Netflix, Prime Video, Disney+) open an app without passing through Luma: a press on a
+/// preloaded app after this would otherwise be taken for the app raising itself.
+pub const RAISE_WINDOW: Duration = Duration::from_secs(90);
+/// After Luma loses focus inside that window, the foreground is checked this soon...
+pub const RAISE_FIRST_CHECK: Duration = Duration::from_secs(1);
+/// ...and again this often while Luma stays out of focus.
+pub const RAISE_CHECK: Duration = Duration::from_secs(5);
 /// Launch counts kept in the preferences (the most launched ones).
 const MAX_COUNTS: usize = 64;
 
@@ -425,8 +434,11 @@ pub enum Outcome {
     /// Enough of the user's apps are alive already (preloaded or used).
     EnoughRunning(usize),
     MemoryUnknown,
-    /// It came to the front although launched hidden: closed, never preloaded again.
-    CameForward,
+    /// It came to the front although launched hidden (`after` seconds after the launch):
+    /// closed, never preloaded again.
+    CameForward {
+        after: u64,
+    },
     Failed(String),
 }
 
@@ -472,8 +484,66 @@ impl Outcome {
                 format!("skipped: {count} of your apps already run (limit {MAX_APPS})")
             }
             Self::MemoryUnknown => "skipped: available memory unknown".into(),
-            Self::CameForward => "came to the front: closed, never preloaded again".into(),
+            Self::CameForward { after } => format!(
+                "came to the front {after} s after the hidden launch: closed, never preloaded again"
+            ),
             Self::Failed(error) => format!("failed: {error}"),
+        }
+    }
+}
+
+/// A hidden launch inside its watch window (`RAISE_WINDOW`). No other preload starts until it
+/// ends, so only one app is ever watched.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HiddenLaunch {
+    pub id: String,
+    pub at: Instant,
+    /// When the foreground is next checked; set when Luma loses focus.
+    check: Option<Instant>,
+}
+
+impl HiddenLaunch {
+    pub fn new(id: String, at: Instant) -> Self {
+        Self {
+            id,
+            at,
+            check: None,
+        }
+    }
+
+    pub fn expired(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.at) >= RAISE_WINDOW
+    }
+
+    /// Seconds since the hidden launch.
+    pub fn after(&self, now: Instant) -> u64 {
+        now.saturating_duration_since(self.at).as_secs()
+    }
+
+    /// Luma lost focus or was hidden: check the foreground soon.
+    pub fn focus_lost(&mut self, now: Instant) {
+        let soon = now + RAISE_FIRST_CHECK;
+        self.check = Some(self.check.map_or(soon, |check| check.min(soon)));
+    }
+
+    /// Whether a foreground check is due now. With Luma in focus nothing else is in front, so
+    /// no check is due and none stays scheduled.
+    pub fn due(&mut self, now: Instant, focused: bool) -> bool {
+        if focused {
+            self.check = None;
+            return false;
+        }
+        if self.check.is_some_and(|check| check <= now) {
+            self.check = None;
+            return true;
+        }
+        false
+    }
+
+    /// A check found it hidden: check again while Luma stays out of focus.
+    pub fn checked(&mut self, now: Instant, focused: bool) {
+        if !focused && !self.expired(now) {
+            self.check = Some(now + RAISE_CHECK);
         }
     }
 }
@@ -506,6 +576,13 @@ pub enum Job {
     MemoryCompression(bool),
     /// A poll of LG's memory state and the running apps, for the diagnostics.
     Watch,
+    /// Inside a hidden launch's watch window, Luma is out of focus: if `id` is in front, close
+    /// it and bring `own` back.
+    Check {
+        id: String,
+        own: &'static str,
+        after: u64,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -529,6 +606,12 @@ pub enum Reply {
         lg: Option<LgMemory>,
         medium_enter: Option<u64>,
         running: Option<Vec<String>>,
+    },
+    /// `raised`: it was in front and was closed.
+    Checked {
+        id: String,
+        after: u64,
+        raised: bool,
     },
 }
 
@@ -567,6 +650,11 @@ impl Service {
                             lg: crate::platform::lg_memory(),
                             medium_enter: crate::platform::lg_medium_enter(),
                             running: crate::platform::running_apps().ok(),
+                        },
+                        Job::Check { id, own, after } => Reply::Checked {
+                            raised: crate::platform::close_if_in_front(&id, own),
+                            id,
+                            after,
                         },
                     };
                     if replies.send(reply).is_err() {
