@@ -1435,10 +1435,14 @@ virtual pad the user could accelerate in a game in GeForce NOW.
   played (`effects_uploaded`, `effects_played`, written at most every 2 s). `boot.log` gets
   `pad bridge: …` from the apply.
 
-Not verified: that LG's browser plays rumble through evdev force feedback on a 360-style pad (it
-rumbled the real controller through hidraw, a different path; the effect counters show whether it
-uploads any), which of the two magnitudes drives which motor, behaviour across a TV suspend, a second controller, and whether LG shows anything for the
-extra input device (none was seen).
+Measured on the TV: LG's browser does send force feedback to the 360-style pad through evdev.
+After a GeForce NOW session (Star Wars Galactic Racer) the status showed 23 effects uploaded and
+23 played, the user felt the controller vibrate, and the browser had only the virtual pad's
+`event10`/`js7` and the controller's `hidraw0` open. The pad reported ff capabilities
+`1 10000 0 0` (FF_RUMBLE, FF_GAIN) and ev `20000b`.
+
+Not verified: which of the two magnitudes drives which motor, behaviour across a TV suspend, a
+second controller, and whether LG shows anything for the extra input device (none was seen).
 
 ## Manual extra-app preview
 
