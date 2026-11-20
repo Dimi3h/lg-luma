@@ -312,6 +312,15 @@ Shortcut tiles sit on Home like apps but send a web request when selected, for e
 Assistant webhook. Open **Settings → Widgets → Shortcuts → Configure** and scan
 the QR code.
 
+### Bluetooth controller repair
+
+Some BLE game controllers stop working on LG's Bluetooth stack after their first button press: the
+controller announces a service change, and the TV stops passing on its input. **Settings → System
+→ Repair Bluetooth controller** (on by default) restarts only the controller's HID connection when
+that happens, so its buttons work again. This was measured with a Stadia controller on an LG
+OLED55B46LA (webOS 25) only. The first button press after each connection is lost, and LG shows
+its own disconnected and connected notices during the repair.
+
 ## Development
 
 ### Setup & Building

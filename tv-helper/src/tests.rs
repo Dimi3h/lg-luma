@@ -36,6 +36,10 @@ struct Fixture {
     /// LG's preload policy (`getPreloadPolicy`/`setPreloadPolicy`) and other running apps.
     preload_policy: RefCell<BTreeMap<String, bool>>,
     running_ids: RefCell<Vec<String>>,
+    /// The Stadia controller's connected profiles in LG's Bluetooth service.
+    bt_profiles: RefCell<Vec<String>>,
+    /// Whether `hid/connect` brings the HID profile back.
+    bt_reconnects: Cell<bool>,
 }
 impl Fixture {
     fn new() -> Self {
@@ -73,6 +77,8 @@ impl Fixture {
             missing: Cell::new(0),
             preload_policy: RefCell::new(BTreeMap::new()),
             running_ids: RefCell::new(vec![]),
+            bt_profiles: RefCell::new(vec!["gatt".into(), "hid".into()]),
+            bt_reconnects: Cell::new(true),
         };
         for dir in [
             "/var/lib/luma-home/app",
@@ -256,6 +262,41 @@ impl System for Fixture {
             .and_then(VecDeque::pop_front)
         {
             return reply.map(ok);
+        }
+        if uri.starts_with("luna://com.webos.service.bluetooth2/") {
+            let mut profiles = self.bt_profiles.borrow_mut();
+            let mut set = |profile: &str, on: bool| {
+                profiles.retain(|other| other != profile);
+                if on {
+                    profiles.push(profile.into());
+                }
+            };
+            let path = uri.trim_start_matches("luna://com.webos.service.bluetooth2/");
+            let reply = match path {
+                "gatt/connect" => {
+                    set("gatt", true);
+                    json!({"returnValue":true,"subscribed":false,"clientId":"008"})
+                }
+                "hid/disconnect" => {
+                    set("hid", false);
+                    json!({"returnValue":true})
+                }
+                "hid/connect" => {
+                    if self.bt_reconnects.get() {
+                        set("hid", true);
+                    }
+                    json!({"returnValue":true})
+                }
+                "device/getStatus" => json!({"returnValue":true,"devices":[
+                    {"classOfDevice":1288,"blocked":false,"connectedProfiles":*profiles,
+                     "paired":true,"name":"StadiaQRQW-9c36","typeOfDevice":"ble",
+                     "address":"fb:ff:bc:f7:9c:36"},
+                    {"classOfDevice":1288,"connectedProfiles":["hid"],"paired":true,
+                     "name":"LGE MR24","typeOfDevice":"ble","address":"aa:bb:cc:dd:ee:ff"}
+                ]}),
+                other => panic!("Unexpected Bluetooth call: {other}"),
+            };
+            return Ok(ok(reply));
         }
         let screensaver = payload["id"] == screensaver::ID;
         let unknown = json!({"returnValue":false,"errorCode":1,"errorText":"Invalid appId specified OR Unsupported Application Type: com.webos.app.screensaver"});
@@ -1664,4 +1705,144 @@ fn the_cold_boot_apply_also_sets_up_memory_compression() {
             .iter()
             .any(|c| c.contains("/sbin/swapon -p 100 /dev/zram0"))
     );
+}
+
+const STADIA: &str = "fb:ff:bc:f7:9c:36";
+const STADIA_CACHE: &str =
+    "/mnt/lg/cmn_data/btsvc/fluoride-mtk/rec/bluetooth/gatt_cache_fbffbcf79c36";
+
+#[test]
+fn bluetooth_gamepads_are_ble_hid_gamepads_never_lgs_remote() {
+    use crate::bluetooth::{Gamepad, gamepads, has_profile, valid_address};
+    let entry = |name: &str, address: &str, class: u64, kind: &str, profiles: &[&str]| {
+        json!({"classOfDevice": class, "blocked": false, "connectedProfiles": profiles,
+               "paired": true, "name": name, "typeOfDevice": kind, "address": address})
+    };
+    // As measured on the TV, plus what must never count.
+    let status = json!({"returnValue": true, "adapters": [{"address": "3c:f0:83:43:c0:71",
+    "devices": [
+        entry("StadiaQRQW-9c36", STADIA, 1288, "ble", &["gatt", "hid"]),
+        entry("LGE MR24", "aa:bb:cc:dd:ee:ff", 1288, "ble", &["hid"]),
+        entry("Pad without HID", "11:22:33:44:55:66", 1288, "ble", &["gatt"]),
+        entry("Keyboard", "11:22:33:44:55:77", 1344, "ble", &["hid"]),
+        entry("Classic pad", "11:22:33:44:55:88", 1288, "classic", &["hid"]),
+        entry("Bad", "fb:ff:bc:f7:9c", 1288, "ble", &["hid"]),
+    ]}]});
+    assert_eq!(
+        gamepads(&status),
+        vec![Gamepad {
+            address: STADIA.into(),
+            name: "StadiaQRQW-9c36".into()
+        }]
+    );
+    assert!(has_profile(&status, STADIA, "hid"));
+    assert!(!has_profile(&status, "11:22:33:44:55:66", "hid"));
+    assert!(valid_address(STADIA));
+    assert!(!valid_address("fb:ff:bc:f7:9c:3g"));
+    assert!(!valid_address("fb:ff:bc:f7:9c:36:00"));
+}
+
+#[test]
+fn bluetooth_cache_file_follows_the_vendor_and_is_absent_without_a_tree() {
+    use crate::bluetooth::{cache_mtime, cache_path};
+    let f = Fixture::new();
+    // No btsvc tree: the feature is inactive.
+    assert_eq!(cache_path(&f, STADIA), None);
+    assert_eq!(cache_mtime(&f, STADIA), None);
+    f.put("/mnt/lg/cmn_data/btsvc/module.conf", b"vendor=mtk\n");
+    f.put(STADIA_CACHE, b"cache");
+    assert_eq!(cache_path(&f, STADIA), Some(PathBuf::from(STADIA_CACHE)));
+    assert!(cache_mtime(&f, STADIA).is_some());
+    // The other chip's tree, with or without module.conf.
+    let g = Fixture::new();
+    let rtk = "/mnt/lg/cmn_data/btsvc/fluoride-rtk/rec/bluetooth/gatt_cache_fbffbcf79c36";
+    g.put(rtk, b"cache");
+    assert_eq!(
+        cache_path(&g, "FB:FF:BC:F7:9C:36"),
+        Some(PathBuf::from(rtk))
+    );
+    assert_eq!(cache_path(&g, "../etc/passwd"), None);
+}
+
+#[test]
+fn bluetooth_repair_follows_a_cache_change_while_hid_stays_connected() {
+    use crate::bluetooth::Watch;
+    let mut watch = Watch::default();
+    let pad = |mtime: Option<u128>| vec![(STADIA.to_owned(), mtime)];
+    // A new connection only takes a baseline (a plain connect does not rewrite the cache).
+    assert!(watch.observe(&pad(Some(100))).is_empty());
+    assert!(watch.observe(&pad(Some(100))).is_empty());
+    assert_eq!(watch.watching(), vec![STADIA.to_owned()]);
+    // The first press: the stack rewrites the cache after Service Changed. Repaired once.
+    assert_eq!(watch.observe(&pad(Some(200))), vec![STADIA.to_owned()]);
+    assert!(watch.observe(&pad(Some(200))).is_empty());
+    // The repair's own time is the baseline, so it never triggers itself.
+    watch.repaired(STADIA, Some(250));
+    assert!(watch.observe(&pad(Some(250))).is_empty());
+    // An unreadable read never triggers, and keeps the baseline.
+    assert!(watch.observe(&pad(None)).is_empty());
+    assert!(watch.observe(&pad(Some(250))).is_empty());
+    // Switched off and on: a new baseline, and the next change repairs again. A cache file
+    // that only appears during a connection is a baseline too.
+    assert!(watch.observe(&[]).is_empty());
+    assert!(watch.watching().is_empty());
+    assert!(watch.observe(&pad(None)).is_empty());
+    assert!(watch.observe(&pad(Some(300))).is_empty());
+    assert_eq!(watch.observe(&pad(Some(400))), vec![STADIA.to_owned()]);
+    // LG's remote never reaches the watch: only gamepads are passed in.
+}
+
+#[test]
+fn bluetooth_repair_keeps_the_le_link_and_restarts_only_hid() {
+    use crate::bluetooth::{DROP_SECONDS, RECONNECT_SECONDS, dispatch};
+    let f = Fixture::new();
+    let reply = dispatch(&f, "repair", Some(STADIA)).unwrap();
+    assert_eq!(reply["outcome"], "repaired: HID connected again");
+    assert_eq!(reply["repaired"], true);
+    let bluetooth: Vec<String> = f
+        .calls()
+        .into_iter()
+        .filter(|call| call.contains("bluetooth2/"))
+        .filter(|call| !call.contains("getStatus"))
+        .map(|call| {
+            call.split_whitespace()
+                .find(|part| part.starts_with("luna://"))
+                .unwrap()
+                .trim_start_matches("luna://com.webos.service.bluetooth2/")
+                .to_owned()
+        })
+        .collect();
+    // A second GATT client keeps the LE link up; gatt/disconnect never answered on the TV.
+    assert_eq!(bluetooth, ["gatt/connect", "hid/disconnect", "hid/connect"]);
+    assert!(
+        !f.calls()
+            .iter()
+            .any(|call| call.contains("gatt/disconnect"))
+    );
+    assert_eq!(*f.bt_profiles.borrow(), ["gatt", "hid"]);
+    // About 3 s between the disconnect and the connect, as measured.
+    assert_eq!(f.pauses.get(), 3);
+    // HID that never returns is reported, bounded by the waits.
+    let g = Fixture::new();
+    g.bt_reconnects.set(false);
+    let reply = dispatch(&g, "repair", Some(STADIA)).unwrap();
+    assert_eq!(reply["outcome"], "failed: HID did not come back");
+    assert_eq!(reply["repaired"], false);
+    assert!(g.pauses.get() as u32 <= DROP_SECONDS + RECONNECT_SECONDS + 3);
+    // Status lists the gamepad with its cache time, never LG's remote.
+    let h = Fixture::new();
+    h.put(STADIA_CACHE, b"cache");
+    let status = dispatch(&h, "status", None).unwrap();
+    let pads = status["gamepads"].as_array().unwrap();
+    assert_eq!(pads.len(), 1);
+    assert_eq!(pads[0]["address"], STADIA);
+    assert!(pads[0]["cache_mtime"].is_u64());
+    // Bad input and non-root callers change nothing.
+    assert!(dispatch(&f, "repair", Some("not-an-address")).is_err());
+    assert!(dispatch(&f, "repair", None).is_err());
+    assert!(dispatch(&f, "unpair", Some(STADIA)).is_err());
+    let calls = f.calls().len();
+    f.uid.set(501);
+    assert!(dispatch(&f, "repair", Some(STADIA)).is_err());
+    assert_eq!(f.calls().len(), calls);
 }

@@ -309,6 +309,9 @@ pub struct Preferences {
     /// Settings › System › Memory compression: a compressed swap in RAM (zram), applied by the
     /// Home takeover's boot hook. Off only stops applying it at the next cold boot.
     pub memory_compression: bool,
+    /// Settings › System › Repair Bluetooth controller: restarts the HID layer of a BLE gamepad
+    /// whose input LG's Bluetooth stack stopped delivering (gamepad.rs).
+    pub gamepad_repair: bool,
     #[serde(deserialize_with = "deserialize_appearance")]
     pub appearance: Appearance,
     /// The 24-hour choice as earlier versions saved it: written with every preference file, so
@@ -356,6 +359,7 @@ impl Default for Preferences {
             preload_list: vec![],
             preload_lg_enabled: vec![],
             memory_compression: true,
+            gamepad_repair: true,
             appearance: Appearance::Dark,
             hour_24: false,
             clock_24: None,

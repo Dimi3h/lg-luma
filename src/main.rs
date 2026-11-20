@@ -10,6 +10,7 @@ mod damage;
 mod diagnostics;
 mod egl_damage;
 mod font;
+mod gamepad;
 mod glyph_atlas;
 mod i18n;
 #[path = "input-refresh.rs"]
@@ -915,6 +916,11 @@ fn run() -> Result<(), String> {
     // Preloading the user's apps and LG's preloads of hidden apps (see preload.rs). Decisions go
     // to luma-diagnostics.json.
     let preload_service = webos.then(preload::Service::spawn);
+    // Repairing a Bluetooth gamepad whose input LG's stack stopped delivering (gamepad.rs): its
+    // own thread, also while Luma is in the background.
+    let gamepad_service = webos
+        .then(|| gamepad::Service::spawn(state.preferences.gamepad_repair, platform::BluetoothTv));
+    let mut gamepad_evidence = gamepad::Evidence::default();
     let mut preload_busy = false;
     // Set by a skip for memory, swap or enough running apps: no more preloads until Luma
     // comes back to the front.
@@ -2145,6 +2151,21 @@ fn run() -> Result<(), String> {
         }
         if update_quit.load(std::sync::atomic::Ordering::SeqCst) {
             running = false;
+        }
+        if let Some(service) = &gamepad_service {
+            service.set_enabled(state.preferences.gamepad_repair);
+            let mut changed = false;
+            while let Ok(reply) = service.receiver.try_recv() {
+                let before = gamepad_evidence.clone();
+                gamepad_evidence.apply(reply);
+                changed |= gamepad_evidence != before;
+            }
+            if changed {
+                diagnostics_writer.section(
+                    "gamepad_repair",
+                    serde_json::to_value(&gamepad_evidence).unwrap_or_default(),
+                );
+            }
         }
         if let Some(service) = &preload_service {
             let mut record = |id: &str, result: String| {

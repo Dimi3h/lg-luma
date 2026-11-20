@@ -376,12 +376,16 @@ try {
   const clockFocus = await scenario('clock-format-focus', `${clockEditor},enter,down`);
   assert.equal(clockFocus.subpage, 'ClockFormat');
   assert.deepEqual(clockFocus.focus, { Choice: 1 });
-  const system = await scenario('system-settings', 'settings,down,down,down,right,down,down,down');
+  const system = await scenario(
+    'system-settings',
+    'settings,down,down,down,right,down,down,down,down',
+  );
   assert.deepEqual(system.focus, { Setting: 5 });
   assert.ok(system.ui_text.includes('Refresh apps & inputs'));
   assert.ok(!system.ui_text.includes('Luma update'));
   assert.ok(system.ui_text.includes('Quit app'));
   assert.ok(system.ui_text.includes('Memory compression'));
+  assert.ok(system.ui_text.includes('Repair Bluetooth controller'));
   // Text has one path (the CPU glyph atlas); the Text rendering choice is gone.
   assert.ok(!system.ui_text.includes('Text rendering'));
   assert.equal(system.render.text_rendering.path, 'cpu glyph atlas');

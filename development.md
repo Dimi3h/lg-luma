@@ -1275,6 +1275,49 @@ whose cold-boot hook runs it. Measured during a manual trial on the TV (512 MB z
 `watermark_scale_factor` 150 there had been 2791 allocation stalls in 13.6 awake hours with 19 %
 of reclaim done directly. Whether 768 MB is the best size is not measured.
 
+### Bluetooth controller repair
+
+Settings › System › Repair Bluetooth controller (`gamepad_repair`, on by default) is a workaround
+for BLE gamepads that send a GATT Service Changed indication. It was measured with a Stadia
+controller (BLE HID, class of device 1288) on an LG OLED55B46LA (webOS 25, MediaTek Fluoride
+stack) only; other controllers, the Realtek tree, and behaviour across a TV suspend are not
+verified.
+
+- **Cause (HCI snoop on the TV):** at its first button press after every new LE connection the
+  controller sends Service Changed (handle 0x0003, range 0x0001–0xffff). LG's stack rediscovers
+  the services, clears the HID notification registration and never restores it: input
+  notifications (handle 0x0040) keep arriving at HCI, but nothing reaches `/dev/uhid`. A plain HID
+  disconnect and connect does not help: it makes a new LE connection, and the next press sends
+  the indication again.
+- **Trigger:** right after the indication the stack rewrites the device's GATT cache file,
+  `/mnt/lg/cmn_data/btsvc/fluoride-<vendor>/rec/bluetooth/gatt_cache_<address in lowercase hex
+  without colons>` (`vendor=mtk` in `btsvc/module.conf` on that TV; a `fluoride-rtk` tree has the
+  same layout). A plain connect and the repair itself were not seen to rewrite it. Measured with
+  the controller switched off and on: HID connected at 22:27:53, cache rewritten at 22:28:07.59
+  (the first press), repair started at 22:28:09, HID connected again at 22:28:10.
+- **Watcher (`src/gamepad.rs`, its own thread, also while Luma is in the background):** every 3 s
+  it reads `com.webos.service.bluetooth2/device/getStatus` and watches BLE devices with class of
+  device 1288 and `hid` in `connectedProfiles`; LG's remote ("LGE MR…") never counts. While one is
+  connected, its cache file's time is checked every second (Luma running as root reads it
+  itself; otherwise the elevated helper, `luma-helper bluetooth status`, reads both every 3 s,
+  and every 10 s while no gamepad is connected).
+  The first reading of a connection is its baseline; a later change repairs once, and the
+  repair's own reading becomes the new baseline. Without the cache file or tree the feature is
+  simply inactive.
+- **Repair (`tv-helper/src/bluetooth.rs`, as root through `luna-send`, otherwise through
+  `luma-helper bluetooth repair ADDRESS`):** `gatt/connect` (a second GATT client keeps the LE link
+  up; idempotent), `hid/disconnect`, up to 6 s for HID to drop and about 3 s in all,
+  `hid/connect`, up to 10 s for HID to return. `gatt/disconnect` is never called: on the TV it did
+  not answer. With no new LE connection there is no new indication, and the HID host registers
+  for notifications again: on the TV the D-pad then moved the selection in GeForce NOW, and rumble
+  writes went out.
+- **Side effects:** the first button press after each connection is lost (it is what triggers the
+  indication), and LG shows its own disconnected and connected notices during the repair.
+- **Diagnostics:** a UTC-timestamped `Luma gamepad:` line at the start and end of each repair in
+  `/tmp/luma-home.log`, and `gamepad_repair` in `luma-diagnostics.json`: the number of repairs, the
+  last one's time, address, name and outcome, the gamepads watched, and why the watcher is
+  inactive if it is.
+
 ## Manual extra-app preview
 
 ```sh
