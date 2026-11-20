@@ -148,6 +148,159 @@ pub fn install_dir() -> Result<std::path::PathBuf, String> {
         .clone()
 }
 
+/// Recovers a Home press when Luma's main loop is stuck: the lifecycle thread counts every
+/// `relaunch` from SAM and the main loop acknowledges each one it handles. A relaunch still
+/// unacknowledged after `limit` means the screen would stay as it is, so `exit` ends the
+/// process; SAM then starts Home afresh on that press (or the next).
+#[derive(Clone)]
+#[cfg_attr(
+    not(all(feature = "webos", target_os = "linux", target_arch = "arm")),
+    allow(dead_code)
+)]
+pub struct RelaunchWatchdog {
+    received: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    handled: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    limit: std::time::Duration,
+    exit: std::sync::Arc<dyn Fn() + Send + Sync>,
+}
+
+impl RelaunchWatchdog {
+    /// How long the main loop has to handle a relaunch before Luma gives up on itself.
+    pub const LIMIT: std::time::Duration = std::time::Duration::from_secs(6);
+
+    pub fn new(limit: std::time::Duration, exit: impl Fn() + Send + Sync + 'static) -> Self {
+        Self {
+            received: Default::default(),
+            handled: Default::default(),
+            limit,
+            exit: std::sync::Arc::new(exit),
+        }
+    }
+
+    /// On the lifecycle thread, for each relaunch: checks back after the limit.
+    #[cfg_attr(
+        not(all(feature = "webos", target_os = "linux", target_arch = "arm")),
+        allow(dead_code)
+    )]
+    pub fn received(&self) {
+        use std::sync::atomic::Ordering::SeqCst;
+        let number = self.received.fetch_add(1, SeqCst) + 1;
+        let watchdog = self.clone();
+        let _ = thread::Builder::new()
+            .name("luma-relaunch-watchdog".into())
+            .spawn(move || {
+                thread::sleep(watchdog.limit);
+                if watchdog.handled.load(SeqCst) < number {
+                    eprintln!(
+                        "Luma lifecycle: relaunch {number} not handled within {:?}; exiting so SAM starts Home afresh",
+                        watchdog.limit
+                    );
+                    (watchdog.exit)();
+                }
+            });
+    }
+
+    /// On the main loop, for each relaunch it has handled.
+    pub fn handled(&self) {
+        self.handled
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Starts `id` hidden for an instant launch later (Settings › General › Preload apps): only with
+/// enough memory available and when it is not running yet, from Luma's own connection, as LG's
+/// preload manager does for its own policy. If it comes to the front anyway it is closed and
+/// `own` (Luma's running identity) is brought back.
+pub fn preload_app(id: &str, own: &str, user_apps: &[String]) -> crate::preload::Outcome {
+    use crate::preload::Outcome;
+    let available = match crate::preload::memory_allows(
+        std::fs::read_to_string("/proc/meminfo").ok().as_deref(),
+    ) {
+        Ok(mb) => mb,
+        Err(outcome) => return outcome,
+    };
+    let running: Vec<String> = match call("luna://com.webos.applicationManager/running", json!({}))
+    {
+        Ok(reply) => reply["running"]
+            .as_array()
+            .map(|apps| {
+                apps.iter()
+                    .filter_map(|app| app["id"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Err(error) => return Outcome::Failed(error),
+    };
+    if running.iter().any(|running| running == id) {
+        return Outcome::AlreadyRunning;
+    }
+    let alive = crate::preload::running_user_apps(&running, user_apps);
+    if alive >= crate::preload::MAX_APPS {
+        return Outcome::EnoughRunning(alive);
+    }
+    if let Err(error) = call(
+        "luna://com.webos.applicationManager/launch",
+        json!({"id": id, "preload": "partial", "noSplash": true, "launchHidden": true, "params": {}}),
+    ) {
+        return Outcome::Failed(error);
+    }
+    thread::sleep(crate::preload::FOREGROUND_CHECK);
+    let front = call(
+        "luna://com.webos.applicationManager/getForegroundAppInfo",
+        json!({}),
+    )
+    .ok()
+    .and_then(|reply| reply["appId"].as_str().map(str::to_owned));
+    if front.as_deref() == Some(id) {
+        let _ = call(
+            "luna://com.webos.applicationManager/closeByAppId",
+            json!({ "id": id }),
+        );
+        let _ = call(
+            "luna://com.webos.applicationManager/launch",
+            json!({ "id": own }),
+        );
+        return Outcome::CameForward;
+    }
+    Outcome::Preloaded {
+        available_mb: available,
+    }
+}
+
+/// Changes LG's preload policy through the elevated helper (its methods are in the "system"
+/// group): `disable` and `enable` list app ids; ids LG's policy does not list are skipped.
+/// Returns the ids it switched off and the ids it switched on.
+pub fn preload_policy(
+    disable: &[String],
+    enable: &[String],
+) -> Result<(Vec<String>, Vec<String>), String> {
+    let request = json!({"disable": disable, "enable": enable}).to_string();
+    let envelope = call(
+        "luna://org.webosbrew.hbchannel.service/exec",
+        json!({"command": helper_command("preload-policy", &[request])?}),
+    )?;
+    let reply = command_reply(&envelope)?;
+    let list = |key: &str| -> Vec<String> {
+        reply[key]
+            .as_array()
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    Ok((list("disabled"), list("enabled")))
+}
+
+/// Whether a relaunch that never reached the front may set the lifecycle latch: never when this
+/// process runs a program an update has replaced (`/proc/self/exe` ends in " (deleted)"), whose
+/// failure says nothing about the installed one.
+pub fn latch_after_failed_relaunch(exe: &str) -> bool {
+    !exe.ends_with(" (deleted)")
+}
+
 /// Written before Luma closes itself after an update replaced its executable, with the version
 /// that closed. /tmp starts empty at each boot.
 pub const UPDATE_RESTART_MARKER: &str = "/tmp/luma-update-restart";
@@ -861,6 +1014,7 @@ pub fn normalize_apps(raw: &Value) -> Result<Vec<App>, String> {
         }
         let mut app = App::new(id, &title(entry.get("title").and_then(Value::as_str), id));
         app.icon = Some(app_artwork::Source::new(id, entry));
+        app.web = entry.get("type").and_then(Value::as_str) == Some("web");
         apps.push(app);
     }
     apps.sort_by_key(|a| a.title.to_lowercase());

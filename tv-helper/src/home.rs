@@ -310,6 +310,33 @@ impl<'a, S: System> Home<'a, S> {
             eprintln!("Luma Home: splash not staged: {e}");
         }
         steps.log("splash staged");
+        // Luma's lifecycle latch lasts one boot at most: registration is tried again.
+        if self.exists(LIFECYCLE_OFF) {
+            let why = system::read(self.system, LIFECYCLE_OFF, 4096)
+                .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_owned())
+                .unwrap_or_default();
+            match system::remove(self.system, LIFECYCLE_OFF) {
+                Ok(()) => eprintln!(
+                    "Luma Home: cleared the lifecycle latch ({}); Home registers again",
+                    if why.is_empty() {
+                        "set by an earlier version"
+                    } else {
+                        &why
+                    }
+                ),
+                Err(error) => eprintln!("Luma Home: lifecycle latch not cleared: {error}"),
+            }
+        }
+        // Every apply (cold boot, update, enable) writes the staged manifest from the installed
+        // package, so a changed manifest takes effect without enabling again. SAM rereads it
+        // below.
+        if config.method != "executable" {
+            match self.refresh_manifest(Path::new(&config.app_dir)) {
+                Ok(true) => steps.log("staged manifest refreshed"),
+                Ok(false) => {}
+                Err(e) => eprintln!("Luma Home: staged manifest not refreshed: {e}"),
+            }
+        }
         let front = self.foreground()?;
         let result = (|| {
             if config.method == "executable" {
@@ -371,6 +398,20 @@ impl<'a, S: System> Home<'a, S> {
         }
         Ok(())
     }
+    /// Rewrites the staged manifest from the installed package's when it differs.
+    fn refresh_manifest(&self, app: &Path) -> Result<bool> {
+        let installed = system::json(self.system, app.join("appinfo.json"))?;
+        if installed["id"] != APP || installed["main"] != "luma" {
+            return Err("The installed package is not Luma".into());
+        }
+        let staged = staged_manifest(&installed, &self.id);
+        let path = format!("{STAGE}/appinfo.json");
+        if system::json(self.system, &path).ok().as_ref() == Some(&staged) {
+            return Ok(false);
+        }
+        system::write_json(self.system, &path, &staged)?;
+        Ok(true)
+    }
     /// Copies the installed app's `home.sh` and `luma-helper` over the state copies the boot
     /// hook runs when they differ, so an updated Luma takes effect at the next cold boot without
     /// enabling again. Only root-owned files that nobody else can write are copied, since root
@@ -431,7 +472,7 @@ impl<'a, S: System> Home<'a, S> {
                     .map_err(|_| "Installation escaped test root")?,
             )
         };
-        let mut manifest = system::json(self.system, app.join("appinfo.json"))?;
+        let manifest = system::json(self.system, app.join("appinfo.json"))?;
         if manifest["id"] != APP || manifest["type"] != "native" || manifest["main"] != "luma" {
             return Err("Enable this from an installed native Luma package".into());
         }
@@ -504,11 +545,11 @@ impl<'a, S: System> Home<'a, S> {
                 fs::rename(self.system.path(&tmp), self.system.path(&link))
                     .map_err(|e| e.to_string())?;
             }
-            manifest["id"] = json!(self.id);
-            manifest["title"] = json!("Home");
-            manifest["visible"] = json!(false);
-            manifest["appCategory"] = json!(["home"]);
-            system::write_json(self.system, format!("{STAGE}/appinfo.json"), &manifest)?;
+            system::write_json(
+                self.system,
+                format!("{STAGE}/appinfo.json"),
+                &staged_manifest(&manifest, &self.id),
+            )?;
             system::write(
                 self.system,
                 format!("{STAGE}/.luma-home"),
@@ -532,6 +573,25 @@ impl<'a, S: System> Home<'a, S> {
         system::write_json(self.system, CONFIG, &config)
     }
 }
+/// Created by Luma when a relaunch did not reach the front; Luma then stays unregistered (SAM
+/// starts Home afresh per press). It is a latch for one boot at most: every apply (cold boot,
+/// update, enable) clears it, so registration is tried again.
+pub const LIFECYCLE_OFF: &str = "/var/lib/luma-home/no-lifecycle";
+
+/// Luma's own manifest as the staged Home: LG Home's id, hidden and in the home category. The
+/// registered process gets SAM's `relaunch` per Home press (lifecycle v1). Without the spinner,
+/// a cold start shows only the staged splash (the user's wallpaper) until Luma's window opens.
+pub fn staged_manifest(installed: &Value, id: &str) -> Value {
+    let mut manifest = installed.clone();
+    manifest["id"] = json!(id);
+    manifest["title"] = json!("Home");
+    manifest["visible"] = json!(false);
+    manifest["appCategory"] = json!(["home"]);
+    manifest["spinnerOnLaunch"] = json!(false);
+    manifest["noSplashOnLaunch"] = json!(false);
+    manifest
+}
+
 pub(crate) fn app_manager(system: &impl System, method: &str, payload: Value) -> Result<Value> {
     system::luna(system, "com.webos.applicationManager", method, &payload)
 }
