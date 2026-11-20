@@ -343,6 +343,18 @@ pub fn write(system: &impl System, path: impl AsRef<Path>, bytes: &[u8], mode: u
     }
     result.map_err(|e| e.to_string())
 }
+/// Writes `value` into an existing kernel attribute (sysfs, procfs) in place: those files take
+/// no temporary file and rename.
+pub fn set_attribute(system: &impl System, path: impl AsRef<Path>, value: &str) -> Result<()> {
+    let path = path.as_ref();
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(system.path(path))
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    file.write_all(value.as_bytes())
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
 pub fn write_json(
     system: &impl System,
     path: impl AsRef<Path>,

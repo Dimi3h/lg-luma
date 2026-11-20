@@ -211,33 +211,38 @@ impl RelaunchWatchdog {
 /// enough memory available and when it is not running yet, from Luma's own connection, as LG's
 /// preload manager does for its own policy. If it comes to the front anyway it is closed and
 /// `own` (Luma's running identity) is brought back.
-pub fn preload_app(id: &str, own: &str, user_apps: &[String]) -> crate::preload::Outcome {
+pub fn preload_app(
+    id: &str,
+    own: &str,
+    user_apps: &[String],
+    limit: Option<usize>,
+) -> crate::preload::Outcome {
     use crate::preload::Outcome;
-    let available = match crate::preload::memory_allows(
-        std::fs::read_to_string("/proc/meminfo").ok().as_deref(),
-    ) {
-        Ok(mb) => mb,
-        Err(outcome) => return outcome,
-    };
-    let running: Vec<String> = match call("luna://com.webos.applicationManager/running", json!({}))
-    {
-        Ok(reply) => reply["running"]
-            .as_array()
-            .map(|apps| {
-                apps.iter()
-                    .filter_map(|app| app["id"].as_str().map(str::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default(),
+    // Running first: a running app is never reported as skipped for memory, and does not
+    // pause the rest of the list.
+    let running = match running_apps() {
+        Ok(running) => running,
         Err(error) => return Outcome::Failed(error),
     };
     if running.iter().any(|running| running == id) {
         return Outcome::AlreadyRunning;
     }
     let alive = crate::preload::running_user_apps(&running, user_apps);
-    if alive >= crate::preload::MAX_APPS {
+    if limit.is_some_and(|limit| alive >= limit) {
         return Outcome::EnoughRunning(alive);
     }
+    let memory = match crate::preload::memory_check(
+        lg_memory().as_ref(),
+        lg_medium_enter(),
+        std::fs::read_to_string("/proc/meminfo").ok().as_deref(),
+        std::fs::read_to_string("/proc/pressure/memory")
+            .ok()
+            .as_deref()
+            .and_then(crate::preload::pressure_some_avg10),
+    ) {
+        Ok(memory) => memory,
+        Err(outcome) => return outcome,
+    };
     if let Err(error) = call(
         "luna://com.webos.applicationManager/launch",
         json!({"id": id, "preload": "partial", "noSplash": true, "launchHidden": true, "params": {}}),
@@ -245,35 +250,87 @@ pub fn preload_app(id: &str, own: &str, user_apps: &[String]) -> crate::preload:
         return Outcome::Failed(error);
     }
     thread::sleep(crate::preload::FOREGROUND_CHECK);
-    let front = call(
+    if close_if_in_front(id, Some(own)) {
+        return Outcome::CameForward {
+            after: crate::preload::FOREGROUND_CHECK.as_secs(),
+        };
+    }
+    Outcome::Preloaded { memory }
+}
+
+/// The foreground app's id (SAM's `getForegroundAppInfo`).
+fn foreground() -> Option<String> {
+    call(
         "luna://com.webos.applicationManager/getForegroundAppInfo",
         json!({}),
     )
     .ok()
-    .and_then(|reply| reply["appId"].as_str().map(str::to_owned));
-    if front.as_deref() == Some(id) {
-        let _ = call(
-            "luna://com.webos.applicationManager/closeByAppId",
-            json!({ "id": id }),
-        );
+    .and_then(|reply| reply["appId"].as_str().map(str::to_owned))
+}
+
+/// After a hidden launch: if `id` is in front (it raised itself), closes it and brings `own`
+/// (Luma's running identity) back, if given. Returns whether it was in front.
+pub fn close_if_in_front(id: &str, own: Option<&str>) -> bool {
+    if foreground().as_deref() != Some(id) {
+        return false;
+    }
+    let _ = call(
+        "luna://com.webos.applicationManager/closeByAppId",
+        json!({ "id": id }),
+    );
+    if let Some(own) = own {
         let _ = call(
             "luna://com.webos.applicationManager/launch",
             json!({ "id": own }),
         );
-        return Outcome::CameForward;
     }
-    Outcome::Preloaded {
-        available_mb: available,
+    true
+}
+
+/// The running apps' ids (SAM's `running`).
+pub fn running_apps() -> Result<Vec<String>, String> {
+    let reply = call("luna://com.webos.applicationManager/running", json!({}))?;
+    Ok(reply["running"]
+        .as_array()
+        .map(|apps| {
+            apps.iter()
+                .filter_map(|app| app["id"].as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// LG's memory manager's current level and usable memory; `None` when it does not answer.
+pub fn lg_memory() -> Option<crate::preload::LgMemory> {
+    call(
+        "luna://com.webos.memorymanager/getCurrentMemState",
+        json!({}),
+    )
+    .ok()
+    .as_ref()
+    .and_then(crate::preload::LgMemory::from_reply)
+}
+
+/// LG's medium memory boundary from its policy, read once (it does not change while running).
+pub fn lg_medium_enter() -> Option<u64> {
+    static ENTER: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    if let Some(enter) = ENTER.get() {
+        return Some(*enter);
     }
+    let enter = call("luna://com.webos.memorymanager/getPolicy", json!({}))
+        .ok()
+        .as_ref()
+        .and_then(crate::preload::medium_enter)?;
+    Some(*ENTER.get_or_init(|| enter))
 }
 
 /// Changes LG's preload policy through the elevated helper (its methods are in the "system"
 /// group): `disable` and `enable` list app ids; ids LG's policy does not list are skipped.
-/// Returns the ids it switched off and the ids it switched on.
+/// Returns the ids it switched off and on, and every id LG's policy lists.
 pub fn preload_policy(
     disable: &[String],
     enable: &[String],
-) -> Result<(Vec<String>, Vec<String>), String> {
+) -> Result<crate::preload::PolicyChange, String> {
     let request = json!({"disable": disable, "enable": enable}).to_string();
     let envelope = call(
         "luna://org.webosbrew.hbchannel.service/exec",
@@ -291,7 +348,12 @@ pub fn preload_policy(
             })
             .unwrap_or_default()
     };
-    Ok((list("disabled"), list("enabled")))
+    Ok(crate::preload::PolicyChange {
+        off: list("disabled"),
+        on: list("enabled"),
+        listed: list("listed"),
+        periodic: list("periodic"),
+    })
 }
 
 /// Whether a relaunch that never reached the front may set the lifecycle latch: never when this
@@ -299,6 +361,20 @@ pub fn preload_policy(
 /// failure says nothing about the installed one.
 pub fn latch_after_failed_relaunch(exe: &str) -> bool {
     !exe.ends_with(" (deleted)")
+}
+
+/// Switches memory compression through the elevated helper: on applies it now (when zram0 is
+/// unused) and at every cold boot; off stops applying it from the next cold boot.
+pub fn memory_compression(on: bool) -> Result<String, String> {
+    let envelope = call(
+        "luna://org.webosbrew.hbchannel.service/exec",
+        json!({"command": helper_command(
+            "memory-compression",
+            &[if on { "on" } else { "off" }.to_owned()],
+        )?}),
+    )?;
+    let reply = command_reply(&envelope)?;
+    Ok(reply["result"].as_str().unwrap_or("done").to_owned())
 }
 
 /// Written before Luma closes itself after an update replaced its executable, with the version

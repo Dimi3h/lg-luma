@@ -221,6 +221,28 @@ impl System for Fixture {
             self.unmount(args.last().unwrap());
             return Ok(ok(json!({})));
         }
+        if program == "/sbin/mkswap" {
+            return Ok(ok(json!({})));
+        }
+        if program == "/sbin/swapon" {
+            let device = args.last().unwrap();
+            let size = system::read(self, "/sys/block/zram0/disksize", 64)
+                .map(|bytes| {
+                    String::from_utf8_lossy(&bytes)
+                        .trim()
+                        .parse::<u64>()
+                        .unwrap_or(0)
+                })
+                .unwrap_or(0);
+            let mut swaps = String::from_utf8(self.read("/proc/swaps")).unwrap();
+            swaps.push_str(&format!(
+                "{device} partition {} 0 {}\n",
+                size / 1024,
+                args[1]
+            ));
+            self.put("/proc/swaps", swaps.as_bytes());
+            return Ok(ok(json!({})));
+        }
         if program != "/usr/bin/luna-send" {
             panic!("Unexpected system command: {program}");
         }
@@ -282,7 +304,10 @@ impl System for Fixture {
                     .preload_policy
                     .borrow()
                     .iter()
-                    .map(|(id, enabled)| json!({"id": id, "type": "partial", "isEnabled": enabled}))
+                    .map(|(id, enabled)| {
+                        let kind = if id == "youtube.leanback.v4" { "periodic" } else { "oneshot" };
+                        json!({"id": id, "type": "partial", "preloadType": kind, "isEnabled": enabled, "requiredMemory": 100})
+                    })
                     .collect();
                 json!({"returnValue":true,"policy":{"applications":apps}})
             }
@@ -1496,6 +1521,17 @@ fn lg_preloads_of_hidden_apps_go_off_and_only_those_come_back_on() {
     let reply = preload::dispatch(&f, &request.to_string()).unwrap();
     assert_eq!(reply["disabled"], json!([]));
     assert_eq!(reply["enabled"], json!(["com.webos.app.browser"]));
+    // Only periodic entries are left to LG; oneshot ones Luma preloads itself when listed.
+    assert_eq!(reply["periodic"], json!(["youtube.leanback.v4"]));
+    assert_eq!(
+        reply["listed"],
+        json!([
+            "com.webos.app.browser",
+            "com.webos.app.lgchannels",
+            "com.webos.app.livetv",
+            "youtube.leanback.v4"
+        ])
+    );
     assert!(f.preload_policy.borrow()["com.webos.app.browser"]);
     assert!(!f.preload_policy.borrow()["com.webos.app.lgchannels"]);
     // Bad requests and non-root callers change nothing.
@@ -1516,4 +1552,116 @@ fn preload_policy_entries_are_found_however_lg_nests_them() {
     assert_eq!(entries.len(), 2);
     assert!(entries["netflix"]);
     assert!(!entries["amazon"]);
+}
+
+fn zram_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.put("/sys/block/zram0/disksize", b"0\n");
+    f.put(
+        "/sys/block/zram0/comp_algorithm",
+        b"[lzo] lzo-rle lz4 zstd\n",
+    );
+    f.put("/sys/block/zram0/mm_stat", b"0 0 0 0 0 0 0\n");
+    f.put(
+        "/proc/meminfo",
+        b"MemTotal:        1748000 kB\nMemAvailable:     535000 kB\n",
+    );
+    f.put(
+        "/proc/swaps",
+        b"Filename\tType\tSize\tUsed\tPriority\n/dev/f2io0 partition 628732 389120 -2\n",
+    );
+    f.put("/proc/sys/vm/page-cluster", b"3\n");
+    f.put("/proc/sys/vm/watermark_scale_factor", b"10\n");
+    f
+}
+
+#[test]
+fn memory_compression_sets_up_the_unused_zram0_once_and_tunes_reclaim() {
+    let f = zram_fixture();
+    let reply = memory::dispatch(&f, "apply").unwrap();
+    // zstd, 45% of the RAM (768 MB here), a swap above LG's at priority 100.
+    assert_eq!(f.read("/sys/block/zram0/comp_algorithm"), b"zstd");
+    assert_eq!(
+        f.read("/sys/block/zram0/disksize"),
+        (768u64 * 1024 * 1024).to_string().as_bytes()
+    );
+    let calls = f.calls().join("\n");
+    assert!(calls.contains("/sbin/mkswap /dev/zram0"));
+    assert!(calls.contains("/sbin/swapon -p 100 /dev/zram0"));
+    assert_eq!(f.read("/proc/sys/vm/page-cluster"), b"0");
+    assert_eq!(f.read("/proc/sys/vm/watermark_scale_factor"), b"150");
+    assert!(reply["result"].as_str().unwrap().contains("768 MB zstd"));
+    // LG's flash swap is kept, and both show in the status.
+    let swaps = reply["swaps"].as_array().unwrap();
+    assert_eq!(swaps.len(), 2);
+    assert_eq!(swaps[0]["device"], "/dev/f2io0");
+    assert_eq!(swaps[1]["device"], "/dev/zram0");
+    assert_eq!(swaps[1]["priority"], 100);
+    // A second apply (the next boot of a running TV, an update) leaves the device alone.
+    let mkswaps = |f: &Fixture| f.calls().iter().filter(|c| c.contains("mkswap")).count();
+    assert_eq!(mkswaps(&f), 1);
+    let reply = memory::dispatch(&f, "apply").unwrap();
+    assert_eq!(mkswaps(&f), 1);
+    assert!(reply["result"].as_str().unwrap().contains("already in use"));
+}
+
+#[test]
+fn memory_compression_never_touches_a_zram_in_use_and_off_waits_for_the_next_boot() {
+    // A zram device someone else set up is left as it is.
+    let f = zram_fixture();
+    f.put("/sys/block/zram0/disksize", b"536870912\n");
+    f.put(
+        "/sys/block/zram0/mm_stat",
+        b"491782144 192937984 192937984 0 0 0 0\n",
+    );
+    let reply = memory::dispatch(&f, "apply").unwrap();
+    assert!(
+        !f.calls()
+            .iter()
+            .any(|c| c.contains("mkswap") || c.contains("swapon"))
+    );
+    assert!(reply["result"].as_str().unwrap().contains("left alone"));
+    let zram = &reply["zram"][0];
+    assert_eq!(zram["disksize_mb"], 512);
+    assert_eq!(zram["data_mb"], 469);
+    assert_eq!(zram["ram_mb"], 184);
+    assert_eq!(zram["ratio"], 2.5);
+    // Off: only a marker; nothing is swapped off (an unknown command would panic here).
+    let f = zram_fixture();
+    memory::dispatch(&f, "off").unwrap();
+    assert!(system::exists(&f, memory::OFF));
+    let reply = memory::dispatch(&f, "apply").unwrap();
+    assert!(reply["result"].as_str().unwrap().contains("off"));
+    assert!(!f.calls().iter().any(|c| c.contains("mkswap")));
+    assert_eq!(reply["enabled"], false);
+    // On again: applied at once.
+    memory::dispatch(&f, "on").unwrap();
+    assert!(!system::exists(&f, memory::OFF));
+    assert!(f.calls().iter().any(|c| c.contains("swapon")));
+    // Without a zram device nothing happens; non-root callers are refused.
+    let f = Fixture::new();
+    let reply = memory::dispatch(&f, "apply").unwrap();
+    assert!(reply["result"].as_str().unwrap().contains("no zram0"));
+    f.uid.set(501);
+    assert!(memory::dispatch(&f, "on").is_err());
+}
+
+#[test]
+fn memory_compression_sizes_and_algorithms() {
+    assert_eq!(memory::size_bytes(1_748_000) / 1024 / 1024, 768);
+    assert_eq!(memory::algorithm("[lzo] lzo-rle lz4 zstd"), Some("zstd"));
+    assert_eq!(memory::algorithm("lzo [lz4]"), Some("lz4"));
+    assert_eq!(memory::algorithm("deflate"), None);
+}
+
+#[test]
+fn the_cold_boot_apply_also_sets_up_memory_compression() {
+    let f = zram_fixture();
+    f.put("/etc/starfish-release", b"Rockhopper release 10.3.2-6");
+    home::dispatch(&f, "enable", Some(DIR), None).unwrap();
+    assert!(
+        f.calls()
+            .iter()
+            .any(|c| c.contains("/sbin/swapon -p 100 /dev/zram0"))
+    );
 }

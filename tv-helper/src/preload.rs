@@ -13,6 +13,31 @@ use std::collections::BTreeMap;
 const SERVICE: &str = "com.webos.service.preloadmanager";
 const APP_MANAGER: &str = "com.webos.applicationManager";
 
+/// The ids whose entry in a `getPreloadPolicy` reply has `"preloadType": "periodic"`: LG keeps
+/// those warm itself. A "oneshot" entry is preloaded once and not again after it ended.
+pub fn periodic(reply: &Value) -> Vec<String> {
+    fn walk(value: &Value, ids: &mut Vec<String>) {
+        match value {
+            Value::Object(fields) => {
+                if let (Some(id), Some("periodic")) = (
+                    fields.get("id").and_then(Value::as_str),
+                    fields.get("preloadType").and_then(Value::as_str),
+                ) {
+                    ids.push(id.to_owned());
+                }
+                fields.values().for_each(|child| walk(child, ids));
+            }
+            Value::Array(items) => items.iter().for_each(|item| walk(item, ids)),
+            _ => {}
+        }
+    }
+    let mut ids = vec![];
+    walk(reply, &mut ids);
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
 /// Every `{"id": …, "isEnabled": …}` entry in a `getPreloadPolicy` reply, wherever it is nested.
 pub fn policy_entries(reply: &Value) -> BTreeMap<String, bool> {
     fn walk(value: &Value, entries: &mut BTreeMap<String, bool>) {
@@ -71,17 +96,19 @@ fn set(system: &impl System, id: &str, enabled: bool) -> Result<()> {
 /// `{"disable": [ids], "enable": [ids]}`: switches LG's entries for those apps off or on (ids
 /// LG's policy does not list are skipped) and closes an instance LG already preloaded hidden of
 /// an app it switched off. Replies with the ids it switched off (`disabled`) and on (`enabled`),
-/// so Luma only ever switches on again what it switched off itself.
+/// so Luma only ever switches back what it switched itself, every id the policy lists (`listed`)
+/// and the ones LG keeps warm itself (`periodic`), which Luma does not launch a second time.
 pub fn dispatch(system: &impl System, request: &str) -> Result<Value> {
     system::root(system)?;
     let request: Value = serde_json::from_str(request).map_err(|e| e.to_string())?;
     let (disable, enable) = (ids(&request, "disable")?, ids(&request, "enable")?);
-    let entries = policy_entries(&accepted(system::luna(
+    let policy = accepted(system::luna(
         system,
         SERVICE,
         "getPreloadPolicy",
         &json!({}),
-    )?)?);
+    )?)?;
+    let entries = policy_entries(&policy);
     let running = |id: &str| {
         system::luna(system, APP_MANAGER, "running", &json!({}))
             .ok()
@@ -113,5 +140,11 @@ pub fn dispatch(system: &impl System, request: &str) -> Result<Value> {
             enabled.push(id.clone());
         }
     }
-    Ok(json!({"returnValue": true, "disabled": disabled, "enabled": enabled}))
+    Ok(json!({
+        "returnValue": true,
+        "disabled": disabled,
+        "enabled": enabled,
+        "listed": entries.keys().collect::<Vec<_>>(),
+        "periodic": periodic(&policy),
+    }))
 }

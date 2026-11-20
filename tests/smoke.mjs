@@ -140,12 +140,12 @@ try {
   assert.deepEqual(appOptions.focus, { Option: 0 });
   assert.ok(appOptions.ui_text.includes('Move'));
   assert.ok(appOptions.ui_text.includes('Delete app'));
-  const deleteFocused = await scenario('delete-focused', 'home,menu,down,down,down');
+  const deleteFocused = await scenario('delete-focused', 'home,menu,down,down,down,down');
   assert.deepEqual(deleteFocused.focus, { Option: 2 });
-  const deleteConfirm = await scenario('delete-confirm', 'home,menu,down,down,down,enter');
+  const deleteConfirm = await scenario('delete-confirm', 'home,menu,down,down,down,down,enter');
   assert.deepEqual(deleteConfirm.focus, 'CancelDelete');
   assert.ok(deleteConfirm.ui_text.some((value) => value.includes('uninstall “Netflix”')));
-  const deleteCancel = await scenario('delete-cancel', 'home,menu,down,down,down,enter,enter');
+  const deleteCancel = await scenario('delete-cancel', 'home,menu,down,down,down,down,enter,enter');
   assert.deepEqual(deleteCancel.focus, { Option: 2 });
   assert.ok(deleteCancel.apps.includes('netflix'));
   const hidden = await scenario('apps', 'home,menu,down,down,enter');
@@ -376,11 +376,12 @@ try {
   const clockFocus = await scenario('clock-format-focus', `${clockEditor},enter,down`);
   assert.equal(clockFocus.subpage, 'ClockFormat');
   assert.deepEqual(clockFocus.focus, { Choice: 1 });
-  const system = await scenario('system-settings', 'settings,down,down,down,right,down,down');
+  const system = await scenario('system-settings', 'settings,down,down,down,right,down,down,down');
   assert.deepEqual(system.focus, { Setting: 5 });
   assert.ok(system.ui_text.includes('Refresh apps & inputs'));
   assert.ok(!system.ui_text.includes('Luma update'));
   assert.ok(system.ui_text.includes('Quit app'));
+  assert.ok(system.ui_text.includes('Memory compression'));
   // Text has one path (the CPU glyph atlas); the Text rendering choice is gone.
   assert.ok(!system.ui_text.includes('Text rendering'));
   assert.equal(system.render.text_rendering.path, 'cpu glyph atlas');

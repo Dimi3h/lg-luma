@@ -1140,6 +1140,9 @@ fn system_category_owns_refresh_and_quit_and_restores_sidebar_focus() {
     assert_eq!(state.focus, Target::Setting(3));
     assert_eq!(state.activate(), vec![Effect::Reload]);
     state.direction(Direction::Down, &controls(&state));
+    // Memory compression, then Quit.
+    assert_eq!(state.focus, Target::Setting(18));
+    state.direction(Direction::Down, &controls(&state));
     assert_eq!(state.focus, Target::Setting(5));
     assert_eq!(state.activate(), vec![Effect::Quit]);
     state.back();
@@ -1234,7 +1237,8 @@ fn a_notice_does_not_escape_modal_focus_and_closing_restores_the_app() {
     );
     state.focus = Target::Option(1);
     state.direction(Direction::Down, &controls(&state));
-    assert_eq!(state.focus, Target::Option(2));
+    // Preload sits between Hide and Delete.
+    assert_eq!(state.focus, Target::Option(3));
     state.back();
     assert_eq!(state.focus, Target::App("netflix".into()));
 }
@@ -1274,7 +1278,8 @@ fn delete_confirmation_defaults_to_cancel_and_back_restores_side_popup() {
             _ => None,
         })
         .collect();
-    assert_eq!(action_icons.len(), 4);
+    // Move, Open, Hide, Preload, Delete.
+    assert_eq!(action_icons.len(), 5);
     assert!(
         action_icons
             .iter()
@@ -4920,7 +4925,7 @@ fn preloading_picks_the_most_launched_web_apps_then_grid_order_and_never_a_block
     // Without launches: the first three web apps in the grid; native apps never.
     let none = BTreeMap::new();
     assert_eq!(
-        ids(crate::preload::chosen(&order, &none, &[])),
+        ids(crate::preload::chosen(&order, &none, &[], &[])),
         [
             "be.vtmgo.app",
             "be.vrt.vrtmax",
@@ -4937,7 +4942,7 @@ fn preloading_picks_the_most_launched_web_apps_then_grid_order_and_never_a_block
     }
     crate::preload::count_launch(&mut counts, "com.beb.plxnative");
     assert_eq!(
-        ids(crate::preload::chosen(&order, &counts, &[])),
+        ids(crate::preload::chosen(&order, &counts, &[], &[])),
         [
             "be.playmedia.play",
             "com.disney.disneyplus-prod",
@@ -4947,7 +4952,7 @@ fn preloading_picks_the_most_launched_web_apps_then_grid_order_and_never_a_block
     // An app that came forward when preloaded is never chosen again.
     let blocked = vec!["be.playmedia.play".to_string()];
     assert_eq!(
-        ids(crate::preload::chosen(&order, &counts, &blocked)),
+        ids(crate::preload::chosen(&order, &counts, &blocked, &[])),
         [
             "com.disney.disneyplus-prod",
             "be.vtmgo.app",
@@ -4957,7 +4962,7 @@ fn preloading_picks_the_most_launched_web_apps_then_grid_order_and_never_a_block
     // One at a time: the next one not tried yet, and none once all three were tried.
     let mut tried = HashSet::new();
     let mut order_seen = vec![];
-    while let Some(id) = crate::preload::next(&order, &counts, &blocked, &tried) {
+    while let Some(id) = crate::preload::next(&order, &counts, &blocked, &[], &tried, &[]) {
         tried.insert(id.clone());
         order_seen.push(id);
     }
@@ -5008,58 +5013,296 @@ fn preloading_waits_for_enough_available_memory() {
 }
 
 #[test]
-fn lg_preloads_of_hidden_apps_follow_the_hidden_list_and_the_setting() {
-    use crate::preload::lg_policy_change;
-    let hidden = vec![
-        "com.webos.app.lgchannels".to_string(),
-        "com.webos.app.browser".to_string(),
-        "com.webos.app.livetv".to_string(),
-    ];
-    // On: every hidden app goes off (the helper skips the ones LG does not list).
-    assert_eq!(lg_policy_change(true, &hidden, &[]).0.len(), 3);
-    assert!(lg_policy_change(true, &hidden, &[]).1.is_empty());
-    // An app shown again is switched back on, but only one Luma switched off.
-    let shown_again = vec!["com.webos.app.lgchannels".to_string()];
-    let disabled = vec![
-        "com.webos.app.lgchannels".to_string(),
-        "com.webos.app.browser".to_string(),
-    ];
+fn a_hidden_launch_is_watched_for_raising_itself_within_a_bounded_window() {
+    use crate::preload::{HiddenLaunch, Outcome, RAISE_CHECK, RAISE_FIRST_CHECK, RAISE_WINDOW};
+    use std::time::{Duration, Instant};
+    let start = Instant::now();
+    let mut launch = HiddenLaunch::new("com.apple.appletv".into(), start);
+    // Nothing is checked while Luma keeps focus: nothing else can be in front.
+    assert!(!launch.due(start + Duration::from_secs(30), true));
+    assert!(!launch.due(start + Duration::from_secs(30), false));
+    // Luma loses focus 47 s after the launch (Apple TV raised itself on the TV): checked
+    // shortly after, once.
+    let lost = start + Duration::from_secs(47);
+    launch.focus_lost(lost);
+    assert!(!launch.due(lost, false));
+    assert!(launch.due(lost + RAISE_FIRST_CHECK, false));
+    assert!(!launch.due(lost + RAISE_FIRST_CHECK, false));
+    assert_eq!(launch.after(lost + RAISE_FIRST_CHECK), 48);
+    // Something else was in front: checked again while Luma stays out of focus...
+    let checked = lost + RAISE_FIRST_CHECK;
+    launch.checked(checked, false);
+    assert!(!launch.due(checked + RAISE_CHECK - Duration::from_millis(1), false));
+    assert!(launch.due(checked + RAISE_CHECK, false));
+    // ...and no longer once Luma has focus again.
+    launch.checked(checked, false);
+    assert!(!launch.due(checked + RAISE_CHECK, true));
+    assert!(!launch.due(checked + RAISE_CHECK * 2, false));
+    // The window is bounded: the remote's own app buttons do not pass through Luma, so a
+    // later press on a preloaded app must not be taken for the app raising itself.
+    assert_eq!(RAISE_WINDOW, Duration::from_secs(90));
+    assert!(!launch.expired(start + RAISE_WINDOW - Duration::from_millis(1)));
+    assert!(launch.expired(start + RAISE_WINDOW));
+    launch.checked(start + RAISE_WINDOW, false);
+    assert!(!launch.due(start + RAISE_WINDOW + RAISE_CHECK, false));
     assert_eq!(
-        lg_policy_change(true, &shown_again, &disabled),
-        (
-            vec!["com.webos.app.lgchannels".to_string()],
-            vec!["com.webos.app.browser".to_string()]
-        )
+        Outcome::CameForward { after: 48 }.describe(),
+        "came to the front 48 s after the hidden launch: closed, never preloaded again"
     );
-    // Off: nothing goes off, everything Luma switched off comes back on.
-    assert_eq!(
-        lg_policy_change(false, &hidden, &disabled),
-        (vec![], {
-            let mut back = disabled.clone();
-            back.sort();
-            back
-        })
-    );
-    assert_eq!(lg_policy_change(false, &hidden, &[]), (vec![], vec![]));
 }
 
 #[test]
-fn the_preload_setting_is_on_by_default_and_a_general_row_switches_it() {
+fn preloading_passes_over_running_apps_and_keeps_home_off_the_users_app() {
+    use crate::preload::{HiddenLaunch, Outcome};
+    use std::time::Instant;
+    // A running app is passed over at once; only a real launch (or a wait) keeps the spacing.
+    assert!(Outcome::AlreadyRunning.passes_over());
+    assert!(
+        !Outcome::Preloaded {
+            memory: String::new()
+        }
+        .passes_over()
+    );
+    assert!(!Outcome::CameForward { after: 3 }.passes_over());
+    assert!(Outcome::AlreadyRunning.retry_after().is_none());
+    // Home comes back after closing a raised app only while the user launched nothing from
+    // Luma since; the app the user opened from Luma ends its own watch.
+    let launch = HiddenLaunch::new("com.apple.appletv".into(), Instant::now());
+    assert!(launch.home_back);
+    assert_eq!(launch.clone().user_launched("com.apple.appletv"), None);
+    let launch = launch.user_launched("netflix").expect("still watched");
+    assert!(!launch.home_back);
+    assert_eq!(launch.id, "com.apple.appletv");
+}
+
+#[test]
+fn lg_preloads_follow_the_hidden_apps_the_users_list_and_the_setting() {
+    use crate::preload::{lg_policy_change, record_policy_change};
+    let ids = |list: &[&str]| list.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+    let hidden = ids(&["com.webos.app.browser", "com.webos.app.lgchannels"]);
+    let list = ids(&["be.vtmgo.app", "netflix", "amazon"]);
+    // On: hidden apps go off, listed apps go on (the helper skips ids LG does not list).
+    let (off, on) = lg_policy_change(true, &hidden, &list, &[], &[]);
+    assert_eq!(off, hidden);
+    assert_eq!(on, ids(&["amazon", "be.vtmgo.app", "netflix"]));
+    // Hidden wins over the list.
+    let (off, on) = lg_policy_change(true, &ids(&["netflix"]), &ids(&["netflix"]), &[], &[]);
+    assert_eq!((off, on), (ids(&["netflix"]), vec![]));
+    // The bookkeeping: what Luma switched is remembered, and switching it back forgets it.
+    let (mut disabled, mut enabled) = (vec![], vec![]);
+    record_policy_change(
+        &ids(&["com.webos.app.browser"]),
+        &ids(&["netflix"]),
+        &mut disabled,
+        &mut enabled,
+    );
+    assert_eq!(
+        (disabled.clone(), enabled.clone()),
+        (ids(&["com.webos.app.browser"]), ids(&["netflix"]))
+    );
+    // Netflix leaves the list and the browser is shown again: both go back as LG had them.
+    let (off, on) = lg_policy_change(true, &[], &[], &disabled, &enabled);
+    assert_eq!(
+        (off.clone(), on.clone()),
+        (ids(&["netflix"]), ids(&["com.webos.app.browser"]))
+    );
+    record_policy_change(&off, &on, &mut disabled, &mut enabled);
+    assert!(disabled.is_empty() && enabled.is_empty());
+    // Off: everything Luma switched goes back; nothing else is touched.
+    let (off, on) = lg_policy_change(
+        false,
+        &hidden,
+        &list,
+        &ids(&["com.webos.app.lgchannels"]),
+        &ids(&["amazon"]),
+    );
+    assert_eq!(
+        (off, on),
+        (ids(&["amazon"]), ids(&["com.webos.app.lgchannels"]))
+    );
+    assert_eq!(
+        lg_policy_change(false, &hidden, &list, &[], &[]),
+        (vec![], vec![])
+    );
+}
+
+#[test]
+fn the_users_preload_list_takes_every_listed_app_in_grid_order_native_included() {
+    use std::collections::{BTreeMap, HashSet};
+    let apps = [
+        preload_app("netflix", false),
+        preload_app("be.vtmgo.app", true),
+        preload_app("youtube.leanback.v4", false),
+        preload_app("com.apple.appletv", false),
+        preload_app("be.playmedia.play", true),
+        preload_app("amazon", false),
+        preload_app("com.beb.plxnative", false),
+        preload_app("be.vrt.vrtmax", true),
+        preload_app("com.disney.disneyplus-prod", true),
+    ];
+    let order: Vec<&App> = apps.iter().collect();
+    let list: Vec<String> = [
+        "be.vtmgo.app",
+        "be.playmedia.play",
+        "be.vrt.vrtmax",
+        "com.disney.disneyplus-prod",
+        "amazon",
+        "com.beb.plxnative",
+        "netflix",
+        "com.apple.appletv",
+    ]
+    .map(String::from)
+    .to_vec();
+    let counts = BTreeMap::from([("youtube.leanback.v4".to_string(), 50)]);
+    // All eight, in the grid's order (not the list's, not launch counts), native included.
+    let chosen: Vec<&str> = crate::preload::chosen(&order, &counts, &[], &list)
+        .iter()
+        .map(|app| app.id.as_str())
+        .collect();
+    assert_eq!(
+        chosen,
+        [
+            "netflix",
+            "be.vtmgo.app",
+            "com.apple.appletv",
+            "be.playmedia.play",
+            "amazon",
+            "com.beb.plxnative",
+            "be.vrt.vrtmax",
+            "com.disney.disneyplus-prod"
+        ]
+    );
+    // No fixed number with a list of one's own; memory and swap decide.
+    assert_eq!(crate::preload::running_limit(&list), None);
+    assert_eq!(crate::preload::running_limit(&[]), Some(3));
+    // Apps LG's policy preloads itself are not launched a second time; blocked ones never.
+    let lg = vec!["netflix".to_string(), "amazon".to_string()];
+    let blocked = vec!["com.apple.appletv".to_string()];
+    let mut tried = HashSet::new();
+    let mut sequence = vec![];
+    while let Some(id) = crate::preload::next(&order, &counts, &blocked, &list, &tried, &lg) {
+        tried.insert(id.clone());
+        sequence.push(id);
+    }
+    assert_eq!(
+        sequence,
+        [
+            "be.vtmgo.app",
+            "be.playmedia.play",
+            "com.beb.plxnative",
+            "be.vrt.vrtmax",
+            "com.disney.disneyplus-prod"
+        ]
+    );
+}
+
+#[test]
+fn preloading_is_chosen_per_app_in_its_menu_and_in_settings() {
     let mut state = ready();
-    assert!(state.preferences.preload_apps);
+    state.open(Page::Home);
+    let netflix = Target::App("netflix".into());
+    state.focus = netflix.clone();
+    // The app's menu: Move, Open, Hide, Preload, Delete.
+    state.options();
+    let menu: Vec<Target> = controls(&state)
+        .into_iter()
+        .map(|control| control.target)
+        .filter(|target| matches!(target, Target::Option(_) | Target::OpenApp))
+        .collect();
+    assert_eq!(
+        menu,
+        [
+            Target::Option(0),
+            Target::OpenApp,
+            Target::Option(1),
+            Target::Option(3),
+            Target::Option(2)
+        ]
+    );
+    assert!(scene(&state).draw.iter().any(|d| matches!(d,
+        crate::renderer::Draw::Text(t, ..) if t == "Preload")));
+    state.focus = Target::Option(3);
+    assert_eq!(state.activate(), vec![Effect::Save]);
+    assert_eq!(state.preferences.preload_list, ["netflix"]);
+    assert_eq!(state.focus, netflix, "the menu closes on its card");
+    state.options();
+    assert!(scene(&state).draw.iter().any(|d| matches!(d,
+        crate::renderer::Draw::Text(t, ..) if t == "Stop preloading")));
+    state.focus = Target::Option(3);
+    state.activate();
+    assert!(state.preferences.preload_list.is_empty());
+    // Settings › General › Preload apps: the setting, then the apps in grid order.
     state.open(Page::Settings);
     state.section = 0;
     state.focus = Target::Setting(17);
+    assert!(state.activate().is_empty());
+    assert_eq!(state.subpage, Some(crate::state::Subpage::Preload));
+    let apps: Vec<String> = state.apps().iter().map(|app| app.id.clone()).collect();
+    let texts = |state: &State| {
+        scene(state)
+            .draw
+            .iter()
+            .filter_map(|d| match d {
+                crate::renderer::Draw::Text(t, ..) => Some(t.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    // Without a list the automatic choice (the first web apps here) shows.
+    for app in state.inventory.apps.iter_mut().take(4) {
+        app.web = true;
+    }
+    assert!(texts(&state).iter().any(|t| t == "Automatic"));
+    state.focus = Target::Choice(2);
     assert_eq!(state.activate(), vec![Effect::Save]);
+    assert_eq!(state.preferences.preload_list, [apps[1].clone()]);
+    assert!(!texts(&state).iter().any(|t| t == "Automatic"));
+    // A blocked app shows that it cannot start hidden; OK tries it again.
+    state.preferences.preload_blocked.push(apps[2].clone());
+    assert!(texts(&state).iter().any(|t| t == "Can't start hidden"));
+    state.focus = Target::Choice(3);
+    state.activate();
+    assert!(state.preferences.preload_blocked.is_empty());
+    assert!(state.preferences.preload_list.contains(&apps[2]));
+    // The first row switches preloading off and on.
+    state.focus = Target::Choice(0);
+    state.activate();
     assert!(!state.preferences.preload_apps);
-    assert!(scene(&state).draw.iter().any(|d| matches!(d,
-        crate::renderer::Draw::Text(t, ..) if t == "Preload apps")));
-    // Stored; older files without the keys load with preloading on and nothing counted.
+    // Left returns to the General row.
+    let all = controls(&state);
+    state.direction(Direction::Left, &all);
+    assert_eq!(state.focus, Target::Setting(17));
+    // Saved as preload_list, an array of app ids; files without it load with an empty list.
     let saved = serde_json::to_value(&state.preferences).unwrap();
-    assert_eq!(saved["preload_apps"], false);
+    assert_eq!(saved["preload_list"], json!([apps[1], apps[2]]));
+    let loaded: Preferences =
+        serde_json::from_value(json!({"preload_list": ["be.vtmgo.app", "netflix"]})).unwrap();
+    assert_eq!(loaded.preload_list, ["be.vtmgo.app", "netflix"]);
+}
+
+#[test]
+fn memory_compression_is_a_system_setting_on_by_default() {
+    let mut state = ready();
+    assert!(state.preferences.memory_compression);
+    state.open(Page::Settings);
+    state.section = crate::state::SYSTEM_SECTION;
+    assert!(scene(&state).draw.iter().any(|d| matches!(d,
+        crate::renderer::Draw::Text(t, ..) if t == "Memory compression")));
+    state.focus = Target::Setting(18);
+    assert_eq!(state.activate(), vec![Effect::Save]);
+    assert!(!state.preferences.memory_compression);
+    let loaded: Preferences = serde_json::from_value(json!({})).unwrap();
+    assert!(loaded.memory_compression);
+}
+
+#[test]
+fn the_preload_setting_is_on_by_default() {
+    let state = ready();
+    assert!(state.preferences.preload_apps);
     let loaded: Preferences = serde_json::from_value(json!({})).unwrap();
     assert!(loaded.preload_apps);
     assert!(loaded.launch_counts.is_empty() && loaded.preload_blocked.is_empty());
+    assert!(loaded.preload_list.is_empty() && loaded.preload_lg_enabled.is_empty());
 }
 
 #[test]
@@ -5133,4 +5376,161 @@ fn preloading_stops_when_swap_is_mostly_used_or_enough_apps_run_already() {
             .describe()
             .contains("4 of your apps")
     );
+}
+
+#[test]
+fn preloading_decides_on_lg_memory_state_with_available_memory_only_as_fallback() {
+    use crate::preload::{LgMemory, Outcome, medium_enter, memory_check, pressure_some_avg10};
+    // The TV's replies.
+    let state = LgMemory::from_reply(
+        &json!({"returnValue":true,"currentLevel":"normal","usable":342,"prevLevel":"normal"}),
+    )
+    .unwrap();
+    assert_eq!(
+        state,
+        LgMemory {
+            level: "normal".into(),
+            usable: 342
+        }
+    );
+    let policy = json!({"returnValue": true, "memBoundary": {"medium": {"enter": 250, "leave": 290},
+        "low": {"enter": 200, "leave": 220}, "critical": {"enter": 45, "leave": 66}},
+        "feature": {"appHibernation": true}});
+    assert_eq!(medium_enter(&policy), Some(250));
+    assert_eq!(medium_enter(&json!({"policy": policy})), Some(250));
+    let pressure = "some avg10=3.25 avg60=1.10 avg300=0.40 total=123\nfull avg10=0.50 avg60=0.10 avg300=0.00 total=12\n";
+    assert_eq!(pressure_some_avg10(pressure), Some(3.25));
+    // MemAvailable is low (243 MB with zram full) but LG counts 342 usable: 350 needed.
+    let meminfo = "MemAvailable: 248832 kB\nSwapTotal: 1415164 kB\nSwapFree: 700000 kB\n";
+    let lg = |level: &str, usable: u64| LgMemory {
+        level: level.into(),
+        usable,
+    };
+    assert_eq!(
+        memory_check(Some(&lg("normal", 342)), Some(250), Some(meminfo), Some(2.)),
+        Err(Outcome::LgLow {
+            usable: 342,
+            needed: 350
+        })
+    );
+    let allowed =
+        memory_check(Some(&lg("normal", 380)), Some(250), Some(meminfo), Some(2.)).unwrap();
+    assert!(allowed.contains("380 MB usable of 350 needed"), "{allowed}");
+    // Not at "normal" (an app starting): wait, without pausing the list.
+    let medium =
+        memory_check(Some(&lg("medium", 282)), Some(250), Some(meminfo), None).unwrap_err();
+    assert_eq!(
+        medium,
+        Outcome::LgLevel {
+            level: "medium".into(),
+            usable: 282
+        }
+    );
+    assert!(medium.retry_after().is_some() && !medium.pauses());
+    // Pressure above 10% waits too.
+    let busy = memory_check(
+        Some(&lg("normal", 400)),
+        Some(250),
+        Some(meminfo),
+        Some(25.),
+    )
+    .unwrap_err();
+    assert_eq!(busy, Outcome::Pressure(25.));
+    assert!(busy.retry_after().is_some() && !busy.pauses());
+    // Swap a third free stays a rule.
+    let swap_full = "MemAvailable: 600000 kB\nSwapTotal: 1415164 kB\nSwapFree: 300000 kB\n";
+    assert!(matches!(
+        memory_check(Some(&lg("normal", 500)), Some(250), Some(swap_full), None),
+        Err(Outcome::LowSwap { .. })
+    ));
+    // Without an answer from LG's memory manager, MemAvailable (350 MB) decides.
+    assert_eq!(
+        memory_check(None, None, Some(meminfo), None),
+        Err(Outcome::LowMemory(243))
+    );
+    let fallback = "MemAvailable: 512000 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n";
+    assert!(
+        memory_check(None, Some(250), Some(fallback), None)
+            .unwrap()
+            .contains("500 MB available")
+    );
+    // A shortfall against LG's usable memory was a dip right after other apps started on the
+    // TV (331 MB, then 408 MB): retried every minute, never a pause.
+    let low = Outcome::LgLow {
+        usable: 331,
+        needed: 350,
+    };
+    assert!(!low.pauses());
+    assert_eq!(low.retry_after(), Some(crate::preload::LG_LOW_RETRY));
+    assert_eq!(
+        crate::preload::LG_LOW_RETRY,
+        std::time::Duration::from_secs(60)
+    );
+    assert_eq!(
+        Outcome::Pressure(12.).retry_after(),
+        Some(crate::preload::SPACING)
+    );
+    assert_eq!(Outcome::LowMemory(300).retry_after(), None);
+    assert!(Outcome::LowMemory(300).pauses());
+    assert!(
+        Outcome::LgLow {
+            usable: 342,
+            needed: 350
+        }
+        .describe()
+        .contains("342 MB usable, 350 MB needed")
+    );
+}
+
+#[test]
+fn memory_evidence_counts_level_entries_and_listed_apps_the_tv_ended() {
+    use crate::preload::{Evidence, LgMemory};
+    let lg = |level: &str, usable: u64| LgMemory {
+        level: level.into(),
+        usable,
+    };
+    let ids = |list: &[&str]| list.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+    let listed = ids(&["be.vtmgo.app", "netflix", "com.disney.disneyplus-prod"]);
+    let mut evidence = Evidence::default();
+    evidence.sample(
+        Some(&lg("normal", 342)),
+        Some(250),
+        Some(ids(&["be.vtmgo.app", "netflix", "youtube.leanback.v4"])),
+        &listed,
+    );
+    evidence.sample(
+        Some(&lg("medium", 223)),
+        None,
+        Some(ids(&["be.vtmgo.app", "netflix", "youtube.leanback.v4"])),
+        &listed,
+    );
+    evidence.sample(
+        Some(&lg("medium", 250)),
+        None,
+        Some(ids(&["be.vtmgo.app", "netflix"])),
+        &listed,
+    );
+    // The TV ended VTM GO; YouTube (not listed) is not counted; Luma closed Netflix itself.
+    evidence.closed_by_luma.insert("netflix".into());
+    evidence.sample(Some(&lg("normal", 290)), None, Some(vec![]), &listed);
+    evidence.sample(Some(&lg("low", 199)), None, None, &listed);
+    evidence.sample(Some(&lg("critical", 40)), None, None, &listed);
+    assert_eq!(evidence.samples, 6);
+    assert_eq!(
+        (
+            evidence.entered_medium,
+            evidence.entered_low,
+            evidence.entered_critical
+        ),
+        (1, 1, 1)
+    );
+    assert_eq!(evidence.level.as_deref(), Some("critical"));
+    assert_eq!(evidence.usable_mb, Some(40));
+    assert_eq!(evidence.medium_enter_mb, Some(250));
+    assert_eq!(evidence.listed_apps_gone.len(), 1);
+    assert_eq!(evidence.listed_apps_gone["be.vtmgo.app"], 1);
+    let written = serde_json::to_value(&evidence).unwrap();
+    assert_eq!(written["entered_medium"], 1);
+    assert_eq!(written["listed_apps_gone"]["be.vtmgo.app"], 1);
+    assert!(written.get("closed_by_luma").is_none());
 }

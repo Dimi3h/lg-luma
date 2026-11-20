@@ -2415,6 +2415,7 @@ fn settings_path(state: &State) -> Vec<&str> {
         Some(Subpage::Clock) => vec![language.t("clock")],
         Some(Subpage::Language) => vec![language.t("language")],
         Some(Subpage::HiddenApps) => vec![language.t("hiddenApps")],
+        Some(Subpage::Preload) => vec![language.t("preloadApps")],
         Some(Subpage::Screensaver) => vec![language.t("screensaver")],
         Some(Subpage::Appearance) => vec![language.t("appearance")],
         None => vec![],
@@ -2591,6 +2592,76 @@ fn hidden_apps_settings(out: &mut Scene, state: &State, assets: &Assets) {
     }
 }
 
+/// Settings › General › Preload apps: the setting, then every app of the grid in its order with
+/// whether it is preloaded: on (in the user's list), automatic (chosen while the list is empty),
+/// off, or that it cannot start hidden (it came forward once; OK tries again).
+fn preload_settings(out: &mut Scene, state: &State, assets: &Assets) {
+    let language = state.preferences.language;
+    let s = state.scroll;
+    let preferences = &state.preferences;
+    let apps = state.apps();
+    let automatic: Vec<String> = if preferences.preload_list.is_empty() {
+        crate::preload::chosen(
+            &apps,
+            &preferences.launch_counts,
+            &preferences.preload_blocked,
+            &[],
+        )
+        .into_iter()
+        .map(|app| app.id.clone())
+        .collect()
+    } else {
+        vec![]
+    };
+    let rect =
+        |index: usize| settings_rect(SETTINGS_TOP + index as f32 * (ROW_H + ROW_GAP) - s, ROW_H);
+    row(
+        out,
+        state,
+        assets,
+        Row {
+            target: Target::Choice(0),
+            rect: rect(0),
+            title: language.t("preloadApps"),
+            icon: Some("sparkles"),
+            value: Some(if preferences.preload_apps {
+                language.t("stateOn")
+            } else {
+                language.t("stateOff")
+            }),
+            description: None,
+            selected: false,
+            chevron: false,
+        },
+    );
+    for (index, app) in apps.iter().enumerate() {
+        let value = if preferences.preload_blocked.contains(&app.id) {
+            language.t("preloadBlocked")
+        } else if preferences.preload_list.contains(&app.id) {
+            language.t("stateOn")
+        } else if automatic.contains(&app.id) {
+            language.t("preloadAutomatic")
+        } else {
+            language.t("stateOff")
+        };
+        row(
+            out,
+            state,
+            assets,
+            Row {
+                target: Target::Choice(index + 1),
+                rect: rect(index + 1),
+                title: &app.title,
+                icon: None,
+                value: Some(value),
+                description: None,
+                selected: false,
+                chevron: false,
+            },
+        );
+    }
+}
+
 fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
     let language = state.preferences.language;
     let s = state.scroll;
@@ -2605,9 +2676,11 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                 | Subpage::Date
                 | Subpage::Clock
                 | Subpage::HiddenApps
+                | Subpage::Preload
         ) {
             match subpage {
                 Subpage::HiddenApps => hidden_apps_settings(out, state, assets),
+                Subpage::Preload => preload_settings(out, state, assets),
                 Subpage::WeatherLocation => location_settings(out, state, assets),
                 Subpage::Weather => weather_settings(out, state, assets),
                 Subpage::Shortcuts => shortcut_settings(out, state, assets),
@@ -2686,7 +2759,8 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
             | Subpage::Greeting
             | Subpage::Date
             | Subpage::Clock
-            | Subpage::HiddenApps => {
+            | Subpage::HiddenApps
+            | Subpage::Preload => {
                 unreachable!()
             }
             Subpage::Language => Language::ALL
@@ -2786,7 +2860,7 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                     } else {
                         language.t("stateOff")
                     }),
-                    false,
+                    true,
                 ),
             ]
             .into_iter()
@@ -2937,6 +3011,17 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                     }),
                     "refresh",
                     None,
+                    false,
+                ),
+                (
+                    18,
+                    language.t("memoryCompression"),
+                    "gear",
+                    Some(if state.preferences.memory_compression {
+                        language.t("stateOn")
+                    } else {
+                        language.t("stateOff")
+                    }),
                     false,
                 ),
                 (5, language.t("quitApp"), "power", None, false),
@@ -3559,10 +3644,20 @@ fn options(out: &mut Scene, state: &State, assets: &Assets, id: &str, anchor: Op
                 Target::Option(1),
                 language.t(if hidden { "showApp" } else { "hideApp" }),
             ),
+            (
+                Target::Option(3),
+                language.t(
+                    if state.preferences.preload_list.iter().any(|item| item == id) {
+                        "preloadStop"
+                    } else {
+                        "preloadStart"
+                    },
+                ),
+            ),
             (Target::Option(2), language.t("deleteApp")),
         ]
         .into_iter()
-        .take(if deletable { 4 } else { 3 })
+        .take(if deletable { 5 } else { 4 })
         .collect()
     };
     let item_height = 76.;

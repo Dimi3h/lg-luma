@@ -334,6 +334,7 @@ fn effects(
                 if !state.launching {
                     if platform.webos {
                         state.launching = true;
+                        state.launched_by_user = Some(id.clone());
                         state.notify(state.preferences.language.t("opening"));
                         // The launch counts choose what to preload (Settings › Preload apps).
                         preload::count_launch(&mut state.preferences.launch_counts, &id);
@@ -368,6 +369,9 @@ fn effects(
                 generation,
                 command,
             } => {
+                if let recents::Command::Launch(id) = &command {
+                    state.launched_by_user = Some(id.clone());
+                }
                 platform.send(Request::Recent {
                     generation,
                     command,
@@ -915,11 +919,24 @@ fn run() -> Result<(), String> {
     // Set by a skip for memory, swap or enough running apps: no more preloads until Luma
     // comes back to the front.
     let mut preload_paused = false;
-    let mut preload_last: Option<Instant> = None;
+    // The earliest next preload: the spacing after a launch, or a wait's retry.
+    let mut preload_next: Option<Instant> = None;
     let mut preload_tried: std::collections::HashSet<String> = Default::default();
     let mut preload_log: std::collections::VecDeque<preload::Decision> = Default::default();
     let mut policy_sent: Option<(Vec<String>, Vec<String>)> = None;
     let mut policy_busy = false;
+    // The apps LG keeps preloaded itself (its periodic entries); known after the first policy
+    // reply, and nothing is preloaded before that.
+    let mut lg_listed: Option<Vec<String>> = None;
+    // Memory compression is only sent to the helper when the setting changes; cold boots apply
+    // it through the Home takeover's boot hook.
+    let mut memory_compression_sent: Option<bool> = None;
+    // LG's memory state and the listed apps' fate, polled for the diagnostics (preload.rs).
+    let mut evidence = preload::Evidence::default();
+    let mut watch_last: Option<Instant> = None;
+    // The last hidden launch, watched for raising itself for `preload::RAISE_WINDOW`; no other
+    // preload starts meanwhile.
+    let mut hidden_launch: Option<preload::HiddenLaunch> = None;
     let update_quit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     frame_stats.set_foreground(stats_written, true);
     let mut presented = 0usize;
@@ -1281,6 +1298,10 @@ fn run() -> Result<(), String> {
                         && generation == state.recents.generation
                         && result.is_ok()
                         && matches!(command, recents::Command::Launch(_));
+                    // Closed from Luma's Recents: not counted as an app the TV ended.
+                    if let (recents::Command::Close(id), Ok(_)) = (&command, &result) {
+                        evidence.closed_by_luma.insert(id.clone());
+                    }
                     let pending = state.recent_response(generation, command, result);
                     if preview {
                         state.notify(state.preferences.language.t("recentDesktop"));
@@ -1447,6 +1468,9 @@ fn run() -> Result<(), String> {
                         tile_editor_service.set_active(false, &[]);
                         visible = false;
                         focused = false;
+                        if let Some(launch) = &mut hidden_launch {
+                            launch.focus_lost(Instant::now());
+                        }
                         update_check_now = true;
                         press = None;
                         back_button.cancel();
@@ -1467,6 +1491,9 @@ fn run() -> Result<(), String> {
                             tile_editor_service.set_active(false, &[]);
                         }
                         focused = false;
+                        if let Some(launch) = &mut hidden_launch {
+                            launch.focus_lost(Instant::now());
+                        }
                         update_check_now = true;
                         press = None;
                         back_button.cancel();
@@ -2121,46 +2148,115 @@ fn run() -> Result<(), String> {
         }
         if let Some(service) = &preload_service {
             let mut record = |id: &str, result: String| {
-                eprintln!("Luma preload: {id}: {result}");
+                let at = OffsetDateTime::now_utc()
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_default();
+                eprintln!("Luma preload: {at} {id}: {result}");
                 preload_log.push_back(preload::Decision {
-                    at: OffsetDateTime::now_utc()
-                        .format(&time::format_description::well_known::Rfc3339)
-                        .unwrap_or_default(),
+                    at,
                     id: id.to_owned(),
                     result,
                 });
                 while preload_log.len() > preload::DECISIONS {
                     preload_log.pop_front();
                 }
-                diagnostics_writer.preload(serde_json::to_value(&preload_log).unwrap_or_default());
+                diagnostics_writer.section(
+                    "preload",
+                    serde_json::to_value(&preload_log).unwrap_or_default(),
+                );
+            };
+            let own = if options.webos_home {
+                platform::home_id()
+            } else {
+                platform::APP_ID
+            };
+            // An app that raised itself after a hidden launch: closed (by the service), never
+            // preloaded again.
+            let block = |state: &mut State, id: &str| {
+                if !state.preferences.preload_blocked.iter().any(|b| b == id) {
+                    state.preferences.preload_blocked.push(id.to_owned());
+                    if let Err(error) = storage::save(&preferences_path, &state.preferences) {
+                        eprintln!("{error}");
+                    }
+                }
             };
             while let Ok(reply) = service.receiver.try_recv() {
                 match reply {
                     preload::Reply::Preloaded { id, outcome } => {
                         preload_busy = false;
                         preload_paused |= outcome.pauses();
-                        if outcome == preload::Outcome::CameForward
-                            && !state.preferences.preload_blocked.contains(&id)
+                        // A passing condition: the same app is tried again later.
+                        if let Some(retry) = outcome.retry_after() {
+                            preload_tried.remove(&id);
+                            preload_next = Some(Instant::now() + retry);
+                        }
+                        // Nothing was launched: the next app is tried at once.
+                        if outcome.passes_over() {
+                            preload_next = None;
+                        }
+                        // Only an app actually started hidden stays watched.
+                        if !matches!(outcome, preload::Outcome::Preloaded { .. })
+                            && hidden_launch.as_ref().is_some_and(|launch| launch.id == id)
                         {
-                            state.preferences.preload_blocked.push(id.clone());
-                            if let Err(error) = storage::save(&preferences_path, &state.preferences)
-                            {
-                                eprintln!("{error}");
-                            }
+                            hidden_launch = None;
+                        }
+                        if matches!(outcome, preload::Outcome::CameForward { .. }) {
+                            evidence.closed_by_luma.insert(id.clone());
+                            block(&mut state, &id);
                         }
                         record(&id, outcome.describe());
                     }
+                    preload::Reply::Checked { id, after, raised } => {
+                        if raised {
+                            evidence.closed_by_luma.insert(id.clone());
+                            block(&mut state, &id);
+                            if hidden_launch.as_ref().is_some_and(|launch| launch.id == id) {
+                                hidden_launch = None;
+                            }
+                            record(&id, preload::Outcome::CameForward { after }.describe());
+                        } else if let Some(launch) = &mut hidden_launch
+                            && launch.id == id
+                        {
+                            launch.checked(Instant::now(), focused);
+                        }
+                    }
+                    preload::Reply::Watch {
+                        lg,
+                        medium_enter,
+                        running,
+                    } => {
+                        evidence.sample(
+                            lg.as_ref(),
+                            medium_enter,
+                            running,
+                            &state.preferences.preload_list,
+                        );
+                        diagnostics_writer.section(
+                            "lg_memory",
+                            serde_json::to_value(&evidence).unwrap_or_default(),
+                        );
+                    }
+                    preload::Reply::MemoryCompression(result) => match result {
+                        Ok(done) => record("memory compression", done),
+                        Err(error) => record("memory compression", format!("failed: {error}")),
+                    },
                     preload::Reply::Policy(result) => {
                         policy_busy = false;
                         match result {
-                            Ok((off, on)) => {
-                                let lg = &mut state.preferences.preload_lg_disabled;
-                                lg.retain(|id| !on.contains(id));
-                                for id in &off {
-                                    if !lg.contains(id) {
-                                        lg.push(id.clone());
-                                    }
-                                }
+                            Ok(preload::PolicyChange {
+                                off, on, periodic, ..
+                            }) => {
+                                // LG keeps its periodic entries warm; a oneshot entry (Prime
+                                // Video, say) is not started again once it ended, so Luma
+                                // preloads those itself when listed.
+                                lg_listed = Some(periodic);
+                                let preferences = &mut state.preferences;
+                                preload::record_policy_change(
+                                    &off,
+                                    &on,
+                                    &mut preferences.preload_lg_disabled,
+                                    &mut preferences.preload_lg_enabled,
+                                );
                                 if !off.is_empty() || !on.is_empty() {
                                     if let Err(error) =
                                         storage::save(&preferences_path, &state.preferences)
@@ -2173,22 +2269,69 @@ fn run() -> Result<(), String> {
                                     );
                                 }
                             }
-                            Err(error) => record("LG preload policy", format!("failed: {error}")),
+                            Err(error) => {
+                                // Without the helper Luma cannot tell; it preloads all itself.
+                                lg_listed.get_or_insert_with(Vec::new);
+                                record("LG preload policy", format!("failed: {error}"))
+                            }
                         }
                     }
                 }
             }
-            // LG's own preloads of apps hidden in Luma: off; back on when shown again or with
-            // the setting off. Sent again after every start, as LG may restore them at boot.
+            // The watch after a hidden launch: an app the user opened from Luma is theirs; one
+            // in front while Luma is out of focus inside the window raised itself.
+            if let Some(id) = state.launched_by_user.take() {
+                hidden_launch = hidden_launch
+                    .take()
+                    .and_then(|launch| launch.user_launched(&id));
+            }
+            if !preload_busy && let Some(launch) = &mut hidden_launch {
+                let now = Instant::now();
+                if launch.expired(now) {
+                    record(
+                        &launch.id,
+                        format!(
+                            "stayed hidden for {} s; no longer watched",
+                            preload::RAISE_WINDOW.as_secs()
+                        ),
+                    );
+                    hidden_launch = None;
+                } else if launch.due(now, focused) {
+                    service.send(preload::Job::Check {
+                        id: launch.id.clone(),
+                        // Home comes back only if Luma was in front at the launch and nothing
+                        // was launched from it since: never over the user's own app.
+                        own: launch.home_back.then_some(own),
+                        after: launch.after(now),
+                    });
+                }
+            }
+            if watch_last.is_none_or(|last| last.elapsed() >= preload::WATCH) {
+                watch_last = Some(Instant::now());
+                service.send(preload::Job::Watch);
+            }
+            let compression = state.preferences.memory_compression;
+            match memory_compression_sent {
+                None => memory_compression_sent = Some(compression),
+                Some(sent) if sent != compression => {
+                    memory_compression_sent = Some(compression);
+                    service.send(preload::Job::MemoryCompression(compression));
+                }
+                Some(_) => {}
+            }
+            // LG's own preloads: off for apps hidden in Luma, on for apps in the user's list
+            // (LG then preloads those itself), and back as LG had them when no longer wanted.
+            // Sent once after every start (LG may restore its policy at boot, and the reply
+            // says which apps LG preloads), then again on every change.
             if !policy_busy && !state.inventory.apps.is_empty() {
                 let wanted = preload::lg_policy_change(
                     state.preferences.preload_apps,
                     &state.preferences.hidden,
+                    &state.preferences.preload_list,
                     &state.preferences.preload_lg_disabled,
+                    &state.preferences.preload_lg_enabled,
                 );
-                if policy_sent.as_ref() != Some(&wanted)
-                    && !(wanted.0.is_empty() && wanted.1.is_empty())
-                {
+                if policy_sent.as_ref() != Some(&wanted) {
                     policy_busy = true;
                     service.send(preload::Job::Policy {
                         disable: wanted.0.clone(),
@@ -2198,34 +2341,41 @@ fn run() -> Result<(), String> {
                 policy_sent = Some(wanted);
             }
             // One of the user's apps at a time, only while Luma is in front and idle, no launch
-            // is under way and neither screensaver shows.
+            // is under way and neither screensaver shows. The TV's screensaver takes Luma's focus
+            // without minimising it, so `focused` keeps preloads from starting under it.
             if state.preferences.preload_apps
                 && visible
                 && focused
                 && !preload_busy
                 && !preload_paused
+                && hidden_launch.is_none()
                 && !state.launching
                 && state.screensaver.is_none()
                 && !state.inventory.apps.is_empty()
                 && state.last_input.elapsed() >= preload::IDLE
-                && preload_last.is_none_or(|last| last.elapsed() >= preload::SPACING)
+                && preload_next.is_none_or(|next| Instant::now() >= next)
+                && let Some(listed) = &lg_listed
                 && let Some(id) = preload::next(
                     &state.apps(),
                     &state.preferences.launch_counts,
                     &state.preferences.preload_blocked,
+                    &state.preferences.preload_list,
                     &preload_tried,
+                    listed,
                 )
             {
                 preload_tried.insert(id.clone());
                 preload_busy = true;
-                preload_last = Some(Instant::now());
-                let own = if options.webos_home {
-                    platform::home_id()
-                } else {
-                    platform::APP_ID
-                };
+                preload_next = Some(Instant::now() + preload::SPACING);
+                hidden_launch = Some(preload::HiddenLaunch::new(id.clone(), Instant::now()));
                 let user_apps = state.apps().iter().map(|app| app.id.clone()).collect();
-                service.send(preload::Job::Preload { id, own, user_apps });
+                let limit = preload::running_limit(&state.preferences.preload_list);
+                service.send(preload::Job::Preload {
+                    id,
+                    own,
+                    user_apps,
+                    limit,
+                });
             }
         }
         if foreground.failed(Instant::now())

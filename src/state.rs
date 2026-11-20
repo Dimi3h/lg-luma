@@ -199,6 +199,8 @@ pub enum Subpage {
     Language,
     /// Settings › General › Hidden apps: hidden apps as rows, OK shows one again.
     HiddenApps,
+    /// Settings › General › Preload apps: the setting and the user's list of apps.
+    Preload,
     /// Settings › General › Screensaver: Off or the idle minutes.
     Screensaver,
     /// Settings › General › Appearance: Dark, Light or Automatic.
@@ -263,6 +265,9 @@ pub struct State {
     /// Set by Refresh apps: the next inventory also reloads every app icon.
     pub reload_artwork: bool,
     pub launching: bool,
+    /// The last app the user launched from Luma (grid or Recents), taken by the preload watch:
+    /// that app coming forward is the user's doing, not a hidden launch raising itself.
+    pub launched_by_user: Option<String>,
     pub uninstalling: Option<String>,
     pub notice: Option<(String, Instant)>,
     pub error: Option<String>,
@@ -321,6 +326,7 @@ impl State {
             loading: false,
             reload_artwork: false,
             launching: false,
+            launched_by_user: None,
             uninstalling: None,
             notice: None,
             error: None,
@@ -843,6 +849,27 @@ impl State {
     }
 
     /// Hidden apps that are still installed, by title (Settings › General › Hidden apps).
+    /// Adds `id` to the user's preload list or takes it off; an app that once came forward when
+    /// preloaded is tried again. Returns whether it is in the list now.
+    pub fn toggle_preload(&mut self, id: &str) -> bool {
+        let list = &mut self.preferences.preload_list;
+        let blocked = &mut self.preferences.preload_blocked;
+        if blocked.iter().any(|other| other == id) {
+            blocked.retain(|other| other != id);
+            if !list.iter().any(|other| other == id) {
+                list.push(id.to_owned());
+            }
+            return true;
+        }
+        if list.iter().any(|other| other == id) {
+            list.retain(|other| other != id);
+            false
+        } else {
+            list.push(id.to_owned());
+            true
+        }
+    }
+
     pub fn hidden_apps(&self) -> Vec<&App> {
         let mut apps: Vec<_> = self
             .inventory
@@ -1353,6 +1380,7 @@ impl State {
             }
             Some(Subpage::Language) => Target::Setting(4),
             Some(Subpage::HiddenApps) => Target::Setting(11),
+            Some(Subpage::Preload) => Target::Setting(17),
             Some(Subpage::Screensaver) => Target::Setting(12),
             Some(Subpage::Appearance) => Target::Setting(14),
             None => Target::Sidebar(self.section),
@@ -1454,6 +1482,7 @@ impl State {
                     Some(Subpage::Language) => Language::ALL.len(),
                     // Without hidden apps the empty state holds focus.
                     Some(Subpage::HiddenApps) => self.hidden_apps().len().max(1),
+                    Some(Subpage::Preload) => 1 + self.apps().len(),
                     Some(Subpage::Screensaver) => SCREENSAVER_MINUTES.len(),
                     Some(Subpage::Appearance) => crate::model::Appearance::ALL.len(),
                     Some(Subpage::DateFormat) => crate::model::DateFormat::ALL.len(),
@@ -2493,10 +2522,18 @@ impl State {
                     5 => return vec![Effect::Quit],
                     // Preload apps: the main loop starts or stops preloading and puts LG's
                     // preloads of hidden apps back when switched off.
-                    17 => {
-                        self.preferences.preload_apps = !self.preferences.preload_apps;
+                    // Memory compression: the main loop tells the elevated helper (on: now and at
+                    // every cold boot; off: from the next cold boot).
+                    18 => {
+                        self.preferences.memory_compression = !self.preferences.memory_compression;
                         self.dirty = true;
                         return vec![Effect::Save];
+                    }
+                    17 => {
+                        self.subpage = Some(Subpage::Preload);
+                        self.scroll = 0.;
+                        self.focus = Target::Choice(0);
+                        return vec![];
                     }
                     _ => return vec![Effect::Reload],
                 }
@@ -2586,6 +2623,18 @@ impl State {
                         self.preferences.screensaver_minutes =
                             SCREENSAVER_MINUTES[index.min(SCREENSAVER_MINUTES.len() - 1)];
                     }
+                    Some(Subpage::Preload) => {
+                        // The first row is the setting; the others are the apps, in grid order.
+                        if index == 0 {
+                            self.preferences.preload_apps = !self.preferences.preload_apps;
+                        } else if let Some(id) =
+                            self.apps().get(index - 1).map(|app| app.id.clone())
+                        {
+                            self.toggle_preload(&id);
+                        }
+                        self.dirty = true;
+                        return vec![Effect::Save];
+                    }
                     Some(Subpage::HiddenApps) => {
                         // Showing an app again keeps the list open on the next hidden app.
                         let Some((id, title)) = self
@@ -2622,6 +2671,28 @@ impl State {
                 return vec![Effect::Save];
             }
             Target::Option(index) => {
+                // Preload (or stop preloading) this app; the menu closes on its card.
+                if index == 3 {
+                    let Some(Overlay::Options { id, restore }) = self.overlay.take() else {
+                        return vec![];
+                    };
+                    let title = self
+                        .inventory
+                        .apps
+                        .iter()
+                        .find(|app| app.id == id)
+                        .map_or(id.clone(), |app| app.title.clone());
+                    let key = if self.toggle_preload(&id) {
+                        "preloadAdded"
+                    } else {
+                        "preloadRemoved"
+                    };
+                    self.notify(self.preferences.language.format(key, &[("app", &title)]));
+                    self.focus = restore;
+                    self.pointer = false;
+                    self.dirty = true;
+                    return vec![Effect::Save];
+                }
                 if index == 2 {
                     if let Some(Overlay::Options { id, restore }) = &self.overlay
                         && crate::platform::can_uninstall(id)
