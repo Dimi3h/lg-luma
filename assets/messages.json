@@ -1002,5 +1002,13 @@
   "gamepadRepairDetail": {
     "en": "Restores a controller's buttons when the TV stops passing them on",
     "nl": "Herstelt de knoppen van een controller als de tv ze niet meer doorgeeft"
+  },
+  "wifiDirectOff": {
+    "en": "Screen Share listening off",
+    "nl": "Screen Share-luistermodus uit"
+  },
+  "wifiDirectOffDetail": {
+    "en": "Keeps Wi-Fi on your network (less stutter); Miracast may not work, AirPlay does",
+    "nl": "Wifi blijft op je netwerk (minder haperen); Miracast werkt mogelijk niet, AirPlay wel"
   }
 }

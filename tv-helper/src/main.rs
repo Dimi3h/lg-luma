@@ -4,14 +4,14 @@ mod webos_compat;
 use luma_tv_helper::{
     bluetooth, files, home, input, memory, preload, screensaver,
     system::{System, Tv},
-    uninstall,
+    uninstall, wifi,
 };
 use serde_json::Value;
 fn run() -> luma_tv_helper::Result<Value> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|s| s == "--help") {
         println!(
-            "luma-helper: home COMMAND [APP_DIR] [HOME_ID] | screensaver COMMAND [APP_DIR] | preload-policy JSON | memory-compression on|off|apply|status | bluetooth status|repair ADDRESS | read-app-icon JSON | sync-splash JSON | uninstall-app ID | tv-input COMMAND [APP_DIR]"
+            "luma-helper: home COMMAND [APP_DIR] [HOME_ID] | screensaver COMMAND [APP_DIR] | preload-policy JSON | memory-compression on|off|apply|status | bluetooth status|repair ADDRESS | wifi-direct state|enable|disable | read-app-icon JSON | sync-splash JSON | uninstall-app ID | tv-input COMMAND [APP_DIR]"
         );
         return Ok(serde_json::json!({"returnValue":true}));
     }
@@ -54,6 +54,7 @@ fn run() -> luma_tv_helper::Result<Value> {
         "preload-policy" => preload::dispatch(&sys, arg(1)?),
         "memory-compression" => memory::dispatch(&sys, arg(1)?),
         "bluetooth" => bluetooth::dispatch(&sys, arg(1)?, args.get(2).map(String::as_str)),
+        "wifi-direct" => wifi::dispatch(&sys, arg(1)?),
         "screensaver" => screensaver::dispatch(&sys, arg(1)?, args.get(2).map(String::as_str)),
         "tv-input" => {
             let directory = args

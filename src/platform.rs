@@ -473,6 +473,80 @@ impl crate::gamepad::Tv for BluetoothTv {
     }
 }
 
+/// Wi-Fi Direct listening (see wifi_direct.rs): over Luma's own connection, else through the
+/// elevated helper (as root directly, through root `luna-send` as measured).
+pub struct WifiTv;
+
+impl WifiTv {
+    fn helper(command: &str) -> Result<Value, String> {
+        if as_root() {
+            return luma_tv_helper::wifi::dispatch(&luma_tv_helper::system::Tv, command);
+        }
+        let envelope = call(
+            "luna://org.webosbrew.hbchannel.service/exec",
+            json!({"command": helper_command("wifi-direct", &[command.to_owned()])?}),
+        )?;
+        command_reply(&envelope)
+    }
+
+    fn listen_state(reply: &Value) -> Result<String, String> {
+        luma_tv_helper::wifi::listen_state(reply)
+            .map(str::to_owned)
+            .ok_or_else(|| "p2p/getstate has no listenState".to_owned())
+    }
+}
+
+impl crate::wifi_direct::P2p for WifiTv {
+    fn state(&self) -> Result<String, String> {
+        let reply = call("luna://com.webos.service.wifi/p2p/getstate", json!({}))
+            .or_else(|_| Self::helper("state"))?;
+        Self::listen_state(&reply)
+    }
+
+    fn set(&self, listen: bool) -> Result<String, String> {
+        let state = if listen { "enabled" } else { "disabled" };
+        let reply = match call(
+            "luna://com.webos.service.wifi/p2p/setstate",
+            json!({"listenState": state}),
+        ) {
+            Ok(_) => call("luna://com.webos.service.wifi/p2p/getstate", json!({}))?,
+            Err(_) => Self::helper(if listen { "enable" } else { "disable" })?,
+        };
+        Self::listen_state(&reply)
+    }
+
+    fn foreground(&self) -> Option<String> {
+        foreground()
+    }
+}
+
+/// A subscription to `p2p/getstate` (each reply's `listenState` and `subscribed`); not
+/// verified that the TV accepts one, so the caller also polls.
+pub fn subscribe_wifi_direct(
+    mut on_state: Box<dyn FnMut(Option<String>, Option<bool>) + Send>,
+) -> Result<(), String> {
+    #[cfg(all(feature = "webos", target_os = "linux", target_arch = "arm"))]
+    {
+        crate::luna::subscribe(
+            None,
+            "luna://com.webos.service.wifi/p2p/getstate",
+            &json!({"subscribe": true}),
+            std::time::Duration::from_secs(5),
+            move |reply: Value| {
+                on_state(
+                    luma_tv_helper::wifi::listen_state(&reply).map(str::to_owned),
+                    reply["subscribed"].as_bool(),
+                )
+            },
+        )
+    }
+    #[cfg(not(all(feature = "webos", target_os = "linux", target_arch = "arm")))]
+    {
+        let _ = &mut on_state;
+        Err("Native Luna services are only available in an ARM webOS build".into())
+    }
+}
+
 /// The gamepads in the helper's `bluetooth status` reply (without their cache times).
 fn bluetooth_reply(reply: Value) -> Result<Vec<luma_tv_helper::bluetooth::Gamepad>, String> {
     Ok(reply["gamepads"]

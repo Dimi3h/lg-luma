@@ -1318,6 +1318,43 @@ verified.
   last one's time, address, name and outcome, the gamepads watched, and why the watcher is
   inactive if it is.
 
+### Screen Share listening off
+
+Settings › System › Screen Share listening off (`wifi_direct_off`, on by default) keeps the TV's
+Wi-Fi Direct listening (`listenState` of `com.webos.service.wifi/p2p`) disabled. Measured on one
+TV only, an LG OLED55B46LA (webOS 25), while GeForce NOW lagged:
+
+- `p2p/getstate` reported `"P2P":"enabled","listenState":"enabled"`, and `iw event -t` showed
+  `p2p0` remain on 2437 MHz for 100 ms every 500 ms while the TV was connected at 5300 MHz
+  (-34 dBm, 866 Mbit/s): the radio left the access point's channel twice a second. Router pings
+  (50 at 200 ms): median 4.92 ms, p90 63.0 ms, max 76.2 ms (132 ms in a longer run).
+- After `p2p/setstate {"listenState":"disabled"}`: no remain-on-channel events in 5 s, median
+  4.2 ms, p90 7.1 ms, max 8.7 ms, the same again 40 s later with GeForce NOW in front.
+
+How it works (`src/wifi_direct.rs`, its own thread, also while Luma is in the background):
+
+- The state is read when Luma starts (cold boot, enable, update), on every reply of a
+  `p2p/getstate` subscription when the TV accepts one, and once a minute in any case. While the
+  setting is on and `listenState` is "enabled", Luma sets it to "disabled", except while LG's
+  Screen Share app (`com.webos.app.miracast`) is the foreground app. At least 10 s pass between
+  two changes by Luma, so a TV that switches listening straight back on is never fought in a
+  tight loop.
+- Switching the setting off sets "enabled" again only when Luma disabled it
+  (`wifi_direct_disabled_by_luma` in the preferences); a state someone else changed is left
+  alone.
+- Calls go over Luma's own connection, else through the elevated helper (`luma-helper
+  wifi-direct state|enable|disable`; as root through `luna-send`, as measured).
+- While listening is off, Miracast devices may not find the TV; AirPlay is not affected.
+- Diagnostics: a UTC-timestamped `Luma Wi-Fi Direct:` line per change in `/tmp/luma-home.log`,
+  and `wifi_direct` in `luma-diagnostics.json`: the current `listenState`, the one at Luma's
+  start, whether Luma disabled it, how often it had to disable it again, the last change, whether
+  the subscription was accepted, and the last error.
+
+Not verified: whether the disabled state survives a reboot or a suspend (`listen_state_at_start`
+shows it), whether LG's miracast daemon (`/usr/sbin/miracast`) enables it again by itself
+(`disabled_again` counts it), whether `p2p/getstate` accepts a subscription, and whether Luma's
+own identity may call `p2p/*`.
+
 ## Manual extra-app preview
 
 ```sh

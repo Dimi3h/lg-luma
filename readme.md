@@ -321,6 +321,14 @@ that happens, so its buttons work again. This was measured with a Stadia control
 OLED55B46LA (webOS 25) only. The first button press after each connection is lost, and LG shows
 its own disconnected and connected notices during the repair.
 
+### Screen Share listening off
+
+While the TV listens for Screen Share (Wi-Fi Direct / Miracast), its Wi-Fi leaves your network for
+100 ms twice a second, which makes streaming and cloud gaming stutter. **Settings → System → Screen
+Share listening off** (on by default) keeps that listening switched off, and switches it back on
+when you turn the setting off (only if Luma switched it off). While it is off, Miracast devices may
+not find the TV; AirPlay is not affected. Measured on an LG OLED55B46LA (webOS 25) only.
+
 ## Development
 
 ### Setup & Building

@@ -9,6 +9,7 @@ pub mod preload;
 pub mod screensaver;
 pub mod system;
 pub mod uninstall;
+pub mod wifi;
 
 pub type Result<T> = std::result::Result<T, String>;
 pub const APP: &str = "com.ecklf.luma";

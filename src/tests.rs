@@ -1140,10 +1140,12 @@ fn system_category_owns_refresh_and_quit_and_restores_sidebar_focus() {
     assert_eq!(state.focus, Target::Setting(3));
     assert_eq!(state.activate(), vec![Effect::Reload]);
     state.direction(Direction::Down, &controls(&state));
-    // Memory compression, Repair Bluetooth controller, then Quit.
+    // Memory compression, Repair Bluetooth controller, Screen Share listening off, then Quit.
     assert_eq!(state.focus, Target::Setting(18));
     state.direction(Direction::Down, &controls(&state));
     assert_eq!(state.focus, Target::Setting(19));
+    state.direction(Direction::Down, &controls(&state));
+    assert_eq!(state.focus, Target::Setting(20));
     state.direction(Direction::Down, &controls(&state));
     assert_eq!(state.focus, Target::Setting(5));
     assert_eq!(state.activate(), vec![Effect::Quit]);
@@ -5327,6 +5329,130 @@ fn gamepad_repair_is_a_system_setting_on_by_default_with_an_explanation() {
     );
     let loaded: Preferences = serde_json::from_value(json!({})).unwrap();
     assert!(loaded.gamepad_repair);
+}
+
+#[test]
+fn screen_share_listening_off_is_a_system_setting_on_by_default() {
+    let mut state = ready();
+    assert!(state.preferences.wifi_direct_off);
+    assert!(!state.preferences.wifi_direct_disabled_by_luma);
+    state.open(Page::Settings);
+    state.section = crate::state::SYSTEM_SECTION;
+    assert!(scene(&state).draw.iter().any(|d| matches!(d,
+        crate::renderer::Draw::Text(t, ..) if t == "Screen Share listening off")));
+    state.focus = Target::Setting(20);
+    assert_eq!(state.activate(), vec![Effect::Save]);
+    assert!(!state.preferences.wifi_direct_off);
+    let loaded: Preferences = serde_json::from_value(json!({})).unwrap();
+    assert!(loaded.wifi_direct_off && !loaded.wifi_direct_disabled_by_luma);
+}
+
+#[derive(Default)]
+struct FakeP2p {
+    listen: std::cell::RefCell<String>,
+    front: std::cell::RefCell<Option<String>>,
+    fails: std::cell::Cell<bool>,
+    sets: std::cell::RefCell<Vec<bool>>,
+}
+
+impl crate::wifi_direct::P2p for FakeP2p {
+    fn state(&self) -> Result<String, String> {
+        if self.fails.get() {
+            return Err("denied".into());
+        }
+        Ok(self.listen.borrow().clone())
+    }
+    fn set(&self, listen: bool) -> Result<String, String> {
+        self.sets.borrow_mut().push(listen);
+        *self.listen.borrow_mut() = if listen { "enabled" } else { "disabled" }.into();
+        self.state()
+    }
+    fn foreground(&self) -> Option<String> {
+        self.front.borrow().clone()
+    }
+}
+
+#[test]
+fn wifi_direct_listening_is_kept_off_without_fighting_screen_share() {
+    use crate::wifi_direct::{Action, Keeper, SCREEN_SHARE, decide};
+    // The decision.
+    assert_eq!(decide(true, "enabled", None, false), Some(Action::Disable));
+    assert_eq!(
+        decide(true, "enabled", Some("netflix"), false),
+        Some(Action::Disable)
+    );
+    assert_eq!(decide(true, "enabled", Some(SCREEN_SHARE), false), None);
+    assert_eq!(decide(true, "disabled", None, true), None);
+    assert_eq!(decide(false, "disabled", None, true), Some(Action::Enable));
+    assert_eq!(decide(false, "disabled", None, false), None);
+    assert_eq!(decide(false, "enabled", None, true), None);
+    let at = || "2026-11-20T23:00:00Z".to_owned();
+    // At start (cold boot, enable, update) listening is on: Luma disables it.
+    let tv = FakeP2p::default();
+    *tv.listen.borrow_mut() = "enabled".into();
+    let mut keeper = Keeper::new(true, false);
+    keeper.check(&tv, None, at);
+    assert_eq!(*tv.sets.borrow(), [false]);
+    let evidence = keeper.evidence.clone();
+    assert_eq!(evidence.listen_state.as_deref(), Some("disabled"));
+    assert_eq!(evidence.listen_state_at_start.as_deref(), Some("enabled"));
+    assert!(evidence.disabled_by_luma);
+    assert_eq!(evidence.disabled_again, 0);
+    assert_eq!(evidence.last_change.unwrap().result, "listenState disabled");
+    // Switched back on by the TV (a subscription reply): disabled again and counted, but never
+    // twice within the gap, so a TV that keeps re-enabling is not fought in a tight loop.
+    *tv.listen.borrow_mut() = "enabled".into();
+    keeper.check(&tv, Some("enabled".into()), at);
+    assert_eq!(tv.sets.borrow().len(), 1);
+    keeper.after_gap();
+    keeper.check(&tv, Some("enabled".into()), at);
+    assert_eq!(*tv.sets.borrow(), [false, false]);
+    assert_eq!(keeper.evidence.disabled_again, 1);
+    // LG's Screen Share app in front: left alone.
+    keeper.after_gap();
+    *tv.listen.borrow_mut() = "enabled".into();
+    *tv.front.borrow_mut() = Some(SCREEN_SHARE.into());
+    keeper.check(&tv, None, at);
+    assert_eq!(tv.sets.borrow().len(), 2);
+    *tv.front.borrow_mut() = None;
+    keeper.check(&tv, None, at);
+    assert_eq!(tv.sets.borrow().len(), 3);
+    assert_eq!(keeper.evidence.disabled_again, 2);
+    // Setting off: enabled again because Luma disabled it.
+    keeper.after_gap();
+    keeper.on = false;
+    keeper.check(&tv, None, at);
+    assert_eq!(tv.sets.borrow().last(), Some(&true));
+    assert!(!keeper.evidence.disabled_by_luma);
+    keeper.after_gap();
+    keeper.check(&tv, None, at);
+    assert_eq!(tv.sets.borrow().len(), 4);
+    // Setting off and disabled by someone else: never enabled by Luma.
+    let other = FakeP2p::default();
+    *other.listen.borrow_mut() = "disabled".into();
+    let mut keeper = Keeper::new(false, false);
+    keeper.check(&other, None, at);
+    assert!(other.sets.borrow().is_empty());
+    // Luma's disable from before a restart held: a later disable counts as again.
+    let held = FakeP2p::default();
+    *held.listen.borrow_mut() = "disabled".into();
+    let mut keeper = Keeper::new(true, true);
+    keeper.check(&held, None, at);
+    assert!(held.sets.borrow().is_empty());
+    *held.listen.borrow_mut() = "enabled".into();
+    keeper.check(&held, None, at);
+    assert_eq!(keeper.evidence.disabled_again, 1);
+    // Enabled by someone else while the setting is off: no longer Luma's to restore.
+    *held.listen.borrow_mut() = "enabled".into();
+    let mut keeper = Keeper::new(false, true);
+    keeper.check(&held, None, at);
+    assert!(!keeper.evidence.disabled_by_luma);
+    // A state Luma cannot read is reported, never acted on.
+    held.fails.set(true);
+    let mut keeper = Keeper::new(true, false);
+    keeper.check(&held, None, at);
+    assert_eq!(keeper.evidence.error.as_deref(), Some("denied"));
+    assert_eq!(held.sets.borrow().len(), 1);
 }
 
 #[derive(Default)]

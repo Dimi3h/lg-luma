@@ -3002,6 +3002,7 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                 },
             );
             let gamepad_detail = language.t("gamepadRepairDetail");
+            let wifi_detail = language.t("wifiDirectOffDetail");
             let mut y = SETTINGS_TOP + 256. + ROW_GAP * 2.;
             for (index, title, icon, value, description, chevron) in [
                 (
@@ -3038,6 +3039,18 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                         language.t("stateOff")
                     }),
                     Some(gamepad_detail),
+                    false,
+                ),
+                (
+                    20,
+                    language.t("wifiDirectOff"),
+                    "gear",
+                    Some(if state.preferences.wifi_direct_off {
+                        language.t("stateOn")
+                    } else {
+                        language.t("stateOff")
+                    }),
+                    Some(wifi_detail),
                     false,
                 ),
                 (5, language.t("quitApp"), "power", None, None, false),

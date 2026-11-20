@@ -42,6 +42,7 @@ mod webhook;
 #[cfg(all(feature = "webos", any(target_os = "linux", test)))]
 #[path = "webos-compat.rs"]
 mod webos_compat;
+mod wifi_direct;
 
 #[cfg(test)]
 mod tests;
@@ -921,6 +922,16 @@ fn run() -> Result<(), String> {
     let gamepad_service = webos
         .then(|| gamepad::Service::spawn(state.preferences.gamepad_repair, platform::BluetoothTv));
     let mut gamepad_evidence = gamepad::Evidence::default();
+    // Keeping the TV's Wi-Fi Direct listening off (wifi_direct.rs): its own thread.
+    let wifi_direct_service = webos.then(|| {
+        wifi_direct::Service::spawn(
+            state.preferences.wifi_direct_off,
+            state.preferences.wifi_direct_disabled_by_luma,
+            platform::WifiTv,
+            platform::subscribe_wifi_direct,
+        )
+    });
+    let mut wifi_direct_sent = state.preferences.wifi_direct_off;
     let mut preload_busy = false;
     // Set by a skip for memory, swap or enough running apps: no more preloads until Luma
     // comes back to the front.
@@ -2151,6 +2162,28 @@ fn run() -> Result<(), String> {
         }
         if update_quit.load(std::sync::atomic::Ordering::SeqCst) {
             running = false;
+        }
+        if let Some(service) = &wifi_direct_service {
+            if wifi_direct_sent != state.preferences.wifi_direct_off {
+                wifi_direct_sent = state.preferences.wifi_direct_off;
+                service.set_enabled(wifi_direct_sent);
+            }
+            let mut latest = None;
+            while let Ok(evidence) = service.receiver.try_recv() {
+                latest = Some(evidence);
+            }
+            if let Some(evidence) = latest {
+                if state.preferences.wifi_direct_disabled_by_luma != evidence.disabled_by_luma {
+                    state.preferences.wifi_direct_disabled_by_luma = evidence.disabled_by_luma;
+                    if let Err(error) = storage::save(&preferences_path, &state.preferences) {
+                        eprintln!("{error}");
+                    }
+                }
+                diagnostics_writer.section(
+                    "wifi_direct",
+                    serde_json::to_value(&evidence).unwrap_or_default(),
+                );
+            }
         }
         if let Some(service) = &gamepad_service {
             service.set_enabled(state.preferences.gamepad_repair);

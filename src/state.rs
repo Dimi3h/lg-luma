@@ -2535,6 +2535,12 @@ impl State {
                         self.dirty = true;
                         return vec![Effect::Save];
                     }
+                    // Screen Share listening off: the main loop tells the Wi-Fi Direct thread.
+                    20 => {
+                        self.preferences.wifi_direct_off = !self.preferences.wifi_direct_off;
+                        self.dirty = true;
+                        return vec![Effect::Save];
+                    }
                     17 => {
                         self.subpage = Some(Subpage::Preload);
                         self.scroll = 0.;

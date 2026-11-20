@@ -40,6 +40,8 @@ struct Fixture {
     bt_profiles: RefCell<Vec<String>>,
     /// Whether `hid/connect` brings the HID profile back.
     bt_reconnects: Cell<bool>,
+    /// Wi-Fi Direct `listenState`.
+    listen_state: RefCell<String>,
 }
 impl Fixture {
     fn new() -> Self {
@@ -79,6 +81,7 @@ impl Fixture {
             running_ids: RefCell::new(vec![]),
             bt_profiles: RefCell::new(vec!["gatt".into(), "hid".into()]),
             bt_reconnects: Cell::new(true),
+            listen_state: RefCell::new("enabled".into()),
         };
         for dir in [
             "/var/lib/luma-home/app",
@@ -262,6 +265,14 @@ impl System for Fixture {
             .and_then(VecDeque::pop_front)
         {
             return reply.map(ok);
+        }
+        if uri.starts_with("luna://com.webos.service.wifi/p2p/") {
+            if uri.ends_with("/setstate") {
+                *self.listen_state.borrow_mut() = payload["listenState"].as_str().unwrap().into();
+            }
+            return Ok(ok(json!({"subscribed":false,"returnValue":true,
+                "persistentMode":"enabled","P2P":"enabled",
+                "listenState":*self.listen_state.borrow()})));
         }
         if uri.starts_with("luna://com.webos.service.bluetooth2/") {
             let mut profiles = self.bt_profiles.borrow_mut();
@@ -1844,5 +1855,31 @@ fn bluetooth_repair_keeps_the_le_link_and_restarts_only_hid() {
     let calls = f.calls().len();
     f.uid.set(501);
     assert!(dispatch(&f, "repair", Some(STADIA)).is_err());
+    assert_eq!(f.calls().len(), calls);
+}
+
+#[test]
+fn wifi_direct_listening_is_read_and_switched_through_the_wifi_service() {
+    use crate::wifi::{dispatch, listen_state};
+    let f = Fixture::new();
+    assert_eq!(
+        listen_state(&dispatch(&f, "state").unwrap()),
+        Some("enabled")
+    );
+    assert_eq!(
+        listen_state(&dispatch(&f, "disable").unwrap()),
+        Some("disabled")
+    );
+    assert!(f.calls().iter().any(
+        |call| call.contains("p2p/setstate") && call.contains(r#"{"listenState":"disabled"}"#)
+    ));
+    assert_eq!(
+        listen_state(&dispatch(&f, "enable").unwrap()),
+        Some("enabled")
+    );
+    assert!(dispatch(&f, "persistent-off").is_err());
+    f.uid.set(501);
+    let calls = f.calls().len();
+    assert!(dispatch(&f, "disable").is_err());
     assert_eq!(f.calls().len(), calls);
 }
