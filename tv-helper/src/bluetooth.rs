@@ -2,8 +2,8 @@
 //! (Settings › System › Repair Bluetooth controller).
 //!
 //! Measured on an LG OLED55B46LA (webOS 25, MediaTek Fluoride) with a Stadia controller (BLE
-//! HID): at its first button press after every new LE connection the controller sends a GATT
-//! Service Changed indication. LG's stack rediscovers the services, drops the HID notification
+//! HID): at its first button press after every new LE connection, and again after being idle on
+//! the same link, the controller sends a GATT Service Changed indication. LG's stack rediscovers the services, drops the HID notification
 //! registration and never restores it, so input reaches the radio but never `/dev/uhid`. The
 //! stack rewrites the device's GATT cache file right after the indication, which is the trigger.
 //! A plain HID reconnect does not help (a new LE connection, a new indication at the next press).
@@ -18,7 +18,7 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const SERVICE: &str = "com.webos.service.bluetooth2";
@@ -154,21 +154,38 @@ pub fn cache_mtime(system: &impl System, address: &str) -> Option<u128> {
         .map(|since| since.as_millis())
 }
 
-/// Decides when to repair: one baseline per HID connection, a repair when the cache file changes
-/// while HID stays connected. A new connection (the controller switched on) only takes a new
-/// baseline: a plain connect was not seen to rewrite the cache.
+/// At most this many repairs of one gamepad within `REPAIR_WINDOW`; more are held, so a stack
+/// that rewrites the cache in response to the repair itself can never loop.
+pub const MAX_REPAIRS: usize = 5;
+pub const REPAIR_WINDOW: Duration = Duration::from_secs(5 * 60);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Decision {
+    Repair(String),
+    /// A change, but `MAX_REPAIRS` repairs already ran within `REPAIR_WINDOW`.
+    Held(String),
+}
+
+/// Decides when to repair: a repair every time the cache file is rewritten while HID is
+/// connected. On the TV the controller sent Service Changed not only at its first press after a
+/// new LE connection but also after it had been idle on the same link (17 minutes later, no
+/// connection event between), and a repair could itself drop the link, after which the
+/// controller sent it again: so no repair is final, and the baseline is always the last time
+/// seen, never re-read after a repair (a rewrite during the repair is repaired next). A new
+/// connection only takes a baseline: a plain connect was not seen to rewrite the cache.
 #[derive(Debug, Default)]
 pub struct Watch {
     baselines: BTreeMap<String, Option<u128>>,
+    /// Recent repairs per gamepad, kept across reconnects.
+    repairs: BTreeMap<String, Vec<Instant>>,
 }
 
 impl Watch {
-    /// `connected`: the gamepads with HID connected now, with their cache file's time. Returns
-    /// the addresses to repair.
-    pub fn observe(&mut self, connected: &[(String, Option<u128>)]) -> Vec<String> {
+    /// `connected`: the gamepads with HID connected now, with their cache file's time.
+    pub fn observe(&mut self, connected: &[(String, Option<u128>)], now: Instant) -> Vec<Decision> {
         self.baselines
             .retain(|address, _| connected.iter().any(|(other, _)| other == address));
-        let mut repair = vec![];
+        let mut decisions = vec![];
         for (address, mtime) in connected {
             match self.baselines.get_mut(address) {
                 None => {
@@ -179,23 +196,20 @@ impl Watch {
                 Some(baseline @ None) => *baseline = *mtime,
                 Some(baseline) => {
                     if mtime.is_some() && *mtime != *baseline {
-                        // Once per change, whatever the repair's outcome: a failed repair
-                        // never turns into a loop.
                         *baseline = *mtime;
-                        repair.push(address.clone());
+                        let recent = self.repairs.entry(address.clone()).or_default();
+                        recent.retain(|at| now.saturating_duration_since(*at) < REPAIR_WINDOW);
+                        if recent.len() >= MAX_REPAIRS {
+                            decisions.push(Decision::Held(address.clone()));
+                        } else {
+                            recent.push(now);
+                            decisions.push(Decision::Repair(address.clone()));
+                        }
                     }
                 }
             }
         }
-        repair
-    }
-
-    /// After a repair: its own cache time is the new baseline, so the repair never triggers
-    /// itself (it was not seen to rewrite the cache, but a stack that does would loop).
-    pub fn repaired(&mut self, address: &str, mtime: Option<u128>) {
-        if let Some(baseline) = self.baselines.get_mut(address) {
-            *baseline = mtime.or(*baseline);
-        }
+        decisions
     }
 
     pub fn watching(&self) -> Vec<String> {

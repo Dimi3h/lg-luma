@@ -1140,12 +1140,14 @@ fn system_category_owns_refresh_and_quit_and_restores_sidebar_focus() {
     assert_eq!(state.focus, Target::Setting(3));
     assert_eq!(state.activate(), vec![Effect::Reload]);
     state.direction(Direction::Down, &controls(&state));
-    // Memory compression, Repair Bluetooth controller, Screen Share listening off, then Quit.
+    // Memory compression, Bluetooth repair, Screen Share, Stadia as Xbox, then Quit.
     assert_eq!(state.focus, Target::Setting(18));
     state.direction(Direction::Down, &controls(&state));
     assert_eq!(state.focus, Target::Setting(19));
     state.direction(Direction::Down, &controls(&state));
     assert_eq!(state.focus, Target::Setting(20));
+    state.direction(Direction::Down, &controls(&state));
+    assert_eq!(state.focus, Target::Setting(21));
     state.direction(Direction::Down, &controls(&state));
     assert_eq!(state.focus, Target::Setting(5));
     assert_eq!(state.activate(), vec![Effect::Quit]);
@@ -5345,6 +5347,21 @@ fn screen_share_listening_off_is_a_system_setting_on_by_default() {
     assert!(!state.preferences.wifi_direct_off);
     let loaded: Preferences = serde_json::from_value(json!({})).unwrap();
     assert!(loaded.wifi_direct_off && !loaded.wifi_direct_disabled_by_luma);
+}
+
+#[test]
+fn the_stadia_pad_bridge_is_a_system_setting_on_by_default() {
+    let mut state = ready();
+    assert!(state.preferences.pad_bridge);
+    state.open(Page::Settings);
+    state.section = crate::state::SYSTEM_SECTION;
+    assert!(scene(&state).draw.iter().any(|d| matches!(d,
+        crate::renderer::Draw::Text(t, ..) if t == "Stadia controller as Xbox controller")));
+    state.focus = Target::Setting(21);
+    assert_eq!(state.activate(), vec![Effect::Save]);
+    assert!(!state.preferences.pad_bridge);
+    let loaded: Preferences = serde_json::from_value(json!({})).unwrap();
+    assert!(loaded.pad_bridge);
 }
 
 #[derive(Default)]

@@ -2541,6 +2541,12 @@ impl State {
                         self.dirty = true;
                         return vec![Effect::Save];
                     }
+                    // Stadia controller as Xbox controller: the main loop tells the helper.
+                    21 => {
+                        self.preferences.pad_bridge = !self.preferences.pad_bridge;
+                        self.dirty = true;
+                        return vec![Effect::Save];
+                    }
                     17 => {
                         self.subpage = Some(Subpage::Preload);
                         self.scroll = 0.;

@@ -315,6 +315,9 @@ pub struct Preferences {
     /// Settings › System › Screen Share listening off: keeps the TV's Wi-Fi Direct listening
     /// disabled (wifi_direct.rs).
     pub wifi_direct_off: bool,
+    /// Settings › System › Stadia controller as Xbox controller: the elevated helper's pad
+    /// bridge (started with the Home takeover at every cold boot).
+    pub pad_bridge: bool,
     /// Whether Luma disabled Wi-Fi Direct listening, so switching the setting off only enables
     /// it again in that case.
     pub wifi_direct_disabled_by_luma: bool,
@@ -367,6 +370,7 @@ impl Default for Preferences {
             memory_compression: true,
             gamepad_repair: true,
             wifi_direct_off: true,
+            pad_bridge: true,
             wifi_direct_disabled_by_luma: false,
             appearance: Appearance::Dark,
             hour_24: false,

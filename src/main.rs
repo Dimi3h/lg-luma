@@ -932,6 +932,9 @@ fn run() -> Result<(), String> {
         )
     });
     let mut wifi_direct_sent = state.preferences.wifi_direct_off;
+    // The Stadia pad bridge runs as the helper's own unit, started by the Home takeover's
+    // apply; Luma only tells the helper when the setting changes.
+    let mut pad_bridge_sent = state.preferences.pad_bridge;
     let mut preload_busy = false;
     // Set by a skip for memory, swap or enough running apps: no more preloads until Luma
     // comes back to the front.
@@ -2162,6 +2165,23 @@ fn run() -> Result<(), String> {
         }
         if update_quit.load(std::sync::atomic::Ordering::SeqCst) {
             running = false;
+        }
+        if webos && pad_bridge_sent != state.preferences.pad_bridge {
+            pad_bridge_sent = state.preferences.pad_bridge;
+            let on = pad_bridge_sent;
+            let _ = std::thread::Builder::new()
+                .name("luma-pad-bridge".into())
+                .spawn(move || {
+                    let at = OffsetDateTime::now_utc()
+                        .format(&time::format_description::well_known::Rfc3339)
+                        .unwrap_or_default();
+                    match platform::pad_bridge(on) {
+                        Ok(result) => eprintln!("Luma pad bridge: {at} switched {on}: {result}"),
+                        Err(error) => {
+                            eprintln!("Luma pad bridge: {at} switch {on} failed: {error}")
+                        }
+                    }
+                });
         }
         if let Some(service) = &wifi_direct_service {
             if wifi_direct_sent != state.preferences.wifi_direct_off {

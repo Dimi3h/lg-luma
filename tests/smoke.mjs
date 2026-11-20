@@ -378,7 +378,7 @@ try {
   assert.deepEqual(clockFocus.focus, { Choice: 1 });
   const system = await scenario(
     'system-settings',
-    'settings,down,down,down,right,down,down,down,down,down',
+    'settings,down,down,down,right,down,down,down,down,down,down',
   );
   assert.deepEqual(system.focus, { Setting: 5 });
   assert.ok(system.ui_text.includes('Refresh apps & inputs'));
@@ -387,6 +387,7 @@ try {
   assert.ok(system.ui_text.includes('Memory compression'));
   assert.ok(system.ui_text.includes('Repair Bluetooth controller'));
   assert.ok(system.ui_text.includes('Screen Share listening off'));
+  assert.ok(system.ui_text.includes('Stadia controller as Xbox controller'));
   // Text has one path (the CPU glyph atlas); the Text rendering choice is gone.
   assert.ok(!system.ui_text.includes('Text rendering'));
   assert.equal(system.render.text_rendering.path, 'cpu glyph atlas');

@@ -449,6 +449,10 @@ impl crate::gamepad::Tv for BluetoothTv {
         as_root()
     }
 
+    fn pad_bridge(&self) -> Value {
+        pad_bridge_status()
+    }
+
     fn repair(&self, address: &str) -> Result<String, String> {
         let reply = if as_root() {
             luma_tv_helper::bluetooth::repair(&luma_tv_helper::system::Tv, address)?
@@ -545,6 +549,36 @@ pub fn subscribe_wifi_direct(
         let _ = &mut on_state;
         Err("Native Luna services are only available in an ARM webOS build".into())
     }
+}
+
+/// Switches the Stadia pad bridge on (started now and at every cold boot) or off (stopped now
+/// and at boot) through the elevated helper.
+pub fn pad_bridge(on: bool) -> Result<String, String> {
+    let command = if on { "on" } else { "off" };
+    let helper = install_dir()?.join("luma-helper");
+    let reply = if as_root() {
+        luma_tv_helper::pad::dispatch(&luma_tv_helper::system::Tv, command, &helper)?
+    } else {
+        let envelope = call(
+            "luna://org.webosbrew.hbchannel.service/exec",
+            json!({"command": helper_command("pad-bridge", &[command.to_owned()])?}),
+        )?;
+        command_reply(&envelope)?
+    };
+    Ok(reply["result"].as_str().unwrap_or("done").to_owned())
+}
+
+/// The running pad bridge's status file, with whether its process is still alive.
+pub fn pad_bridge_status() -> Value {
+    let Ok(text) = std::fs::read_to_string(luma_tv_helper::pad::STATUS) else {
+        return json!({"running": false});
+    };
+    let mut status: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({}));
+    let alive = status["pid"]
+        .as_u64()
+        .is_some_and(|pid| std::path::Path::new(&format!("/proc/{pid}")).exists());
+    status["running"] = json!(alive);
+    status
 }
 
 /// The gamepads in the helper's `bluetooth status` reply (without their cache times).

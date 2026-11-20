@@ -1007,6 +1007,14 @@
     "en": "Screen Share listening off",
     "nl": "Screen Share-luistermodus uit"
   },
+  "padBridge": {
+    "en": "Stadia controller as Xbox controller",
+    "nl": "Stadia-controller als Xbox-controller"
+  },
+  "padBridgeDetail": {
+    "en": "Makes its triggers work in the browser (GeForce NOW); vibration is not passed on",
+    "nl": "Laat de triggers werken in de browser (GeForce NOW); trillen werkt dan niet"
+  },
   "wifiDirectOffDetail": {
     "en": "Keeps Wi-Fi on your network (less stutter); Miracast may not work, AirPlay does",
     "nl": "Wifi blijft op je netwerk (minder haperen); Miracast werkt mogelijk niet, AirPlay wel"

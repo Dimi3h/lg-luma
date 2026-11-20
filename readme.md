@@ -321,6 +321,10 @@ that happens, so its buttons work again. This was measured with a Stadia control
 OLED55B46LA (webOS 25) only. The first button press after each connection is lost, and LG shows
 its own disconnected and connected notices during the repair.
 
+With the Home takeover, **Settings → System → Stadia controller as Xbox controller** (on by
+default) also presents a Stadia controller as an Xbox 360 controller, so its analog triggers work
+in LG's browser (GeForce NOW). Vibration is not passed on in that mode.
+
 ### Screen Share listening off
 
 While the TV listens for Screen Share (Wi-Fi Direct / Miracast), its Wi-Fi leaves your network for

@@ -2,7 +2,7 @@
 //! input LG's Bluetooth stack stopped delivering (see `luma_tv_helper::bluetooth` for the
 //! measured cause and repair). It runs on its own thread, also while Luma is in the background,
 //! because the game is what runs in front. Decisions go to the main loop for the diagnostics.
-use luma_tv_helper::bluetooth::{Gamepad, Watch};
+use luma_tv_helper::bluetooth::{Decision, Gamepad, MAX_REPAIRS, REPAIR_WINDOW, Watch};
 use serde::Serialize;
 use std::{
     sync::{
@@ -40,6 +40,9 @@ pub struct Evidence {
     pub inactive: Option<String>,
     /// The gamepads currently watched.
     pub watching: Vec<String>,
+    /// The Stadia pad bridge: running, the controller's node (`source`), the virtual pad and
+    /// its nodes, as the bridge writes them.
+    pub pad_bridge: serde_json::Value,
 }
 
 impl Evidence {
@@ -51,6 +54,7 @@ impl Evidence {
             }
             Reply::Inactive(reason) => self.inactive = reason,
             Reply::Watching(addresses) => self.watching = addresses,
+            Reply::Bridge(status) => self.pad_bridge = status,
         }
     }
 }
@@ -61,6 +65,7 @@ pub enum Reply {
     /// `None` once it works again.
     Inactive(Option<String>),
     Watching(Vec<String>),
+    Bridge(serde_json::Value),
 }
 
 /// What the watcher needs from the TV, so its decisions can be tested without one.
@@ -73,6 +78,10 @@ pub trait Tv {
     /// Whether `cache_mtime` reads the file (Luma runs as root).
     fn direct(&self) -> bool;
     fn repair(&self, address: &str) -> Result<String, String>;
+    /// The pad bridge's status (pad.rs in the helper).
+    fn pad_bridge(&self) -> serde_json::Value {
+        serde_json::Value::Null
+    }
 }
 
 /// One pass of the watcher: what it found and repaired. `pads` keeps the last device read
@@ -120,7 +129,10 @@ impl Pass<'_> {
             .iter()
             .map(|(pad, mtime)| (pad.address.clone(), *mtime))
             .collect();
-        for address in self.watch.observe(&connected) {
+        for decision in self.watch.observe(&connected, Instant::now()) {
+            let address = match &decision {
+                Decision::Repair(address) | Decision::Held(address) => address.clone(),
+            };
             let name = self
                 .pads
                 .iter()
@@ -128,24 +140,19 @@ impl Pass<'_> {
                 .map(|(pad, _)| pad.name.clone())
                 .unwrap_or_default();
             let at = now();
-            eprintln!(
-                "Luma gamepad: {at} {name} {address}: input lost after Service Changed; repairing"
-            );
-            let outcome = tv
-                .repair(&address)
-                .unwrap_or_else(|error| format!("failed: {error}"));
-            let done = now();
-            eprintln!("Luma gamepad: {done} {name} {address}: {outcome}");
-            let mtime = if tv.direct() {
-                tv.cache_mtime(&address)
+            let outcome = if matches!(decision, Decision::Held(_)) {
+                format!(
+                    "not repaired: {MAX_REPAIRS} repairs within {} minutes already",
+                    REPAIR_WINDOW.as_secs() / 60
+                )
             } else {
-                tv.gamepads().ok().and_then(|pads| {
-                    pads.into_iter()
-                        .find(|(pad, _)| pad.address == address)
-                        .and_then(|(_, mtime)| mtime)
-                })
+                eprintln!(
+                    "Luma gamepad: {at} {name} {address}: input lost after Service Changed; repairing"
+                );
+                tv.repair(&address)
+                    .unwrap_or_else(|error| format!("failed: {error}"))
             };
-            self.watch.repaired(&address, mtime);
+            eprintln!("Luma gamepad: {} {name} {address}: {outcome}", now());
             replies.push(Reply::Repaired(Repair {
                 at,
                 address,
@@ -155,6 +162,7 @@ impl Pass<'_> {
         }
         if self.read_status {
             replies.push(Reply::Watching(self.watch.watching()));
+            replies.push(Reply::Bridge(tv.pad_bridge()));
         }
         replies
     }

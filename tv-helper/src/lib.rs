@@ -1,10 +1,12 @@
 //! Privileged, bounded TV operations. Shared with Luma for its already-root Home process.
-//! No SDL, image decoding, browser engine, or persistent daemon is needed by the helper.
+//! No SDL, image decoding or browser engine is needed by the helper. Its one long-running mode
+//! is the Stadia pad bridge (`pad-bridge run`), run as its own systemd unit.
 pub mod bluetooth;
 pub mod files;
 pub mod home;
 pub mod input;
 pub mod memory;
+pub mod pad;
 pub mod preload;
 pub mod screensaver;
 pub mod system;

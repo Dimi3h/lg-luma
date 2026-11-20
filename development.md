@@ -1283,8 +1283,8 @@ controller (BLE HID, class of device 1288) on an LG OLED55B46LA (webOS 25, Media
 stack) only; other controllers, the Realtek tree, and behaviour across a TV suspend are not
 verified.
 
-- **Cause (HCI snoop on the TV):** at its first button press after every new LE connection the
-  controller sends Service Changed (handle 0x0003, range 0x0001–0xffff). LG's stack rediscovers
+- **Cause (HCI snoop on the TV):** at its first button press after every new LE connection, and
+  again after being idle on the same link, the controller sends Service Changed (handle 0x0003, range 0x0001–0xffff). LG's stack rediscovers
   the services, clears the HID notification registration and never restores it: input
   notifications (handle 0x0040) keep arriving at HCI, but nothing reaches `/dev/uhid`. A plain HID
   disconnect and connect does not help: it makes a new LE connection, and the next press sends
@@ -1301,9 +1301,16 @@ verified.
   connected, its cache file's time is checked every second (Luma running as root reads it
   itself; otherwise the elevated helper, `luma-helper bluetooth status`, reads both every 3 s,
   and every 10 s while no gamepad is connected).
-  The first reading of a connection is its baseline; a later change repairs once, and the
-  repair's own reading becomes the new baseline. Without the cache file or tree the feature is
-  simply inactive.
+  The first reading of a connection is its baseline; every later rewrite repairs again. The
+  controller also sent Service Changed after being idle on the same link (21:28:07 and again at
+  21:45:06 UTC, no connection event between), and a repair can drop the link itself: at
+  21:45:10.972, 2 s after `hid/disconnect`, HCI reported disconnect reason 0x08 (connection
+  timeout), a new LE connection followed at 21:45:11.088 and the controller sent the indication
+  again at 21:45:14.552; a second repair held. So no repair is final, and the baseline is never
+  re-read after a repair: a rewrite during it is repaired next. At most 5 repairs of one gamepad
+  run within 5 minutes (counted across reconnects); further rewrites are logged as not repaired,
+  so a stack that rewrites the cache because of the repair itself cannot loop. Without the
+  cache file or tree the feature is simply inactive.
 - **Repair (`tv-helper/src/bluetooth.rs`, as root through `luna-send`, otherwise through
   `luma-helper bluetooth repair ADDRESS`):** `gatt/connect` (a second GATT client keeps the LE link
   up; idempotent), `hid/disconnect`, up to 6 s for HID to drop and about 3 s in all,
@@ -1354,6 +1361,64 @@ Not verified: whether the disabled state survives a reboot or a suspend (`listen
 shows it), whether LG's miracast daemon (`/usr/sbin/miracast`) enables it again by itself
 (`disabled_again` counts it), whether `p2p/getstate` accepts a subscription, and whether Luma's
 own identity may call `p2p/*`.
+
+### Stadia controller as Xbox controller
+
+Settings › System › Stadia controller as Xbox controller (`pad_bridge`, on by default) presents
+the Stadia controller as a virtual Xbox 360 pad. In LG's browser (Chromium 120, where GeForce NOW
+runs) the controller's buttons, sticks and D-pad worked but its analog triggers did not. The
+kernel reports them as `ABS_GAS` (right) and `ABS_BRAKE` (left), with the right stick on
+`ABS_Z`/`ABS_RZ` (capabilities abs=30627, 15 keys of which four are `BTN_TRIGGER_HAPPY`); that the
+browser's mapping is the cause is an inference. Measured on an LG OLED55B46LA (webOS 25): with the
+virtual pad the user could accelerate in a game in GeForce NOW.
+
+- **Bridge (`tv-helper/src/pad.rs`, `luma-helper pad-bridge run`):** a uinput device named
+  "Microsoft X-Box 360 pad" (USB, 045e:028e, version 0x0114) with BTN_A, B, X, Y, TL, TR, SELECT,
+  START, MODE, THUMBL and THUMBR, sticks on ABS_X/Y/RX/RY (-32768..32767, fuzz 16, flat 128),
+  triggers on ABS_Z/RZ (0..255) and the hat on ABS_HAT0X/Y. It reads the controller (Bluetooth,
+  18d1:9400 only; other controllers are untested) with `EVIOCGRAB` and translates: sticks from
+  0..255 to the Xbox range, ABS_Z/RZ to ABS_RX/RY, ABS_BRAKE/GAS to ABS_Z/RZ, the hat and the
+  eleven buttons unchanged.
+- **Lifetime:** the virtual pad is created when the controller is first seen and kept until a
+  reboot or until the setting goes off, through the controller's reconnects (every Bluetooth
+  repair recreates the controller's input device); when the controller goes away the pad is set
+  to rest and the bridge looks for it again.
+- **Started before a game:** if the browser already knew the real controller, the virtual pad
+  became a second player and the game ignored it, while the grabbed real one was silent. So the
+  bridge runs as its own systemd unit (`luma-pad-bridge`) started by the Home takeover's apply,
+  at every cold boot and on enable, and stopped on disable. Switching the setting writes or
+  removes `/var/lib/luma-home/pad-bridge.off` and starts or stops the unit.
+- **TV workarounds from the prototype:** the controller is opened through a node of the bridge's
+  own made from `/sys/class/input/eventN/dev` (the static `/dev/input/eventN` could point at a
+  dead earlier instance after a reconnect, ENODEV); one second after creating the pad it writes
+  "add" to the pad's `jsN/uevent` again (the browser sometimes lost the race with the node's
+  permissions on the first event and never opened `jsN`); and it has no signal handler, so a stop
+  ends it at once and the kernel removes the pad.
+- **The real controller is hidden from apps:** the bridge grabs it, so its joystick node only
+  shows its untouched start state; on the TV `/dev/input/js6` read -32767 on axes 0–5 (both
+  sticks pinned in a corner) and the browser, which had both pads open, treated that as a second
+  live pad ("the controller does very strange things"). At every start (after `systemd-run`) the
+  helper writes the runtime udev rule `/run/udev/rules.d/99-luma-stadia-hide.rules`
+  (`SUBSYSTEM=="input", ATTRS{id/vendor}=="18d1", ATTRS{id/product}=="9400"` clears `ID_INPUT`,
+  `ID_INPUT_JOYSTICK` and `ID_INPUT_KEY` and sets mode 0600), runs `udevadm control --reload` and
+  triggers a change for the controller's present `eventN`/`jsN`. /run is not persistent, so this
+  repeats at every start; the rule also applies to the input device each repair recreates.
+  Applied by hand on the TV, the browser then opened only the virtual pad (`event10`, `js7`) and
+  `hidraw0`, and its home screen stayed still. Stopping the bridge or switching the setting off
+  removes the rule, reloads and triggers the controller again so apps get it back; the unit also
+  does that when it ends for any other reason (`ExecStopPost`, where the TV's systemd accepts it
+  for a transient unit; otherwise only on stop, and the boot log says so). An app that was already
+  running when the rule changed keeps its old view until it is restarted. The controller's
+  `hidraw` node is not hidden (the browser opens it for rumble; hiding it was not needed).
+- **Limitation:** rumble is not forwarded. The browser wrote rumble to the controller's hidraw;
+  with the virtual pad it has nowhere to send it.
+- **Diagnostics:** the bridge writes `/var/run/luma-pad-bridge.json`, shown as
+  `gamepad_repair.pad_bridge` in `luma-diagnostics.json`: whether it runs, the controller's node
+  (`source`), the virtual pad (`pad`) and its nodes, and how often the controller connected.
+  `boot.log` gets `pad bridge: …` from the apply.
+
+Not verified: behaviour across a TV suspend, a second controller, and whether LG shows anything for
+the extra input device (none was seen).
 
 ## Manual extra-app preview
 
