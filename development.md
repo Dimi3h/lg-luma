@@ -1392,8 +1392,11 @@ virtual pad the user could accelerate in a game in GeForce NOW.
   own made from `/sys/class/input/eventN/dev` (the static `/dev/input/eventN` could point at a
   dead earlier instance after a reconnect, ENODEV); one second after creating the pad it writes
   "add" to the pad's `jsN/uevent` again (the browser sometimes lost the race with the node's
-  permissions on the first event and never opened `jsN`); and it has no signal handler, so a stop
-  ends it at once and the kernel removes the pad.
+  permissions on the first event and never opened `jsN`); and it never blocks in `read()`: one
+  single-threaded `poll()` covers the virtual pad and the controller, so the unit's SIGTERM
+  (whose handler only sets a flag; the prototype's handler left it blocked in `read()`) ends it
+  within the wait, after it sends zeros to the controller's motors, and the kernel removes the
+  pad.
 - **The real controller is hidden from apps:** the bridge grabs it, so its joystick node only
   shows its untouched start state; on the TV `/dev/input/js6` read -32767 on axes 0–5 (both
   sticks pinned in a corner) and the browser, which had both pads open, treated that as a second
@@ -1410,15 +1413,32 @@ virtual pad the user could accelerate in a game in GeForce NOW.
   for a transient unit; otherwise only on stop, and the boot log says so). An app that was already
   running when the rule changed keeps its old view until it is restarted. The controller's
   `hidraw` node is not hidden (the browser opens it for rumble; hiding it was not needed).
-- **Limitation:** rumble is not forwarded. The browser wrote rumble to the controller's hidraw;
-  with the virtual pad it has nowhere to send it.
+- **Rumble:** the virtual pad offers force feedback like xpad (`EV_FF` with `FF_RUMBLE` and
+  `FF_GAIN`, 16 effects). The bridge serves the uinput force-feedback protocol on the pad's
+  descriptor (upload and erase answered at once, also while the controller is away during a
+  repair, so an app's ioctl never waits) and plays effects on the controller as its rumble
+  output report: id 5, then the strong and the weak magnitude as little-endian 16-bit values, as
+  the kernel's hid-google-stadiaff sends it. The browser's own writes to the controller (ATT
+  handle 0x0044, e.g. `006e0000`, `00000022`) fit that layout, and on the TV writing
+  `05 ff ff ff ff` to the controller's hidraw node made it vibrate until `05 00 00 00 00`
+  followed a second later. Several effects at once
+  play their strongest magnitudes, scaled by the gain; an effect's replay length is honoured with
+  the poll's timeout (its delay is not). The hidraw node belongs to the same uhid device as the
+  controller's input device and is found from it in sysfs (`eventN/device/device/hidraw`), opened
+  through a node of the bridge's own and reopened with the controller after every repair. Zeros
+  are sent when an effect stops or ends, is erased while playing, when the controller goes away
+  and when the bridge stops; whatever plays is sent again when the controller returns.
 - **Diagnostics:** the bridge writes `/var/run/luma-pad-bridge.json`, shown as
   `gamepad_repair.pad_bridge` in `luma-diagnostics.json`: whether it runs, the controller's node
-  (`source`), the virtual pad (`pad`) and its nodes, and how often the controller connected.
-  `boot.log` gets `pad bridge: …` from the apply.
+  (`source`), the virtual pad (`pad`) and its nodes, how often the controller connected, whether
+  rumble is available (`rumble`, the `hidraw` node open) and how many effects apps uploaded and
+  played (`effects_uploaded`, `effects_played`, written at most every 2 s). `boot.log` gets
+  `pad bridge: …` from the apply.
 
-Not verified: behaviour across a TV suspend, a second controller, and whether LG shows anything for
-the extra input device (none was seen).
+Not verified: that LG's browser plays rumble through evdev force feedback on a 360-style pad (it
+rumbled the real controller through hidraw, a different path; the effect counters show whether it
+uploads any), which of the two magnitudes drives which motor, behaviour across a TV suspend, a second controller, and whether LG shows anything for the
+extra input device (none was seen).
 
 ## Manual extra-app preview
 

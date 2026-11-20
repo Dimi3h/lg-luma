@@ -1012,8 +1012,8 @@
     "nl": "Stadia-controller als Xbox-controller"
   },
   "padBridgeDetail": {
-    "en": "Makes its triggers work in the browser (GeForce NOW); vibration is not passed on",
-    "nl": "Laat de triggers werken in de browser (GeForce NOW); trillen werkt dan niet"
+    "en": "Makes its triggers work in the browser (GeForce NOW) and passes on vibration",
+    "nl": "Laat de triggers werken in de browser (GeForce NOW) en geeft trillen door"
   },
   "wifiDirectOffDetail": {
     "en": "Keeps Wi-Fi on your network (less stutter); Miracast may not work, AirPlay does",

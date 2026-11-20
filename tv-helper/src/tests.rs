@@ -2090,3 +2090,75 @@ fn the_real_stadia_controller_is_hidden_from_apps_while_the_bridge_runs() {
     );
     assert!(g.calls().contains(&plain));
 }
+
+#[test]
+fn rumble_reports_follow_the_stadia_layout() {
+    use crate::pad::rumble_report;
+    // Report id 5, strong then weak, little-endian: the browser's writes on the TV, such as
+    // 006e0000 (strong 0x6e00) and 00000022 (weak 0x2200), fit this layout.
+    assert_eq!(rumble_report(0x6e00, 0), [0x05, 0x00, 0x6e, 0x00, 0x00]);
+    assert_eq!(rumble_report(0, 0x2200), [0x05, 0x00, 0x00, 0x00, 0x22]);
+    assert_eq!(
+        rumble_report(0xffff, 0xffff),
+        [0x05, 0xff, 0xff, 0xff, 0xff]
+    );
+    assert_eq!(rumble_report(0, 0), [0x05, 0, 0, 0, 0]);
+}
+
+#[test]
+fn rumble_effects_are_uploaded_played_timed_and_stopped() {
+    use crate::pad::{FF_GAIN, FF_RUMBLE, Rumble, rumble_report};
+    use std::time::Instant;
+    let start = Instant::now();
+    let ms = |value: u64| start + Duration::from_millis(value);
+    let mut rumble = Rumble::default();
+    // Only rumble effects are accepted.
+    assert!(!rumble.upload(0, 0x51, 100, 100, 0));
+    assert!(rumble.upload(0, FF_RUMBLE, 0x8000, 0x2000, 500));
+    assert!(rumble.upload(1, FF_RUMBLE, 0x1000, 0xc000, 0));
+    assert_eq!(rumble.uploaded, 2);
+    // Play effect 0: its magnitudes go out, and it ends by itself after its replay length.
+    assert_eq!(
+        rumble.event(0, 1, ms(0)),
+        Some(rumble_report(0x8000, 0x2000))
+    );
+    assert_eq!(rumble.played, 1);
+    assert_eq!(rumble.next_end(), Some(ms(500)));
+    assert_eq!(rumble.tick(ms(499)), None);
+    assert_eq!(rumble.tick(ms(500)), Some(rumble_report(0, 0)));
+    // Two effects at once play their strongest magnitudes; stopping one leaves the other.
+    rumble.event(0, 1, ms(1000));
+    assert_eq!(
+        rumble.event(1, 1, ms(1000)),
+        Some(rumble_report(0x8000, 0xc000))
+    );
+    assert_eq!(
+        rumble.event(0, 0, ms(1100)),
+        Some(rumble_report(0x1000, 0xc000))
+    );
+    // No replay length: plays until stopped.
+    assert_eq!(rumble.tick(ms(60_000)), None);
+    // The gain scales what plays, at once.
+    assert_eq!(
+        rumble.event(FF_GAIN, 0x8000, ms(60_000)),
+        Some(rumble_report(0x0800, 0x6000))
+    );
+    // Erasing a playing effect stops it.
+    assert_eq!(rumble.erase(1), Some(rumble_report(0, 0)));
+    assert_eq!(rumble.event(1, 1, ms(60_001)), None);
+    // A changed upload in place takes effect at the next play.
+    rumble.event(FF_GAIN, 0xffff, ms(60_002));
+    assert!(rumble.upload(0, FF_RUMBLE, 0x4000, 0, 0));
+    assert_eq!(
+        rumble.event(0, 1, ms(60_003)),
+        Some(rumble_report(0x4000, 0))
+    );
+    // The controller reconnects: what plays is sent again; it goes away or the bridge ends:
+    // zeros, once.
+    assert_eq!(rumble.resend(), rumble_report(0x4000, 0));
+    assert_eq!(rumble.stop_all(), Some(rumble_report(0, 0)));
+    assert_eq!(rumble.stop_all(), None);
+    // Nothing is sent when nothing changes, and unknown effects never play.
+    assert_eq!(rumble.event(7, 1, ms(60_004)), None);
+    assert_eq!(rumble.event(7, 0, ms(60_005)), None);
+}

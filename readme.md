@@ -323,7 +323,8 @@ its own disconnected and connected notices during the repair.
 
 With the Home takeover, **Settings → System → Stadia controller as Xbox controller** (on by
 default) also presents a Stadia controller as an Xbox 360 controller, so its analog triggers work
-in LG's browser (GeForce NOW). Vibration is not passed on in that mode.
+in LG's browser (GeForce NOW). Vibration that a game sends to the Xbox controller is passed on to
+the Stadia controller.
 
 ### Screen Share listening off
 
