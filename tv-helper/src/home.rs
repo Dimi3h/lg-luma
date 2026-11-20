@@ -290,6 +290,11 @@ impl<'a, S: System> Home<'a, S> {
         steps.log("SAM answered");
         let result = self.apply_now(config, open, &steps);
         steps.log(if result.is_ok() { "done" } else { "failed" });
+        // Memory compression (Settings › System) is set up by the same apply, after Home is up.
+        match crate::memory::apply(self.system) {
+            Ok(done) => steps.log(&format!("memory compression: {done}")),
+            Err(error) => steps.log(&format!("memory compression not applied: {error}")),
+        }
         result
     }
     fn apply_now(&self, config: &Config, open: bool, steps: &Steps<'_, S>) -> Result<()> {

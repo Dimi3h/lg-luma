@@ -296,10 +296,19 @@ pub struct Preferences {
     pub preload_apps: bool,
     /// How often each app was launched from Luma, to choose what to preload.
     pub launch_counts: BTreeMap<String, u32>,
+    /// The apps the user chose to preload (Settings › General › Preload apps, or an app's menu),
+    /// preloaded in grid order. Empty: the automatic choice of the most launched web apps.
+    pub preload_list: Vec<String>,
     /// Apps that came to the front when preloaded hidden; never preloaded again.
     pub preload_blocked: Vec<String>,
     /// LG preload entries Luma switched off (for hidden apps), so only those are switched on again.
     pub preload_lg_disabled: Vec<String>,
+    /// LG preload entries Luma switched on (for apps in `preload_list`), so only those are
+    /// switched off again.
+    pub preload_lg_enabled: Vec<String>,
+    /// Settings › System › Memory compression: a compressed swap in RAM (zram), applied by the
+    /// Home takeover's boot hook. Off only stops applying it at the next cold boot.
+    pub memory_compression: bool,
     #[serde(deserialize_with = "deserialize_appearance")]
     pub appearance: Appearance,
     /// The 24-hour choice as earlier versions saved it: written with every preference file, so
@@ -344,6 +353,9 @@ impl Default for Preferences {
             launch_counts: BTreeMap::new(),
             preload_blocked: vec![],
             preload_lg_disabled: vec![],
+            preload_list: vec![],
+            preload_lg_enabled: vec![],
+            memory_compression: true,
             appearance: Appearance::Dark,
             hour_24: false,
             clock_24: None,

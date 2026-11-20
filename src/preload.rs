@@ -18,7 +18,7 @@ use std::{
     time::Duration,
 };
 
-/// At most this many of the user's apps are kept preloaded.
+/// The automatic choice (no list of the user's own) keeps at most this many apps alive.
 pub const MAX_APPS: usize = 3;
 /// No preload starts below this much available memory (`MemAvailable`, MB). On the TV this was
 /// tuned on (1.7 GB RAM, swap in heavy use), one preloaded web app had 74 MB resident.
@@ -32,13 +32,27 @@ pub const FOREGROUND_CHECK: Duration = Duration::from_secs(3);
 /// Launch counts kept in the preferences (the most launched ones).
 const MAX_COUNTS: usize = 64;
 
-/// The apps worth keeping preloaded, best first: web apps only, never one that came forward
-/// before, ranked by launches from Luma and then by their place in the grid.
+/// The apps worth keeping preloaded, best first.
+///
+/// - With the user's own list (`preload_list`): every listed app in grid order, web or native,
+///   with no fixed number; memory, swap and the apps already running decide how many load.
+/// - Without one: the automatic choice, up to `MAX_APPS` web apps ranked by launches from Luma
+///   and then grid order.
+///
+/// Never an app that came forward when preloaded (`blocked`).
 pub fn chosen<'a>(
     apps: &[&'a App],
     counts: &BTreeMap<String, u32>,
     blocked: &[String],
+    list: &[String],
 ) -> Vec<&'a App> {
+    if !list.is_empty() {
+        return apps
+            .iter()
+            .filter(|app| list.contains(&app.id) && !blocked.contains(&app.id))
+            .copied()
+            .collect();
+    }
     let mut ranked: Vec<(usize, &App)> = apps
         .iter()
         .enumerate()
@@ -53,16 +67,25 @@ pub fn chosen<'a>(
         .collect()
 }
 
+/// How many of the user's apps may run before preloading stops: `MAX_APPS` for the automatic
+/// choice; none for the user's own list, where memory and swap decide.
+pub fn running_limit(list: &[String]) -> Option<usize> {
+    list.is_empty().then_some(MAX_APPS)
+}
+
 /// The next app to preload: the best chosen one not tried since Luma last came to the front.
+/// Apps in LG's own preload policy (`lg_listed`) are left to LG, which preloads them itself.
 pub fn next(
     apps: &[&App],
     counts: &BTreeMap<String, u32>,
     blocked: &[String],
+    list: &[String],
     tried: &HashSet<String>,
+    lg_listed: &[String],
 ) -> Option<String> {
-    chosen(apps, counts, blocked)
+    chosen(apps, counts, blocked, list)
         .into_iter()
-        .find(|app| !tried.contains(&app.id))
+        .find(|app| !tried.contains(&app.id) && !lg_listed.contains(&app.id))
         .map(|app| app.id.clone())
 }
 
@@ -132,26 +155,82 @@ pub fn memory_allows(meminfo: Option<&str>) -> Result<u64, Outcome> {
 /// Swap must be at least this share free (1/3) before a preload.
 pub const SWAP_FREE_SHARE: u64 = 3;
 
-/// LG's preload policy changes for the hidden-app rule: with the setting on, LG's preloads of
-/// apps hidden in Luma go off and the ones Luma switched off earlier for apps shown again come
-/// back on; with it off, everything Luma switched off comes back on. Entries for apps the user
-/// did not hide are never touched (the helper also skips ids LG's policy does not list).
+/// LG's preload policy changes, as `(disable, enable)` for the helper (which skips ids LG's policy
+/// does not list and only switches entries that differ):
+///
+/// - with the setting on, LG's preloads of apps hidden in Luma go off and LG's preloads of apps
+///   in the user's list go on (hidden wins);
+/// - entries Luma switched off before (`disabled_by_luma`) come back on once not wanted off, and
+///   entries Luma switched on (`enabled_by_luma`) go back off once not wanted on;
+/// - with the setting off, everything Luma changed goes back.
+///
+/// Entries Luma never changed and that are neither hidden nor listed are not touched.
 pub fn lg_policy_change(
     enabled: bool,
     hidden: &[String],
+    list: &[String],
     disabled_by_luma: &[String],
+    enabled_by_luma: &[String],
 ) -> (Vec<String>, Vec<String>) {
-    let mut disable: Vec<String> = if enabled { hidden.to_vec() } else { vec![] };
+    let want_off: Vec<&String> = if enabled {
+        hidden.iter().collect()
+    } else {
+        vec![]
+    };
+    let want_on: Vec<&String> = if enabled {
+        list.iter().filter(|id| !hidden.contains(id)).collect()
+    } else {
+        vec![]
+    };
+    let mut disable: Vec<String> = want_off
+        .iter()
+        .map(|id| (*id).clone())
+        .chain(
+            enabled_by_luma
+                .iter()
+                .filter(|id| !want_on.contains(id))
+                .cloned(),
+        )
+        .collect();
+    let mut enable: Vec<String> = want_on
+        .iter()
+        .map(|id| (*id).clone())
+        .chain(
+            disabled_by_luma
+                .iter()
+                .filter(|id| !want_off.contains(id))
+                .cloned(),
+        )
+        .collect();
     disable.sort();
     disable.dedup();
-    let mut enable: Vec<String> = disabled_by_luma
-        .iter()
-        .filter(|id| !disable.contains(id))
-        .cloned()
-        .collect();
     enable.sort();
     enable.dedup();
     (disable, enable)
+}
+
+/// Which LG policy entries Luma has changed, after the helper switched `off` and `on`: switching
+/// back an entry Luma changed earlier restores LG's own value instead of being remembered.
+pub fn record_policy_change(
+    off: &[String],
+    on: &[String],
+    disabled_by_luma: &mut Vec<String>,
+    enabled_by_luma: &mut Vec<String>,
+) {
+    for id in off {
+        if let Some(index) = enabled_by_luma.iter().position(|other| other == id) {
+            enabled_by_luma.remove(index);
+        } else if !disabled_by_luma.contains(id) {
+            disabled_by_luma.push(id.clone());
+        }
+    }
+    for id in on {
+        if let Some(index) = disabled_by_luma.iter().position(|other| other == id) {
+            disabled_by_luma.remove(index);
+        } else if !enabled_by_luma.contains(id) {
+            enabled_by_luma.push(id.clone());
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -219,16 +298,27 @@ pub struct Decision {
 pub const DECISIONS: usize = 24;
 
 pub enum Job {
-    /// `user_apps`: the ids in Luma's grid, to count which of them run already.
+    /// `user_apps`: the ids in Luma's grid, to count which of them run already, against
+    /// `limit` (none for the user's own list).
     Preload {
         id: String,
         own: &'static str,
         user_apps: Vec<String>,
+        limit: Option<usize>,
     },
     Policy {
         disable: Vec<String>,
         enable: Vec<String>,
     },
+    /// Settings › System › Memory compression switched (through the elevated helper).
+    MemoryCompression(bool),
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PolicyChange {
+    pub off: Vec<String>,
+    pub on: Vec<String>,
+    pub listed: Vec<String>,
 }
 
 pub enum Reply {
@@ -236,8 +326,9 @@ pub enum Reply {
         id: String,
         outcome: Outcome,
     },
-    /// The ids Luma switched off and on in LG's policy.
-    Policy(Result<(Vec<String>, Vec<String>), String>),
+    /// The ids Luma switched off and on in LG's policy, and every id LG's policy lists.
+    Policy(Result<PolicyChange, String>),
+    MemoryCompression(Result<String, String>),
 }
 
 /// A thread for preload work: a preload waits seconds to check the foreground, which must never
@@ -256,12 +347,20 @@ impl Service {
             .spawn(move || {
                 while let Ok(job) = jobs.recv() {
                     let reply = match job {
-                        Job::Preload { id, own, user_apps } => Reply::Preloaded {
-                            outcome: crate::platform::preload_app(&id, own, &user_apps),
+                        Job::Preload {
+                            id,
+                            own,
+                            user_apps,
+                            limit,
+                        } => Reply::Preloaded {
+                            outcome: crate::platform::preload_app(&id, own, &user_apps, limit),
                             id,
                         },
                         Job::Policy { disable, enable } => {
                             Reply::Policy(crate::platform::preload_policy(&disable, &enable))
+                        }
+                        Job::MemoryCompression(on) => {
+                            Reply::MemoryCompression(crate::platform::memory_compression(on))
                         }
                     };
                     if replies.send(reply).is_err() {

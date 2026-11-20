@@ -920,6 +920,12 @@ fn run() -> Result<(), String> {
     let mut preload_log: std::collections::VecDeque<preload::Decision> = Default::default();
     let mut policy_sent: Option<(Vec<String>, Vec<String>)> = None;
     let mut policy_busy = false;
+    // The apps LG's own policy preloads (left to LG); known after the first policy reply, and
+    // nothing is preloaded before that.
+    let mut lg_listed: Option<Vec<String>> = None;
+    // Memory compression is only sent to the helper when the setting changes; cold boots apply
+    // it through the Home takeover's boot hook.
+    let mut memory_compression_sent: Option<bool> = None;
     let update_quit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     frame_stats.set_foreground(stats_written, true);
     let mut presented = 0usize;
@@ -2150,17 +2156,22 @@ fn run() -> Result<(), String> {
                         }
                         record(&id, outcome.describe());
                     }
+                    preload::Reply::MemoryCompression(result) => match result {
+                        Ok(done) => record("memory compression", done),
+                        Err(error) => record("memory compression", format!("failed: {error}")),
+                    },
                     preload::Reply::Policy(result) => {
                         policy_busy = false;
                         match result {
-                            Ok((off, on)) => {
-                                let lg = &mut state.preferences.preload_lg_disabled;
-                                lg.retain(|id| !on.contains(id));
-                                for id in &off {
-                                    if !lg.contains(id) {
-                                        lg.push(id.clone());
-                                    }
-                                }
+                            Ok(preload::PolicyChange { off, on, listed }) => {
+                                lg_listed = Some(listed);
+                                let preferences = &mut state.preferences;
+                                preload::record_policy_change(
+                                    &off,
+                                    &on,
+                                    &mut preferences.preload_lg_disabled,
+                                    &mut preferences.preload_lg_enabled,
+                                );
                                 if !off.is_empty() || !on.is_empty() {
                                     if let Err(error) =
                                         storage::save(&preferences_path, &state.preferences)
@@ -2173,22 +2184,37 @@ fn run() -> Result<(), String> {
                                     );
                                 }
                             }
-                            Err(error) => record("LG preload policy", format!("failed: {error}")),
+                            Err(error) => {
+                                // Without the helper Luma cannot tell; it preloads all itself.
+                                lg_listed.get_or_insert_with(Vec::new);
+                                record("LG preload policy", format!("failed: {error}"))
+                            }
                         }
                     }
                 }
             }
-            // LG's own preloads of apps hidden in Luma: off; back on when shown again or with
-            // the setting off. Sent again after every start, as LG may restore them at boot.
+            let compression = state.preferences.memory_compression;
+            match memory_compression_sent {
+                None => memory_compression_sent = Some(compression),
+                Some(sent) if sent != compression => {
+                    memory_compression_sent = Some(compression);
+                    service.send(preload::Job::MemoryCompression(compression));
+                }
+                Some(_) => {}
+            }
+            // LG's own preloads: off for apps hidden in Luma, on for apps in the user's list
+            // (LG then preloads those itself), and back as LG had them when no longer wanted.
+            // Sent once after every start (LG may restore its policy at boot, and the reply
+            // says which apps LG preloads), then again on every change.
             if !policy_busy && !state.inventory.apps.is_empty() {
                 let wanted = preload::lg_policy_change(
                     state.preferences.preload_apps,
                     &state.preferences.hidden,
+                    &state.preferences.preload_list,
                     &state.preferences.preload_lg_disabled,
+                    &state.preferences.preload_lg_enabled,
                 );
-                if policy_sent.as_ref() != Some(&wanted)
-                    && !(wanted.0.is_empty() && wanted.1.is_empty())
-                {
+                if policy_sent.as_ref() != Some(&wanted) {
                     policy_busy = true;
                     service.send(preload::Job::Policy {
                         disable: wanted.0.clone(),
@@ -2209,11 +2235,14 @@ fn run() -> Result<(), String> {
                 && !state.inventory.apps.is_empty()
                 && state.last_input.elapsed() >= preload::IDLE
                 && preload_last.is_none_or(|last| last.elapsed() >= preload::SPACING)
+                && let Some(listed) = &lg_listed
                 && let Some(id) = preload::next(
                     &state.apps(),
                     &state.preferences.launch_counts,
                     &state.preferences.preload_blocked,
+                    &state.preferences.preload_list,
                     &preload_tried,
+                    listed,
                 )
             {
                 preload_tried.insert(id.clone());
@@ -2225,7 +2254,13 @@ fn run() -> Result<(), String> {
                     platform::APP_ID
                 };
                 let user_apps = state.apps().iter().map(|app| app.id.clone()).collect();
-                service.send(preload::Job::Preload { id, own, user_apps });
+                let limit = preload::running_limit(&state.preferences.preload_list);
+                service.send(preload::Job::Preload {
+                    id,
+                    own,
+                    user_apps,
+                    limit,
+                });
             }
         }
         if foreground.failed(Instant::now())

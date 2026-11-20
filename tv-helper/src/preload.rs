@@ -71,7 +71,8 @@ fn set(system: &impl System, id: &str, enabled: bool) -> Result<()> {
 /// `{"disable": [ids], "enable": [ids]}`: switches LG's entries for those apps off or on (ids
 /// LG's policy does not list are skipped) and closes an instance LG already preloaded hidden of
 /// an app it switched off. Replies with the ids it switched off (`disabled`) and on (`enabled`),
-/// so Luma only ever switches on again what it switched off itself.
+/// so Luma only ever switches back what it switched itself, and every id the policy lists
+/// (`listed`): LG preloads those itself, so Luma does not launch them a second time.
 pub fn dispatch(system: &impl System, request: &str) -> Result<Value> {
     system::root(system)?;
     let request: Value = serde_json::from_str(request).map_err(|e| e.to_string())?;
@@ -113,5 +114,10 @@ pub fn dispatch(system: &impl System, request: &str) -> Result<Value> {
             enabled.push(id.clone());
         }
     }
-    Ok(json!({"returnValue": true, "disabled": disabled, "enabled": enabled}))
+    Ok(json!({
+        "returnValue": true,
+        "disabled": disabled,
+        "enabled": enabled,
+        "listed": entries.keys().collect::<Vec<_>>(),
+    }))
 }

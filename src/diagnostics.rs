@@ -310,6 +310,13 @@ impl Writer {
                     if let (Some(object), Some(decisions)) = (value.as_object_mut(), &preload) {
                         object.insert("preload".into(), decisions.clone());
                     }
+                    // Read here, off the SDL thread: memory and swap at the time of writing.
+                    if let Some(object) = value.as_object_mut()
+                        && let Some(memory) =
+                            memory_state(&|path| std::fs::read_to_string(path).ok())
+                    {
+                        object.insert("memory".into(), memory);
+                    }
                     if let Err(error) = write_startup(&path, &value) {
                         eprintln!("Luma diagnostics file: {error}");
                     }
@@ -356,6 +363,66 @@ impl Drop for Writer {
             let _ = thread.join();
         }
     }
+}
+
+/// Memory, swap and compressed swap (zram) as the kernel reports them, for
+/// `luma-diagnostics.json`; `None` where `/proc/meminfo` cannot be read (desktop previews).
+pub fn memory_state(read: &dyn Fn(&str) -> Option<String>) -> Option<serde_json::Value> {
+    let meminfo = read("/proc/meminfo")?;
+    let mb = |field: &str| {
+        meminfo
+            .lines()
+            .find_map(|line| line.strip_prefix(field)?.strip_prefix(':'))
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|kb| kb.parse::<u64>().ok())
+            .map(|kb| kb / 1024)
+    };
+    let swaps: Vec<serde_json::Value> = read("/proc/swaps")
+        .unwrap_or_default()
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            (fields.len() >= 5).then(|| {
+                serde_json::json!({
+                    "device": fields[0],
+                    "size_mb": fields[2].parse::<u64>().unwrap_or(0) / 1024,
+                    "used_mb": fields[3].parse::<u64>().unwrap_or(0) / 1024,
+                    "priority": fields[4].parse::<i64>().unwrap_or(0),
+                })
+            })
+        })
+        .collect();
+    let zram: Vec<serde_json::Value> = (0..4)
+        .filter_map(|index| {
+            let block = format!("/sys/block/zram{index}");
+            let disksize = read(&format!("{block}/disksize"))?.trim().parse::<u64>().ok()?;
+            let stat: Vec<u64> = read(&format!("{block}/mm_stat"))
+                .unwrap_or_default()
+                .split_whitespace()
+                .filter_map(|value| value.parse().ok())
+                .collect();
+            let (data, used) = (
+                stat.first().copied().unwrap_or(0),
+                stat.get(2).copied().unwrap_or(0),
+            );
+            Some(serde_json::json!({
+                "device": format!("/dev/zram{index}"),
+                "disksize_mb": disksize / 1024 / 1024,
+                "data_mb": data / 1024 / 1024,
+                "ram_mb": used / 1024 / 1024,
+                "ratio": if used > 0 { (data as f64 / used as f64 * 10.).round() / 10. } else { 0. },
+            }))
+        })
+        .collect();
+    Some(serde_json::json!({
+        "mem_total_mb": mb("MemTotal"),
+        "mem_available_mb": mb("MemAvailable"),
+        "swap_total_mb": mb("SwapTotal"),
+        "swap_free_mb": mb("SwapFree"),
+        "swaps": swaps,
+        "zram": zram,
+    }))
 }
 
 /// Writes the startup facts (text mode, MSAA samples obtained, drawable, GL strings) as JSON,
@@ -454,6 +521,32 @@ mod tests {
         long.add(900.);
         assert_eq!(long.timing().max_ms, 900.);
         assert_eq!(long.timing().p95_ms, 250.);
+    }
+
+    #[test]
+    fn memory_state_reports_swaps_and_compressed_swap() {
+        let files = |path: &str| -> Option<String> {
+            Some(
+                match path {
+                    "/proc/meminfo" => "MemTotal: 1748000 kB\nMemAvailable: 535000 kB\nSwapTotal: 1415164 kB\nSwapFree: 700000 kB\n",
+                    "/proc/swaps" => "Filename Type Size Used Priority\n/dev/f2io0 partition 628732 389120 -2\n/dev/zram0 partition 786432 480000 100\n",
+                    "/sys/block/zram0/disksize" => "805306368\n",
+                    "/sys/block/zram0/mm_stat" => "491782144 192937984 192937984 0 0 0 0\n",
+                    _ => return None,
+                }
+                .to_owned(),
+            )
+        };
+        let state = memory_state(&files).unwrap();
+        assert_eq!(state["mem_available_mb"], 522);
+        assert_eq!(state["swap_free_mb"], 683);
+        assert_eq!(state["swaps"][1]["device"], "/dev/zram0");
+        assert_eq!(state["swaps"][1]["priority"], 100);
+        assert_eq!(state["zram"][0]["disksize_mb"], 768);
+        assert_eq!(state["zram"][0]["data_mb"], 469);
+        assert_eq!(state["zram"][0]["ratio"], 2.5);
+        assert_eq!(state["zram"].as_array().unwrap().len(), 1);
+        assert!(memory_state(&|_| None).is_none());
     }
 
     #[test]

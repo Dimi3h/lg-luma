@@ -211,7 +211,12 @@ impl RelaunchWatchdog {
 /// enough memory available and when it is not running yet, from Luma's own connection, as LG's
 /// preload manager does for its own policy. If it comes to the front anyway it is closed and
 /// `own` (Luma's running identity) is brought back.
-pub fn preload_app(id: &str, own: &str, user_apps: &[String]) -> crate::preload::Outcome {
+pub fn preload_app(
+    id: &str,
+    own: &str,
+    user_apps: &[String],
+    limit: Option<usize>,
+) -> crate::preload::Outcome {
     use crate::preload::Outcome;
     let available = match crate::preload::memory_allows(
         std::fs::read_to_string("/proc/meminfo").ok().as_deref(),
@@ -235,7 +240,7 @@ pub fn preload_app(id: &str, own: &str, user_apps: &[String]) -> crate::preload:
         return Outcome::AlreadyRunning;
     }
     let alive = crate::preload::running_user_apps(&running, user_apps);
-    if alive >= crate::preload::MAX_APPS {
+    if limit.is_some_and(|limit| alive >= limit) {
         return Outcome::EnoughRunning(alive);
     }
     if let Err(error) = call(
@@ -269,11 +274,11 @@ pub fn preload_app(id: &str, own: &str, user_apps: &[String]) -> crate::preload:
 
 /// Changes LG's preload policy through the elevated helper (its methods are in the "system"
 /// group): `disable` and `enable` list app ids; ids LG's policy does not list are skipped.
-/// Returns the ids it switched off and the ids it switched on.
+/// Returns the ids it switched off and on, and every id LG's policy lists.
 pub fn preload_policy(
     disable: &[String],
     enable: &[String],
-) -> Result<(Vec<String>, Vec<String>), String> {
+) -> Result<crate::preload::PolicyChange, String> {
     let request = json!({"disable": disable, "enable": enable}).to_string();
     let envelope = call(
         "luna://org.webosbrew.hbchannel.service/exec",
@@ -291,7 +296,11 @@ pub fn preload_policy(
             })
             .unwrap_or_default()
     };
-    Ok((list("disabled"), list("enabled")))
+    Ok(crate::preload::PolicyChange {
+        off: list("disabled"),
+        on: list("enabled"),
+        listed: list("listed"),
+    })
 }
 
 /// Whether a relaunch that never reached the front may set the lifecycle latch: never when this
@@ -299,6 +308,20 @@ pub fn preload_policy(
 /// failure says nothing about the installed one.
 pub fn latch_after_failed_relaunch(exe: &str) -> bool {
     !exe.ends_with(" (deleted)")
+}
+
+/// Switches memory compression through the elevated helper: on applies it now (when zram0 is
+/// unused) and at every cold boot; off stops applying it from the next cold boot.
+pub fn memory_compression(on: bool) -> Result<String, String> {
+    let envelope = call(
+        "luna://org.webosbrew.hbchannel.service/exec",
+        json!({"command": helper_command(
+            "memory-compression",
+            &[if on { "on" } else { "off" }.to_owned()],
+        )?}),
+    )?;
+    let reply = command_reply(&envelope)?;
+    Ok(reply["result"].as_str().unwrap_or("done").to_owned())
 }
 
 /// Written before Luma closes itself after an update replaced its executable, with the version

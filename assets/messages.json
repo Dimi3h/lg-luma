@@ -966,5 +966,33 @@
   "preloadApps": {
     "en": "Preload apps",
     "nl": "Apps voorladen"
+  },
+  "preloadBlocked": {
+    "en": "Can't start hidden",
+    "nl": "Kan niet verborgen starten"
+  },
+  "preloadAutomatic": {
+    "en": "Automatic",
+    "nl": "Automatisch"
+  },
+  "preloadStart": {
+    "en": "Preload",
+    "nl": "Voorladen"
+  },
+  "preloadStop": {
+    "en": "Stop preloading",
+    "nl": "Niet meer voorladen"
+  },
+  "preloadAdded": {
+    "en": "{app} will be preloaded.",
+    "nl": "{app} wordt voortaan voorgeladen."
+  },
+  "preloadRemoved": {
+    "en": "{app} is no longer preloaded.",
+    "nl": "{app} wordt niet meer voorgeladen."
+  },
+  "memoryCompression": {
+    "en": "Memory compression",
+    "nl": "Geheugencompressie"
   }
 }
