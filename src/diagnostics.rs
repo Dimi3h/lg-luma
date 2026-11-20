@@ -82,150 +82,59 @@ fn summarize(samples: &[f64]) -> Option<Timing> {
     })
 }
 
-/// A gap longer than this between two presentations is idle time, not a frame interval:
-/// idle screens draw on demand, so seconds without a frame are expected.
-pub const IDLE_GAP_MS: f64 = 100.;
-/// Interval histogram resolution for the 95th percentile (0.25 ms buckets up to the idle gap).
+/// Histogram resolution: 0.25 ms buckets up to `RANGE_MS`; longer samples share the last.
 const BUCKETS_PER_MS: f64 = 4.;
-const BUCKETS: usize = (IDLE_GAP_MS * BUCKETS_PER_MS) as usize + 1;
+const RANGE_MS: f64 = 250.;
+const BUCKETS: usize = (RANGE_MS * BUCKETS_PER_MS) as usize + 1;
 
-/// Rolling frame statistics while Luma is in front, kept in constant memory: every
-/// presentation is O(1) (a few additions and one histogram bucket), with nothing sorted or
-/// allocated on the SDL thread.
-pub struct FrameStats {
-    presented: u64,
-    partial: u64,
-    full: u64,
-    intervals: u64,
+/// Count, mean, 95th percentile and maximum of millisecond samples in constant memory: a sample
+/// is a few additions and one histogram bucket, with nothing sorted or allocated.
+pub struct Distribution {
+    count: u64,
     sum_ms: f64,
     max_ms: f64,
-    over_20: u64,
-    over_33: u64,
-    histogram: [u32; BUCKETS],
-    foreground_ms: f64,
-    idle_ms: f64,
-    /// While in front: when foreground time was last added up.
-    counted: Option<Instant>,
-    /// While in front: the last presentation, or the moment Luma came to the front.
-    anchor: Option<Instant>,
-    /// Whether `anchor` is a presentation (so the next one completes an interval).
-    anchor_presented: bool,
+    histogram: Box<[u32; BUCKETS]>,
 }
 
-impl Default for FrameStats {
+impl Default for Distribution {
     fn default() -> Self {
         Self {
-            presented: 0,
-            partial: 0,
-            full: 0,
-            intervals: 0,
+            count: 0,
             sum_ms: 0.,
             max_ms: 0.,
-            over_20: 0,
-            over_33: 0,
-            histogram: [0; BUCKETS],
-            foreground_ms: 0.,
-            idle_ms: 0.,
-            counted: None,
-            anchor: None,
-            anchor_presented: false,
+            histogram: Box::new([0; BUCKETS]),
         }
     }
 }
 
-/// What `luma-diagnostics.json` records under `frame_stats`.
+/// A distribution as written to the file.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
-pub struct FrameSummary {
-    pub presented: u64,
-    pub partial_redraws: u64,
-    pub full_redraws: u64,
-    pub partial_share: f64,
-    pub intervals: u64,
-    pub interval_mean_ms: f64,
-    pub interval_p95_ms: f64,
-    pub interval_max_ms: f64,
-    pub intervals_over_20ms: u64,
-    pub intervals_over_33ms: u64,
-    /// Time in front, and the part of it in gaps of more than `IDLE_GAP_MS` without a frame.
-    pub foreground_s: f64,
-    pub idle_s: f64,
+pub struct Spread {
+    pub count: u64,
+    pub mean_ms: f64,
+    pub p95_ms: f64,
+    pub max_ms: f64,
 }
 
-fn millis(from: Instant, to: Instant) -> f64 {
-    to.saturating_duration_since(from).as_secs_f64() * 1000.
+fn round(value: f64) -> f64 {
+    (value * 100.).round() / 100.
 }
 
-impl FrameStats {
-    /// Luma came to the front or left it. Time behind other apps is not counted.
-    pub fn set_foreground(&mut self, now: Instant, foreground: bool) {
-        match (foreground, self.counted.is_some()) {
-            (true, false) => {
-                self.counted = Some(now);
-                self.anchor = Some(now);
-                self.anchor_presented = false;
-            }
-            (false, true) => {
-                self.count(now);
-                self.idle_ms += self.pending_idle(now);
-                self.counted = None;
-                self.anchor = None;
-            }
-            _ => {}
-        }
+impl Distribution {
+    pub fn add(&mut self, ms: f64) {
+        let ms = ms.max(0.);
+        self.count += 1;
+        self.sum_ms += ms;
+        self.max_ms = self.max_ms.max(ms);
+        let bucket = ((ms * BUCKETS_PER_MS).ceil() as usize).min(BUCKETS - 1);
+        self.histogram[bucket] += 1;
     }
 
-    fn count(&mut self, now: Instant) {
-        if let Some(counted) = self.counted {
-            self.foreground_ms += millis(counted, now);
-            self.counted = Some(now);
-        }
-    }
-
-    /// The current gap without a frame, once it is long enough to be idle time.
-    fn pending_idle(&self, now: Instant) -> f64 {
-        self.anchor
-            .map(|anchor| millis(anchor, now))
-            .filter(|gap| *gap > IDLE_GAP_MS)
-            .unwrap_or(0.)
-    }
-
-    /// One presentation; `partial` when only a damaged region was redrawn.
-    pub fn presented(&mut self, now: Instant, partial: bool) {
-        if self.counted.is_none() {
-            return;
-        }
-        self.count(now);
-        self.presented += 1;
-        if partial {
-            self.partial += 1;
-        } else {
-            self.full += 1;
-        }
-        if let Some(anchor) = self.anchor {
-            let gap = millis(anchor, now);
-            if gap > IDLE_GAP_MS {
-                self.idle_ms += gap;
-            } else if self.anchor_presented {
-                self.intervals += 1;
-                self.sum_ms += gap;
-                self.max_ms = self.max_ms.max(gap);
-                self.over_20 += u64::from(gap > 20.);
-                self.over_33 += u64::from(gap > 33.);
-                let bucket = ((gap * BUCKETS_PER_MS).ceil() as usize).min(BUCKETS - 1);
-                self.histogram[bucket] += 1;
-            }
-        }
-        self.anchor = Some(now);
-        self.anchor_presented = true;
-    }
-
-    /// The figures up to `now`, including a gap without frames that is still running.
-    pub fn summary(&self, now: Instant) -> FrameSummary {
-        let foreground_ms = self.foreground_ms + self.counted.map_or(0., |at| millis(at, now));
-        let p95 = if self.intervals == 0 {
+    pub fn timing(&self) -> Spread {
+        let p95 = if self.count == 0 {
             0.
         } else {
-            let rank = (self.intervals * 95).div_ceil(100);
+            let rank = (self.count * 95).div_ceil(100);
             let mut seen = 0;
             let bucket = self
                 .histogram
@@ -235,23 +144,117 @@ impl FrameStats {
                     seen >= rank
                 })
                 .unwrap_or(BUCKETS - 1);
-            // A bucket's upper edge, never above the largest interval actually seen.
+            // A bucket's upper edge, never above the largest sample seen.
             (bucket as f64 / BUCKETS_PER_MS).min(self.max_ms)
         };
-        let round = |value: f64| (value * 100.).round() / 100.;
+        Spread {
+            count: self.count,
+            mean_ms: round(self.sum_ms / self.count.max(1) as f64),
+            p95_ms: round(p95),
+            max_ms: round(self.max_ms),
+        }
+    }
+}
+
+/// Frame statistics while Luma is in front. Luma draws only when something changed, so the
+/// gaps between frames say nothing about smoothness; what is measured instead is how long a
+/// key or pointer event takes to show (from handling the event to the presented frame that
+/// reflects it) and how long each frame takes (scene build, submission and swap).
+#[derive(Default)]
+pub struct FrameStats {
+    presented: u64,
+    partial: u64,
+    full: u64,
+    input_to_frame: Distribution,
+    frame_time: Distribution,
+    over_16_7: u64,
+    over_33: u64,
+    foreground_ms: f64,
+    /// While in front: when foreground time was last added up.
+    counted: Option<Instant>,
+    /// The first input not yet shown in a presented frame.
+    input: Option<Instant>,
+}
+
+/// What `luma-diagnostics.json` records under `frame_stats`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct FrameSummary {
+    pub presented: u64,
+    pub partial_redraws: u64,
+    pub full_redraws: u64,
+    pub partial_share: f64,
+    /// From a key or pointer event to the presented frame that shows its effect.
+    pub input_to_frame: Spread,
+    /// Scene build, submission and swap of each presented frame.
+    pub frame_time: Spread,
+    pub frames_over_16_7ms: u64,
+    pub frames_over_33ms: u64,
+    pub foreground_s: f64,
+}
+
+fn millis(from: Instant, to: Instant) -> f64 {
+    to.saturating_duration_since(from).as_secs_f64() * 1000.
+}
+
+impl FrameStats {
+    /// Luma came to the front or left it. Time behind other apps is not counted.
+    pub fn set_foreground(&mut self, now: Instant, foreground: bool) {
+        match (foreground, self.counted) {
+            (true, None) => self.counted = Some(now),
+            (false, Some(counted)) => {
+                self.foreground_ms += millis(counted, now);
+                self.counted = None;
+                self.input = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// A key or pointer event was handled; the next presented frame shows its effect.
+    pub fn input(&mut self, at: Instant) {
+        if self.counted.is_some() && self.input.is_none() {
+            self.input = Some(at);
+        }
+    }
+
+    /// The loop is done with this round: an input that changed nothing on screen is not timed.
+    pub fn settle(&mut self) {
+        self.input = None;
+    }
+
+    /// One presented frame: `frame_ms` from the start of its scene build to the end of its swap,
+    /// `partial` when only a damaged region was redrawn.
+    pub fn presented(&mut self, now: Instant, frame_ms: f64, partial: bool) {
+        if self.counted.is_none() {
+            return;
+        }
+        self.presented += 1;
+        if partial {
+            self.partial += 1;
+        } else {
+            self.full += 1;
+        }
+        self.frame_time.add(frame_ms);
+        self.over_16_7 += u64::from(frame_ms > 16.7);
+        self.over_33 += u64::from(frame_ms > 33.);
+        if let Some(input) = self.input.take() {
+            self.input_to_frame.add(millis(input, now));
+        }
+    }
+
+    /// The figures up to `now`.
+    pub fn summary(&self, now: Instant) -> FrameSummary {
+        let foreground_ms = self.foreground_ms + self.counted.map_or(0., |at| millis(at, now));
         FrameSummary {
             presented: self.presented,
             partial_redraws: self.partial,
             full_redraws: self.full,
             partial_share: round(self.partial as f64 / self.presented.max(1) as f64),
-            intervals: self.intervals,
-            interval_mean_ms: round(self.sum_ms / self.intervals.max(1) as f64),
-            interval_p95_ms: round(p95),
-            interval_max_ms: round(self.max_ms),
-            intervals_over_20ms: self.over_20,
-            intervals_over_33ms: self.over_33,
+            input_to_frame: self.input_to_frame.timing(),
+            frame_time: self.frame_time.timing(),
+            frames_over_16_7ms: self.over_16_7,
+            frames_over_33ms: self.over_33,
             foreground_s: round(foreground_ms / 1000.),
-            idle_s: round((self.idle_ms + self.pending_idle(now)) / 1000.),
         }
     }
 }
@@ -400,54 +403,57 @@ mod tests {
     }
 
     #[test]
-    fn frame_stats_count_intervals_slow_frames_redraws_and_idle_time_in_front_only() {
+    fn frame_stats_time_input_to_frame_and_each_frame_in_front_only() {
         let start = Instant::now();
         let at = |ms: u64| start + Duration::from_millis(ms);
         let mut stats = FrameStats::default();
         // Behind another app nothing counts.
-        stats.presented(at(0), false);
+        stats.input(at(0));
+        stats.presented(at(5), 4., false);
         stats.set_foreground(at(1000), true);
-        // 400 ms in front before the first frame: idle, and no interval yet.
-        stats.presented(at(1400), false);
-        // Eighteen 16 ms intervals, then one of 25 ms and one of 40 ms (all partial redraws).
-        let mut now = 1400;
-        for _ in 0..18 {
-            now += 16;
-            stats.presented(at(now), true);
+        // A key at 1000 ms shows in the frame presented 30 ms later (frame time 12 ms).
+        stats.input(at(1000));
+        stats.input(at(1010));
+        stats.presented(at(1030), 12., true);
+        // A frame without input (an animation step) only adds its frame time.
+        stats.presented(at(1047), 20., true);
+        // An input that changes nothing is not timed: the round settles without a frame.
+        stats.input(at(2000));
+        stats.settle();
+        stats.presented(at(5000), 40., false);
+        // Nineteen more inputs, each shown 20 ms later in a 10 ms frame.
+        for step in 0..19 {
+            let t = 6000 + step * 100;
+            stats.input(at(t));
+            stats.presented(at(t + 20), 10., true);
         }
-        now += 25;
-        stats.presented(at(now), true);
-        now += 40;
-        stats.presented(at(now), true);
-        // Two seconds without a frame, then one more frame: idle, not an interval.
-        now += 2000;
-        stats.presented(at(now), false);
-        let summary = stats.summary(at(now));
+        let summary = stats.summary(at(8000));
         assert_eq!(summary.presented, 22);
-        assert_eq!((summary.partial_redraws, summary.full_redraws), (20, 2));
-        assert_eq!(summary.partial_share, 0.91);
-        assert_eq!(summary.intervals, 20);
-        assert_eq!(summary.interval_max_ms, 40.);
-        assert_eq!(summary.interval_p95_ms, 25.);
-        assert!((summary.interval_mean_ms - 17.65).abs() < 1e-9);
+        assert_eq!((summary.partial_redraws, summary.full_redraws), (21, 1));
+        assert_eq!(summary.input_to_frame.count, 20);
+        assert_eq!(summary.input_to_frame.max_ms, 30.);
+        assert_eq!(summary.input_to_frame.p95_ms, 20.);
+        assert!((summary.input_to_frame.mean_ms - 20.5).abs() < 1e-9);
+        assert_eq!(summary.frame_time.count, 22);
+        assert_eq!(summary.frame_time.max_ms, 40.);
         assert_eq!(
-            (summary.intervals_over_20ms, summary.intervals_over_33ms),
+            (summary.frames_over_16_7ms, summary.frames_over_33ms),
             (2, 1)
         );
-        assert_eq!(summary.idle_s, 2.4);
-        assert_eq!(summary.foreground_s, 2.75);
-        // A gap still running counts as idle; leaving the front stops every clock.
-        assert_eq!(stats.summary(at(now + 500)).idle_s, 2.9);
-        stats.set_foreground(at(now + 500), false);
-        stats.presented(at(now + 600), false);
-        let behind = stats.summary(at(now + 60_000));
+        assert_eq!(summary.foreground_s, 7.);
+        // Leaving the front stops every clock and drops a pending input.
+        stats.input(at(8000));
+        stats.set_foreground(at(8000), false);
+        stats.presented(at(8010), 5., false);
+        let behind = stats.summary(at(60_000));
         assert_eq!(behind.presented, 22);
-        assert_eq!(behind.idle_s, 2.9);
-        assert_eq!(behind.foreground_s, 3.25);
-        // Back in front, the first frame starts a new run instead of a long interval.
-        stats.set_foreground(at(now + 70_000), true);
-        stats.presented(at(now + 70_010), false);
-        assert_eq!(stats.summary(at(now + 70_010)).intervals, 20);
+        assert_eq!(behind.input_to_frame.count, 20);
+        assert_eq!(behind.foreground_s, 7.);
+        // Long samples share the last bucket but keep their true maximum.
+        let mut long = Distribution::default();
+        long.add(900.);
+        assert_eq!(long.timing().max_ms, 900.);
+        assert_eq!(long.timing().p95_ms, 250.);
     }
 
     #[test]
@@ -461,17 +467,18 @@ mod tests {
         let mut stats = FrameStats::default();
         let start = Instant::now();
         stats.set_foreground(start, true);
-        stats.presented(start, true);
-        stats.presented(start + Duration::from_millis(16), false);
+        stats.input(start);
+        stats.presented(start + Duration::from_millis(16), 9., false);
         writer.frames(stats.summary(start + Duration::from_millis(16)));
         writer.finish();
         let read: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(read["version"], "test");
         assert_eq!(read["obtained_samples"], 4);
-        assert_eq!(read["frame_stats"]["presented"], 2);
-        assert_eq!(read["frame_stats"]["intervals"], 1);
-        assert_eq!(read["frame_stats"]["interval_mean_ms"], 16.0);
+        assert_eq!(read["frame_stats"]["presented"], 1);
+        assert_eq!(read["frame_stats"]["input_to_frame"]["count"], 1);
+        assert_eq!(read["frame_stats"]["input_to_frame"]["mean_ms"], 16.0);
+        assert_eq!(read["frame_stats"]["frame_time"]["max_ms"], 9.0);
         assert!(!path.with_extension("json.tmp").exists());
         std::fs::remove_dir_all(&directory).unwrap();
     }

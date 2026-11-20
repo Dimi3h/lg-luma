@@ -700,15 +700,24 @@ drawable size and density, the GL vendor, renderer and version strings, the SDL 
 the partial-redraw mode. Read it over SSH to see what the TV actually granted.
 
 The same file carries `frame_stats`, rolling figures for the time Luma is visible and in front
-(on webOS: focused; time behind other apps is not counted): frames presented, partial and full
-redraws and the partial share, the mean, 95th percentile and largest interval between two
-presentations, how many intervals took more than 20 ms and more than 33 ms, the seconds in front
-and the idle seconds within them. Idle screens draw on demand, so a gap of more than 100 ms
-without a frame counts as idle time rather than as an interval. Each presentation adds a few
-numbers and one bucket of a fixed 0.25 ms histogram on the SDL thread (no allocation or sorting);
-a `luma-diagnostics` thread merges the figures with the startup facts and replaces the file, at
-most once a minute and once more when Luma exits. TV figures depend on the TV and are unmeasured
-here; the idle reference before this change was 10.9 MB RSS and about 0.1 % of one core.
+(on webOS: focused; time behind other apps is not counted). Luma draws only when something
+changed, so the gaps between frames say nothing about smoothness (the first version measured
+them: 45.7 ms mean over 16 frames in 110 s on the TV, which was only how sparse the frames
+were). It records instead:
+
+- `input_to_frame`: from handling a key or pointer event to the presented frame that shows its
+  effect (count, mean, 95th percentile, maximum); an event that changed nothing on screen is not
+  timed;
+- `frame_time`: each presented frame from the start of its scene build to the end of its swap
+  (count, mean, 95th percentile, maximum), with `frames_over_16_7ms` and `frames_over_33ms`;
+- frames presented, partial and full redraws and the partial share, and the seconds in front.
+
+Each event or frame adds a few numbers and one bucket of a fixed 0.25 ms histogram on the SDL
+thread (no allocation or sorting); samples above 250 ms share the last bucket, so a 95th
+percentile shows at most 250 ms while the maximum stays exact. A `luma-diagnostics` thread merges
+the figures with the startup facts and replaces the file, at most once a minute and once more
+when Luma exits. The idle reference before frame statistics was 10.9 MB RSS and about 0.1 % of
+one core.
 
 Raster artwork has a 48 MiB cache budget. Diagnostics include atlas and bitmap bytes, glyph
 uploads and pending glyphs, text quads, draw calls and missing/failed artwork/glyphs. Idle screens
@@ -1176,8 +1185,11 @@ policy (`getPreloadPolicy`), but `setPreloadPolicy` can only switch existing ent
   never over another app or while the TV's screensaver, Luma's clock included, is up), the
   in-app screensaver is off, no launch is under way, and there was no input for 8 s. An app that
   is already running is skipped. The tried list resets whenever Luma comes back to the front.
-- **Memory:** `MemAvailable` must be at least 350 MB (`preload::MEMORY_FLOOR_MB`) before each
-  preload.
+- **Memory:** before each preload `MemAvailable` must be at least 350 MB
+  (`preload::MEMORY_FLOOR_MB`) and at least a third of swap must be free; apps of the user's grid
+  that already run count towards the three. The first skip for memory, swap or enough running
+  apps stops preloading until Luma comes back to the front. Luma never closes an app when memory
+  runs low later; LG's memory manager does that.
 - **LG's preloads of hidden apps:** for every app hidden in Luma that LG's policy lists, the
   elevated helper (`luma-helper preload-policy`, through Homebrew Channel's exec) switches the
   entry off and closes an instance LG already preloaded hidden; it switches on again only entries

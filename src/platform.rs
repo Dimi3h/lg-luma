@@ -211,7 +211,7 @@ impl RelaunchWatchdog {
 /// enough memory available and when it is not running yet, from Luma's own connection, as LG's
 /// preload manager does for its own policy. If it comes to the front anyway it is closed and
 /// `own` (Luma's running identity) is brought back.
-pub fn preload_app(id: &str, own: &str) -> crate::preload::Outcome {
+pub fn preload_app(id: &str, own: &str, user_apps: &[String]) -> crate::preload::Outcome {
     use crate::preload::Outcome;
     let available = match crate::preload::memory_allows(
         std::fs::read_to_string("/proc/meminfo").ok().as_deref(),
@@ -219,16 +219,24 @@ pub fn preload_app(id: &str, own: &str) -> crate::preload::Outcome {
         Ok(mb) => mb,
         Err(outcome) => return outcome,
     };
-    match call("luna://com.webos.applicationManager/running", json!({})) {
-        Ok(reply)
-            if reply["running"]
-                .as_array()
-                .is_some_and(|apps| apps.iter().any(|app| app["id"] == id)) =>
-        {
-            return Outcome::AlreadyRunning;
-        }
-        Ok(_) => {}
+    let running: Vec<String> = match call("luna://com.webos.applicationManager/running", json!({}))
+    {
+        Ok(reply) => reply["running"]
+            .as_array()
+            .map(|apps| {
+                apps.iter()
+                    .filter_map(|app| app["id"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default(),
         Err(error) => return Outcome::Failed(error),
+    };
+    if running.iter().any(|running| running == id) {
+        return Outcome::AlreadyRunning;
+    }
+    let alive = crate::preload::running_user_apps(&running, user_apps);
+    if alive >= crate::preload::MAX_APPS {
+        return Outcome::EnoughRunning(alive);
     }
     if let Err(error) = call(
         "luna://com.webos.applicationManager/launch",

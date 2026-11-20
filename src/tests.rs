@@ -5072,3 +5072,65 @@ fn a_replaced_program_never_sets_the_lifecycle_latch() {
         "{live} (deleted)"
     )));
 }
+
+#[test]
+fn preloading_stops_when_swap_is_mostly_used_or_enough_apps_run_already() {
+    use crate::preload::{MAX_APPS, Outcome, memory_allows, running_user_apps};
+    let meminfo = |available: u64, swap_total: u64, swap_free: u64| {
+        format!(
+            "MemAvailable:   {} kB\nSwapTotal:      {} kB\nSwapFree:       {} kB\n",
+            available * 1024,
+            swap_total * 1024,
+            swap_free * 1024
+        )
+    };
+    // The TV measured: 614 MB swap, 110 MB free after a preload: stop.
+    assert_eq!(
+        memory_allows(Some(&meminfo(406, 614, 110))),
+        Err(Outcome::LowSwap {
+            free: 110,
+            total: 614
+        })
+    );
+    // 235 of 614 MB free (over a third): fine; exactly a third is fine too.
+    assert_eq!(memory_allows(Some(&meminfo(570, 614, 235))), Ok(570));
+    assert_eq!(memory_allows(Some(&meminfo(570, 600, 200))), Ok(570));
+    // No swap at all: only available memory counts.
+    assert_eq!(memory_allows(Some(&meminfo(570, 0, 0))), Ok(570));
+    // Low memory is reported before swap.
+    assert_eq!(
+        memory_allows(Some(&meminfo(296, 614, 100))),
+        Err(Outcome::LowMemory(296))
+    );
+    // Apps the user already has running count towards the three.
+    let user: Vec<String> = [
+        "com.disney.disneyplus-prod",
+        "be.vtmgo.app",
+        "youtube.leanback.v4",
+        "netflix",
+    ]
+    .map(String::from)
+    .to_vec();
+    let running: Vec<String> = [
+        "com.disney.disneyplus-prod",
+        "youtube.leanback.v4",
+        "netflix",
+        "com.webos.app.home",
+        "com.webos.app.browser",
+    ]
+    .map(String::from)
+    .to_vec();
+    assert_eq!(running_user_apps(&running, &user), 3);
+    assert!(running_user_apps(&running, &user) >= MAX_APPS);
+    // Every one of these stops preloading until Luma is in front again; a failure does not.
+    assert!(Outcome::LowSwap { free: 1, total: 3 }.pauses());
+    assert!(Outcome::EnoughRunning(3).pauses());
+    assert!(Outcome::LowMemory(1).pauses());
+    assert!(!Outcome::AlreadyRunning.pauses());
+    assert!(!Outcome::Failed("x".into()).pauses());
+    assert!(
+        Outcome::EnoughRunning(4)
+            .describe()
+            .contains("4 of your apps")
+    );
+}

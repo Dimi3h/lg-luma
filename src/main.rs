@@ -912,6 +912,9 @@ fn run() -> Result<(), String> {
     // to luma-diagnostics.json.
     let preload_service = webos.then(preload::Service::spawn);
     let mut preload_busy = false;
+    // Set by a skip for memory, swap or enough running apps: no more preloads until Luma
+    // comes back to the front.
+    let mut preload_paused = false;
     let mut preload_last: Option<Instant> = None;
     let mut preload_tried: std::collections::HashSet<String> = Default::default();
     let mut preload_log: std::collections::VecDeque<preload::Decision> = Default::default();
@@ -1356,6 +1359,17 @@ fn run() -> Result<(), String> {
                 focused = true;
                 foreground.confirmed();
             }
+            // Input is timed until the frame that shows it is presented (frame statistics).
+            if matches!(
+                event,
+                Event::KeyDown { .. }
+                    | Event::MouseMotion { .. }
+                    | Event::MouseButtonDown { .. }
+                    | Event::MouseWheel { .. }
+                    | Event::TextInput { .. }
+            ) {
+                frame_stats.input(Instant::now());
+            }
             // Input restarts the screensaver's idle timer; while it runs, a key or pointer
             // movement only dismisses it (its key-up then finds no press to complete).
             if matches!(
@@ -1479,6 +1493,7 @@ fn run() -> Result<(), String> {
                             // Back in front: check the preloaded apps again (one may have been
                             // used and closed, or ended for memory).
                             preload_tried.clear();
+                            preload_paused = false;
                         }
                         state.dirty = true;
                         if webos {
@@ -2023,7 +2038,11 @@ fn run() -> Result<(), String> {
                 }
                 presented += 1;
                 last_present = Instant::now();
-                frame_stats.presented(last_present, damage.is_some());
+                frame_stats.presented(
+                    last_present,
+                    compose_started.elapsed().as_secs_f64() * 1000.,
+                    damage.is_some(),
+                );
                 if options.profile_frames.is_some() {
                     profile.record(
                         Instant::now(),
@@ -2062,6 +2081,8 @@ fn run() -> Result<(), String> {
             }
             state.dirty = false;
         }
+        // An input this round that changed nothing on screen is not timed.
+        frame_stats.settle();
         frame += 1;
         if final_frame {
             running = false;
@@ -2117,6 +2138,7 @@ fn run() -> Result<(), String> {
                 match reply {
                     preload::Reply::Preloaded { id, outcome } => {
                         preload_busy = false;
+                        preload_paused |= outcome.pauses();
                         if outcome == preload::Outcome::CameForward
                             && !state.preferences.preload_blocked.contains(&id)
                         {
@@ -2181,6 +2203,7 @@ fn run() -> Result<(), String> {
                 && visible
                 && focused
                 && !preload_busy
+                && !preload_paused
                 && !state.launching
                 && state.screensaver.is_none()
                 && !state.inventory.apps.is_empty()
@@ -2201,7 +2224,8 @@ fn run() -> Result<(), String> {
                 } else {
                     platform::APP_ID
                 };
-                service.send(preload::Job::Preload { id, own });
+                let user_apps = state.apps().iter().map(|app| app.id.clone()).collect();
+                service.send(preload::Job::Preload { id, own, user_apps });
             }
         }
         if foreground.failed(Instant::now())

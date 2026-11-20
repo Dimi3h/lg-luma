@@ -86,22 +86,51 @@ pub fn count_launch(counts: &mut BTreeMap<String, u32>, id: &str) {
 
 /// `MemAvailable` from `/proc/meminfo`, in MB.
 pub fn mem_available_mb(meminfo: &str) -> Option<u64> {
+    meminfo_mb(meminfo, "MemAvailable")
+}
+
+/// How many of the user's apps run already (Luma not counted): they count towards `MAX_APPS`,
+/// since a fourth or fifth app kept alive adds memory pressure for little gain.
+pub fn running_user_apps(running: &[String], user_apps: &[String]) -> usize {
+    running.iter().filter(|id| user_apps.contains(id)).count()
+}
+
+/// A `/proc/meminfo` field in MB.
+fn meminfo_mb(meminfo: &str, field: &str) -> Option<u64> {
     meminfo
         .lines()
-        .find_map(|line| line.strip_prefix("MemAvailable:"))
+        .find_map(|line| line.strip_prefix(field)?.strip_prefix(':'))
         .and_then(|rest| rest.split_whitespace().next())
         .and_then(|kb| kb.parse::<u64>().ok())
         .map(|kb| kb / 1024)
 }
 
-/// Whether memory allows one more preload; the reason when it does not.
+/// Whether memory allows one more preload; the reason when it does not. Besides available
+/// memory, swap must not be mostly used: on a TV that swaps heavily a hidden app only pushes
+/// others out. Luma never closes anything when memory runs low later (LG's memory manager does);
+/// it just stops preloading.
 pub fn memory_allows(meminfo: Option<&str>) -> Result<u64, Outcome> {
-    match meminfo.and_then(mem_available_mb) {
-        None => Err(Outcome::MemoryUnknown),
-        Some(mb) if mb < MEMORY_FLOOR_MB => Err(Outcome::LowMemory(mb)),
-        Some(mb) => Ok(mb),
+    let Some(meminfo) = meminfo else {
+        return Err(Outcome::MemoryUnknown);
+    };
+    let available = match mem_available_mb(meminfo) {
+        None => return Err(Outcome::MemoryUnknown),
+        Some(mb) if mb < MEMORY_FLOOR_MB => return Err(Outcome::LowMemory(mb)),
+        Some(mb) => mb,
+    };
+    if let (Some(total), Some(free)) = (
+        meminfo_mb(meminfo, "SwapTotal"),
+        meminfo_mb(meminfo, "SwapFree"),
+    ) && total > 0
+        && free * SWAP_FREE_SHARE < total
+    {
+        return Err(Outcome::LowSwap { free, total });
     }
+    Ok(available)
 }
+
+/// Swap must be at least this share free (1/3) before a preload.
+pub const SWAP_FREE_SHARE: u64 = 3;
 
 /// LG's preload policy changes for the hidden-app rule: with the setting on, LG's preloads of
 /// apps hidden in Luma go off and the ones Luma switched off earlier for apps shown again come
@@ -132,6 +161,12 @@ pub enum Outcome {
     },
     AlreadyRunning,
     LowMemory(u64),
+    LowSwap {
+        free: u64,
+        total: u64,
+    },
+    /// Enough of the user's apps are alive already (preloaded or used).
+    EnoughRunning(usize),
     MemoryUnknown,
     /// It came to the front although launched hidden: closed, never preloaded again.
     CameForward,
@@ -139,6 +174,17 @@ pub enum Outcome {
 }
 
 impl Outcome {
+    /// A reason to stop preloading until Luma comes back to the front.
+    pub fn pauses(&self) -> bool {
+        matches!(
+            self,
+            Self::LowMemory(_)
+                | Self::LowSwap { .. }
+                | Self::EnoughRunning(_)
+                | Self::MemoryUnknown
+        )
+    }
+
     pub fn describe(&self) -> String {
         match self {
             Self::Preloaded { available_mb } => {
@@ -147,6 +193,12 @@ impl Outcome {
             Self::AlreadyRunning => "skipped: already running".into(),
             Self::LowMemory(mb) => {
                 format!("skipped: {mb} MB available, below {MEMORY_FLOOR_MB} MB")
+            }
+            Self::LowSwap { free, total } => {
+                format!("skipped: {free} of {total} MB swap free, below a third")
+            }
+            Self::EnoughRunning(count) => {
+                format!("skipped: {count} of your apps already run (limit {MAX_APPS})")
             }
             Self::MemoryUnknown => "skipped: available memory unknown".into(),
             Self::CameForward => "came to the front: closed, never preloaded again".into(),
@@ -167,9 +219,11 @@ pub struct Decision {
 pub const DECISIONS: usize = 24;
 
 pub enum Job {
+    /// `user_apps`: the ids in Luma's grid, to count which of them run already.
     Preload {
         id: String,
         own: &'static str,
+        user_apps: Vec<String>,
     },
     Policy {
         disable: Vec<String>,
@@ -202,8 +256,8 @@ impl Service {
             .spawn(move || {
                 while let Ok(job) = jobs.recv() {
                     let reply = match job {
-                        Job::Preload { id, own } => Reply::Preloaded {
-                            outcome: crate::platform::preload_app(&id, own),
+                        Job::Preload { id, own, user_apps } => Reply::Preloaded {
+                            outcome: crate::platform::preload_app(&id, own, &user_apps),
                             id,
                         },
                         Job::Policy { disable, enable } => {
