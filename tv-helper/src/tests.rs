@@ -304,7 +304,10 @@ impl System for Fixture {
                     .preload_policy
                     .borrow()
                     .iter()
-                    .map(|(id, enabled)| json!({"id": id, "type": "partial", "isEnabled": enabled}))
+                    .map(|(id, enabled)| {
+                        let kind = if id == "youtube.leanback.v4" { "periodic" } else { "oneshot" };
+                        json!({"id": id, "type": "partial", "preloadType": kind, "isEnabled": enabled, "requiredMemory": 100})
+                    })
                     .collect();
                 json!({"returnValue":true,"policy":{"applications":apps}})
             }
@@ -1518,6 +1521,8 @@ fn lg_preloads_of_hidden_apps_go_off_and_only_those_come_back_on() {
     let reply = preload::dispatch(&f, &request.to_string()).unwrap();
     assert_eq!(reply["disabled"], json!([]));
     assert_eq!(reply["enabled"], json!(["com.webos.app.browser"]));
+    // Only periodic entries are left to LG; oneshot ones Luma preloads itself when listed.
+    assert_eq!(reply["periodic"], json!(["youtube.leanback.v4"]));
     assert_eq!(
         reply["listed"],
         json!([

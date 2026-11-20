@@ -27,6 +27,8 @@ pub const MEMORY_FLOOR_MB: u64 = 350;
 pub const IDLE: Duration = Duration::from_secs(8);
 /// At least this long between two preloads.
 pub const SPACING: Duration = Duration::from_secs(20);
+/// How often LG's memory state and the running apps are polled for the diagnostics.
+pub const WATCH: Duration = Duration::from_secs(30);
 /// How long after a hidden launch the foreground is checked.
 pub const FOREGROUND_CHECK: Duration = Duration::from_secs(3);
 /// Launch counts kept in the preferences (the most launched ones).
@@ -155,6 +157,169 @@ pub fn memory_allows(meminfo: Option<&str>) -> Result<u64, Outcome> {
 /// Swap must be at least this share free (1/3) before a preload.
 pub const SWAP_FREE_SHARE: u64 = 3;
 
+/// The memory LG's policy reserves per preloaded app (`requiredMemory` in its entries, MB).
+pub const REQUIRED_MB: u64 = 100;
+/// Memory pressure (`/proc/pressure/memory`, "some avg10", %) above which a preload waits.
+pub const PRESSURE_WAIT: f64 = 10.;
+
+/// LG's memory manager's view (`com.webos.memorymanager/getCurrentMemState`): its level
+/// ("normal", "medium", "low", "critical") and the memory it counts usable, in MB.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct LgMemory {
+    pub level: String,
+    pub usable: u64,
+}
+
+impl LgMemory {
+    pub fn from_reply(reply: &serde_json::Value) -> Option<Self> {
+        Some(Self {
+            level: reply["currentLevel"].as_str()?.to_owned(),
+            usable: reply["usable"].as_u64()?,
+        })
+    }
+}
+
+/// `memBoundary.medium.enter` from `com.webos.memorymanager/getPolicy` (MB): below it LG's
+/// memory manager enters "medium".
+pub fn medium_enter(policy: &serde_json::Value) -> Option<u64> {
+    policy["memBoundary"]["medium"]["enter"]
+        .as_u64()
+        .or_else(|| {
+            policy
+                .as_object()?
+                .values()
+                .find_map(|value| value["memBoundary"]["medium"]["enter"].as_u64())
+        })
+}
+
+/// "some avg10" from `/proc/pressure/memory`, in %.
+pub fn pressure_some_avg10(pressure: &str) -> Option<f64> {
+    pressure
+        .lines()
+        .find(|line| line.starts_with("some"))?
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("avg10="))?
+        .parse()
+        .ok()
+}
+
+/// Whether one more preload fits, deciding on LG's memory manager where it answers: its level
+/// must be "normal" and its usable memory at least the medium boundary plus LG's own
+/// `requiredMemory` (350 MB on the TV measured). Only without an answer does `MemAvailable` (350
+/// MB) decide. Swap must be a third free either way, and high memory pressure waits. Returns
+/// what allowed it, for the diagnostics.
+pub fn memory_check(
+    lg: Option<&LgMemory>,
+    medium_enter: Option<u64>,
+    meminfo: Option<&str>,
+    pressure: Option<f64>,
+) -> Result<String, Outcome> {
+    let allowed = match (lg, medium_enter) {
+        (Some(lg), Some(enter)) => {
+            let needed = enter + REQUIRED_MB;
+            if lg.level != "normal" {
+                return Err(Outcome::LgLevel {
+                    level: lg.level.clone(),
+                    usable: lg.usable,
+                });
+            }
+            if lg.usable < needed {
+                return Err(Outcome::LgLow {
+                    usable: lg.usable,
+                    needed,
+                });
+            }
+            format!(
+                "LG level normal, {} MB usable of {needed} needed",
+                lg.usable
+            )
+        }
+        _ => {
+            let available = memory_allows(meminfo)?;
+            format!("{available} MB available; LG's memory state unknown")
+        }
+    };
+    if let Some(meminfo) = meminfo
+        && let (Some(total), Some(free)) = (
+            meminfo_mb(meminfo, "SwapTotal"),
+            meminfo_mb(meminfo, "SwapFree"),
+        )
+        && total > 0
+        && free * SWAP_FREE_SHARE < total
+    {
+        return Err(Outcome::LowSwap { free, total });
+    }
+    if let Some(pressure) = pressure
+        && pressure > PRESSURE_WAIT
+    {
+        return Err(Outcome::Pressure(pressure));
+    }
+    Ok(allowed)
+}
+
+/// What Luma watches to judge memory compression after a few days: LG's memory level now, how
+/// often it entered medium, low and critical since Luma started, and how many apps of the
+/// user's preload list disappeared from the running list without Luma closing them.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Evidence {
+    pub level: Option<String>,
+    pub usable_mb: Option<u64>,
+    pub medium_enter_mb: Option<u64>,
+    pub samples: u64,
+    pub entered_medium: u64,
+    pub entered_low: u64,
+    pub entered_critical: u64,
+    /// Listed apps that were running and then were not, without a close from Luma.
+    pub listed_apps_gone: BTreeMap<String, u32>,
+    #[serde(skip)]
+    running: Option<Vec<String>>,
+    /// Apps Luma itself closed (Recents, or one that came forward): not counted as gone.
+    #[serde(skip)]
+    pub closed_by_luma: HashSet<String>,
+}
+
+impl Evidence {
+    /// One poll: LG's state (when it answered) and the running apps (when known).
+    pub fn sample(
+        &mut self,
+        lg: Option<&LgMemory>,
+        medium_enter: Option<u64>,
+        running: Option<Vec<String>>,
+        listed: &[String],
+    ) {
+        self.samples += 1;
+        if medium_enter.is_some() {
+            self.medium_enter_mb = medium_enter;
+        }
+        if let Some(lg) = lg {
+            if self.level.as_deref() != Some(lg.level.as_str()) {
+                match lg.level.as_str() {
+                    "medium" => self.entered_medium += 1,
+                    "low" => self.entered_low += 1,
+                    "critical" => self.entered_critical += 1,
+                    _ => {}
+                }
+            }
+            self.level = Some(lg.level.clone());
+            self.usable_mb = Some(lg.usable);
+        }
+        let Some(running) = running else {
+            return;
+        };
+        if let Some(before) = &self.running {
+            for id in before
+                .iter()
+                .filter(|id| listed.contains(id) && !running.contains(id))
+            {
+                if !self.closed_by_luma.remove(id) {
+                    *self.listed_apps_gone.entry(id.clone()).or_default() += 1;
+                }
+            }
+        }
+        self.running = Some(running);
+    }
+}
+
 /// LG's preload policy changes, as `(disable, enable)` for the helper (which skips ids LG's policy
 /// does not list and only switches entries that differ):
 ///
@@ -235,9 +400,22 @@ pub fn record_policy_change(
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Outcome {
+    /// What allowed it (LG's numbers, or available memory).
     Preloaded {
-        available_mb: u64,
+        memory: String,
     },
+    /// LG's memory manager is not at "normal" (an app starting, say): wait and try again.
+    LgLevel {
+        level: String,
+        usable: u64,
+    },
+    /// LG counts less memory usable than its medium boundary plus `requiredMemory`.
+    LgLow {
+        usable: u64,
+        needed: u64,
+    },
+    /// Memory pressure (some avg10, %) is high: wait and try again.
+    Pressure(f64),
     AlreadyRunning,
     LowMemory(u64),
     LowSwap {
@@ -259,15 +437,29 @@ impl Outcome {
             self,
             Self::LowMemory(_)
                 | Self::LowSwap { .. }
+                | Self::LgLow { .. }
                 | Self::EnoughRunning(_)
                 | Self::MemoryUnknown
         )
     }
 
+    /// A passing condition (LG's level during an app start, pressure): the same app is tried
+    /// again after the usual spacing.
+    pub fn waits(&self) -> bool {
+        matches!(self, Self::LgLevel { .. } | Self::Pressure(_))
+    }
+
     pub fn describe(&self) -> String {
         match self {
-            Self::Preloaded { available_mb } => {
-                format!("preloaded hidden ({available_mb} MB available before)")
+            Self::Preloaded { memory } => format!("preloaded hidden ({memory})"),
+            Self::LgLevel { level, usable } => {
+                format!("waiting: LG memory level {level} ({usable} MB usable)")
+            }
+            Self::LgLow { usable, needed } => {
+                format!("skipped: LG counts {usable} MB usable, {needed} MB needed")
+            }
+            Self::Pressure(avg10) => {
+                format!("waiting: memory pressure {avg10:.1}% (above {PRESSURE_WAIT:.0}%)")
             }
             Self::AlreadyRunning => "skipped: already running".into(),
             Self::LowMemory(mb) => {
@@ -312,6 +504,8 @@ pub enum Job {
     },
     /// Settings › System › Memory compression switched (through the elevated helper).
     MemoryCompression(bool),
+    /// A poll of LG's memory state and the running apps, for the diagnostics.
+    Watch,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -319,6 +513,8 @@ pub struct PolicyChange {
     pub off: Vec<String>,
     pub on: Vec<String>,
     pub listed: Vec<String>,
+    /// The entries LG keeps warm itself ("periodic"); Luma does not launch those.
+    pub periodic: Vec<String>,
 }
 
 pub enum Reply {
@@ -329,6 +525,11 @@ pub enum Reply {
     /// The ids Luma switched off and on in LG's policy, and every id LG's policy lists.
     Policy(Result<PolicyChange, String>),
     MemoryCompression(Result<String, String>),
+    Watch {
+        lg: Option<LgMemory>,
+        medium_enter: Option<u64>,
+        running: Option<Vec<String>>,
+    },
 }
 
 /// A thread for preload work: a preload waits seconds to check the foreground, which must never
@@ -362,6 +563,11 @@ impl Service {
                         Job::MemoryCompression(on) => {
                             Reply::MemoryCompression(crate::platform::memory_compression(on))
                         }
+                        Job::Watch => Reply::Watch {
+                            lg: crate::platform::lg_memory(),
+                            medium_enter: crate::platform::lg_medium_enter(),
+                            running: crate::platform::running_apps().ok(),
+                        },
                     };
                     if replies.send(reply).is_err() {
                         break;

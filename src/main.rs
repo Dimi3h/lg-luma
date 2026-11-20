@@ -920,12 +920,15 @@ fn run() -> Result<(), String> {
     let mut preload_log: std::collections::VecDeque<preload::Decision> = Default::default();
     let mut policy_sent: Option<(Vec<String>, Vec<String>)> = None;
     let mut policy_busy = false;
-    // The apps LG's own policy preloads (left to LG); known after the first policy reply, and
-    // nothing is preloaded before that.
+    // The apps LG keeps preloaded itself (its periodic entries); known after the first policy
+    // reply, and nothing is preloaded before that.
     let mut lg_listed: Option<Vec<String>> = None;
     // Memory compression is only sent to the helper when the setting changes; cold boots apply
     // it through the Home takeover's boot hook.
     let mut memory_compression_sent: Option<bool> = None;
+    // LG's memory state and the listed apps' fate, polled for the diagnostics (preload.rs).
+    let mut evidence = preload::Evidence::default();
+    let mut watch_last: Option<Instant> = None;
     let update_quit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     frame_stats.set_foreground(stats_written, true);
     let mut presented = 0usize;
@@ -1287,6 +1290,10 @@ fn run() -> Result<(), String> {
                         && generation == state.recents.generation
                         && result.is_ok()
                         && matches!(command, recents::Command::Launch(_));
+                    // Closed from Luma's Recents: not counted as an app the TV ended.
+                    if let (recents::Command::Close(id), Ok(_)) = (&command, &result) {
+                        evidence.closed_by_luma.insert(id.clone());
+                    }
                     let pending = state.recent_response(generation, command, result);
                     if preview {
                         state.notify(state.preferences.language.t("recentDesktop"));
@@ -2138,13 +2145,23 @@ fn run() -> Result<(), String> {
                 while preload_log.len() > preload::DECISIONS {
                     preload_log.pop_front();
                 }
-                diagnostics_writer.preload(serde_json::to_value(&preload_log).unwrap_or_default());
+                diagnostics_writer.section(
+                    "preload",
+                    serde_json::to_value(&preload_log).unwrap_or_default(),
+                );
             };
             while let Ok(reply) = service.receiver.try_recv() {
                 match reply {
                     preload::Reply::Preloaded { id, outcome } => {
                         preload_busy = false;
                         preload_paused |= outcome.pauses();
+                        // A passing condition: the same app is tried again later.
+                        if outcome.waits() {
+                            preload_tried.remove(&id);
+                        }
+                        if outcome == preload::Outcome::CameForward {
+                            evidence.closed_by_luma.insert(id.clone());
+                        }
                         if outcome == preload::Outcome::CameForward
                             && !state.preferences.preload_blocked.contains(&id)
                         {
@@ -2156,6 +2173,22 @@ fn run() -> Result<(), String> {
                         }
                         record(&id, outcome.describe());
                     }
+                    preload::Reply::Watch {
+                        lg,
+                        medium_enter,
+                        running,
+                    } => {
+                        evidence.sample(
+                            lg.as_ref(),
+                            medium_enter,
+                            running,
+                            &state.preferences.preload_list,
+                        );
+                        diagnostics_writer.section(
+                            "lg_memory",
+                            serde_json::to_value(&evidence).unwrap_or_default(),
+                        );
+                    }
                     preload::Reply::MemoryCompression(result) => match result {
                         Ok(done) => record("memory compression", done),
                         Err(error) => record("memory compression", format!("failed: {error}")),
@@ -2163,8 +2196,13 @@ fn run() -> Result<(), String> {
                     preload::Reply::Policy(result) => {
                         policy_busy = false;
                         match result {
-                            Ok(preload::PolicyChange { off, on, listed }) => {
-                                lg_listed = Some(listed);
+                            Ok(preload::PolicyChange {
+                                off, on, periodic, ..
+                            }) => {
+                                // LG keeps its periodic entries warm; a oneshot entry (Prime
+                                // Video, say) is not started again once it ended, so Luma
+                                // preloads those itself when listed.
+                                lg_listed = Some(periodic);
                                 let preferences = &mut state.preferences;
                                 preload::record_policy_change(
                                     &off,
@@ -2192,6 +2230,10 @@ fn run() -> Result<(), String> {
                         }
                     }
                 }
+            }
+            if watch_last.is_none_or(|last| last.elapsed() >= preload::WATCH) {
+                watch_last = Some(Instant::now());
+                service.send(preload::Job::Watch);
             }
             let compression = state.preferences.memory_compression;
             match memory_compression_sent {

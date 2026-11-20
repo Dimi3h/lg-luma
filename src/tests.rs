@@ -5314,3 +5314,150 @@ fn preloading_stops_when_swap_is_mostly_used_or_enough_apps_run_already() {
             .contains("4 of your apps")
     );
 }
+
+#[test]
+fn preloading_decides_on_lg_memory_state_with_available_memory_only_as_fallback() {
+    use crate::preload::{LgMemory, Outcome, medium_enter, memory_check, pressure_some_avg10};
+    // The TV's replies.
+    let state = LgMemory::from_reply(
+        &json!({"returnValue":true,"currentLevel":"normal","usable":342,"prevLevel":"normal"}),
+    )
+    .unwrap();
+    assert_eq!(
+        state,
+        LgMemory {
+            level: "normal".into(),
+            usable: 342
+        }
+    );
+    let policy = json!({"returnValue": true, "memBoundary": {"medium": {"enter": 250, "leave": 290},
+        "low": {"enter": 200, "leave": 220}, "critical": {"enter": 45, "leave": 66}},
+        "feature": {"appHibernation": true}});
+    assert_eq!(medium_enter(&policy), Some(250));
+    assert_eq!(medium_enter(&json!({"policy": policy})), Some(250));
+    let pressure = "some avg10=3.25 avg60=1.10 avg300=0.40 total=123\nfull avg10=0.50 avg60=0.10 avg300=0.00 total=12\n";
+    assert_eq!(pressure_some_avg10(pressure), Some(3.25));
+    // MemAvailable is low (243 MB with zram full) but LG counts 342 usable: 350 needed.
+    let meminfo = "MemAvailable: 248832 kB\nSwapTotal: 1415164 kB\nSwapFree: 700000 kB\n";
+    let lg = |level: &str, usable: u64| LgMemory {
+        level: level.into(),
+        usable,
+    };
+    assert_eq!(
+        memory_check(Some(&lg("normal", 342)), Some(250), Some(meminfo), Some(2.)),
+        Err(Outcome::LgLow {
+            usable: 342,
+            needed: 350
+        })
+    );
+    let allowed =
+        memory_check(Some(&lg("normal", 380)), Some(250), Some(meminfo), Some(2.)).unwrap();
+    assert!(allowed.contains("380 MB usable of 350 needed"), "{allowed}");
+    // Not at "normal" (an app starting): wait, without pausing the list.
+    let medium =
+        memory_check(Some(&lg("medium", 282)), Some(250), Some(meminfo), None).unwrap_err();
+    assert_eq!(
+        medium,
+        Outcome::LgLevel {
+            level: "medium".into(),
+            usable: 282
+        }
+    );
+    assert!(medium.waits() && !medium.pauses());
+    // Pressure above 10% waits too.
+    let busy = memory_check(
+        Some(&lg("normal", 400)),
+        Some(250),
+        Some(meminfo),
+        Some(25.),
+    )
+    .unwrap_err();
+    assert_eq!(busy, Outcome::Pressure(25.));
+    assert!(busy.waits() && !busy.pauses());
+    // Swap a third free stays a rule.
+    let swap_full = "MemAvailable: 600000 kB\nSwapTotal: 1415164 kB\nSwapFree: 300000 kB\n";
+    assert!(matches!(
+        memory_check(Some(&lg("normal", 500)), Some(250), Some(swap_full), None),
+        Err(Outcome::LowSwap { .. })
+    ));
+    // Without an answer from LG's memory manager, MemAvailable (350 MB) decides.
+    assert_eq!(
+        memory_check(None, None, Some(meminfo), None),
+        Err(Outcome::LowMemory(243))
+    );
+    let fallback = "MemAvailable: 512000 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n";
+    assert!(
+        memory_check(None, Some(250), Some(fallback), None)
+            .unwrap()
+            .contains("500 MB available")
+    );
+    // A steady shortage pauses until Luma is in front again.
+    assert!(
+        Outcome::LgLow {
+            usable: 342,
+            needed: 350
+        }
+        .pauses()
+    );
+    assert!(
+        Outcome::LgLow {
+            usable: 342,
+            needed: 350
+        }
+        .describe()
+        .contains("342 MB usable, 350 MB needed")
+    );
+}
+
+#[test]
+fn memory_evidence_counts_level_entries_and_listed_apps_the_tv_ended() {
+    use crate::preload::{Evidence, LgMemory};
+    let lg = |level: &str, usable: u64| LgMemory {
+        level: level.into(),
+        usable,
+    };
+    let ids = |list: &[&str]| list.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+    let listed = ids(&["be.vtmgo.app", "netflix", "com.disney.disneyplus-prod"]);
+    let mut evidence = Evidence::default();
+    evidence.sample(
+        Some(&lg("normal", 342)),
+        Some(250),
+        Some(ids(&["be.vtmgo.app", "netflix", "youtube.leanback.v4"])),
+        &listed,
+    );
+    evidence.sample(
+        Some(&lg("medium", 223)),
+        None,
+        Some(ids(&["be.vtmgo.app", "netflix", "youtube.leanback.v4"])),
+        &listed,
+    );
+    evidence.sample(
+        Some(&lg("medium", 250)),
+        None,
+        Some(ids(&["be.vtmgo.app", "netflix"])),
+        &listed,
+    );
+    // The TV ended VTM GO; YouTube (not listed) is not counted; Luma closed Netflix itself.
+    evidence.closed_by_luma.insert("netflix".into());
+    evidence.sample(Some(&lg("normal", 290)), None, Some(vec![]), &listed);
+    evidence.sample(Some(&lg("low", 199)), None, None, &listed);
+    evidence.sample(Some(&lg("critical", 40)), None, None, &listed);
+    assert_eq!(evidence.samples, 6);
+    assert_eq!(
+        (
+            evidence.entered_medium,
+            evidence.entered_low,
+            evidence.entered_critical
+        ),
+        (1, 1, 1)
+    );
+    assert_eq!(evidence.level.as_deref(), Some("critical"));
+    assert_eq!(evidence.usable_mb, Some(40));
+    assert_eq!(evidence.medium_enter_mb, Some(250));
+    assert_eq!(evidence.listed_apps_gone.len(), 1);
+    assert_eq!(evidence.listed_apps_gone["be.vtmgo.app"], 1);
+    let written = serde_json::to_value(&evidence).unwrap();
+    assert_eq!(written["entered_medium"], 1);
+    assert_eq!(written["listed_apps_gone"]["be.vtmgo.app"], 1);
+    assert!(written.get("closed_by_luma").is_none());
+}

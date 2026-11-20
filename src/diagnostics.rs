@@ -265,8 +265,8 @@ pub const WRITE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6
 enum Message {
     Facts(serde_json::Value),
     Frames(FrameSummary),
-    /// The latest preload decisions (Settings › General › Preload apps).
-    Preload(serde_json::Value),
+    /// A named section kept as sent last (the preload decisions, LG's memory evidence).
+    Section(&'static str, serde_json::Value),
 }
 
 /// Writes `luma-diagnostics.json` on its own thread: the SDL thread only sends the startup
@@ -285,19 +285,23 @@ impl Writer {
             .spawn(move || {
                 let mut facts = serde_json::json!({});
                 let mut frames = None;
-                let mut preload = None;
+                let mut sections = std::collections::BTreeMap::new();
                 while let Ok(message) = receiver.recv() {
                     match message {
                         Message::Facts(value) => facts = value,
                         Message::Frames(summary) => frames = Some(summary),
-                        Message::Preload(value) => preload = Some(value),
+                        Message::Section(name, value) => {
+                            sections.insert(name, value);
+                        }
                     }
                     // Only the latest state matters: skip to it when messages queued up.
                     while let Ok(message) = receiver.try_recv() {
                         match message {
                             Message::Facts(value) => facts = value,
                             Message::Frames(summary) => frames = Some(summary),
-                            Message::Preload(value) => preload = Some(value),
+                            Message::Section(name, value) => {
+                                sections.insert(name, value);
+                            }
                         }
                     }
                     let mut value = facts.clone();
@@ -307,8 +311,10 @@ impl Writer {
                             serde_json::to_value(summary).unwrap_or_default(),
                         );
                     }
-                    if let (Some(object), Some(decisions)) = (value.as_object_mut(), &preload) {
-                        object.insert("preload".into(), decisions.clone());
+                    if let Some(object) = value.as_object_mut() {
+                        for (name, section) in &sections {
+                            object.insert((*name).into(), section.clone());
+                        }
                     }
                     // Read here, off the SDL thread: memory and swap at the time of writing.
                     if let Some(object) = value.as_object_mut()
@@ -335,9 +341,10 @@ impl Writer {
         }
     }
 
-    pub fn preload(&self, decisions: serde_json::Value) {
+    /// Sets a named section of the file (written with the next write).
+    pub fn section(&self, name: &'static str, value: serde_json::Value) {
         if let Some(sender) = &self.sender {
-            let _ = sender.send(Message::Preload(decisions));
+            let _ = sender.send(Message::Section(name, value));
         }
     }
 

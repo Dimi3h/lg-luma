@@ -1180,14 +1180,17 @@ find …" for other apps), so Luma starts the others itself (`src/preload.rs`).
   start hidden". Listed apps are preloaded in grid order, web or native, with no fixed number.
   While the list is empty, Luma chooses automatically: up to three web apps, ranked by launches
   from Luma (`launch_counts`) and then grid order.
-- **LG's own preloads:** an app LG's policy already lists (on the TV measured: Netflix, Prime
-  Video, YouTube and others) is never launched a second time; Luma switches its LG entry on
-  instead while it is in the list, and back off when it leaves the list. For every app hidden in
-  Luma that LG's policy lists, the entry is switched off and an instance LG already preloaded is
-  closed. Only entries Luma switched itself are ever switched back (`preload_lg_disabled`,
-  `preload_lg_enabled`); entries of apps the user neither hid nor listed are never touched. The
-  change is sent after every start (LG may restore its policy at boot) and on every change, and
-  nothing is preloaded before the first reply, which also says which apps LG's policy lists.
+- **LG's own preloads:** LG's policy lists some apps with `"preloadType": "periodic"` (on the TV
+  measured: Netflix, YouTube) and keeps them warm itself; Luma never launches those a second
+  time. A `"oneshot"` entry (Prime Video there) is not started again once it ended (Prime Video
+  was not running after 15 hours of uptime), so Luma preloads it itself when it is listed and not
+  running. While an app with an LG entry is in the list, Luma switches the entry on, and back off
+  when it leaves the list. For every app hidden in Luma that LG's policy lists, the entry is
+  switched off and an instance LG already preloaded is closed. Only entries Luma switched itself
+  are ever switched back (`preload_lg_disabled`, `preload_lg_enabled`); entries of apps the user
+  neither hid nor listed are never touched. The change is sent after every start (LG may restore
+  its policy at boot) and on every change, and nothing is preloaded before the first reply, which
+  also says which entries are periodic.
 - **How:** `launch` with `{"preload": "partial", "noSplash": true, "launchHidden": true}` from
   Luma's own connection (accepted on webOS 25). 3 s later the foreground is checked: an app that
   came forward is closed, Luma's running identity is launched again, and the app joins
@@ -1196,16 +1199,29 @@ find …" for other apps), so Luma starts the others itself (`src/preload.rs`).
 - **When:** one app at a time, at least 20 s apart, only while Luma is visible and focused (so
   never over another app or while the TV's screensaver, Luma's clock included, is up), the
   in-app screensaver is off, no launch is under way, and there was no input for 8 s. An app that
-  already runs is skipped. The tried list resets whenever Luma comes back to the front.
-- **Memory:** before each preload `MemAvailable` must be at least 350 MB
-  (`preload::MEMORY_FLOOR_MB`) and at least a third of swap must be free. With the automatic
-  choice, apps of the user's grid that already run count towards its three; with a list of the
-  user's own, memory and swap alone decide. The first skip for memory, swap or enough running
-  apps stops preloading until Luma comes back to the front. Luma never closes an app when memory
-  runs low later; LG's memory manager does that.
-- **Diagnostics:** the last 24 decisions (preloaded, skipped and why, came forward, policy and
-  memory compression changes) are in `preload` in `luma-diagnostics.json` and in
-  `/tmp/luma-home.log`.
+  already runs is skipped first, before any memory check, so it never reports a memory skip and
+  never pauses the rest. The tried list resets whenever Luma comes back to the front.
+- **Memory:** decided on LG's memory manager (`com.webos.memorymanager`), not on `MemAvailable`:
+  with memory compression on, `MemAvailable` sat at 225–250 MB on an idle Home with seven apps
+  warm while LG's `getCurrentMemState` reported level "normal" with 342 MB `usable`. A preload
+  needs level "normal" and `usable` at least `memBoundary.medium.enter` from `getPolicy` plus 100
+  MB (LG's own `requiredMemory`): 250 + 100 = 350 MB on that TV. Only when the memory manager does
+  not answer does `MemAvailable` (350 MB) decide. At least a third of swap must be free either
+  way. A level other than "normal" (it went to "medium" for about a minute while YouTube started)
+  or memory pressure above 10 % ("some avg10" in `/proc/pressure/memory`) makes the app wait and
+  be tried again; a steady shortage, low swap or (with the automatic choice) three running apps
+  stop preloading until Luma comes back to the front. Luma never closes an app when memory runs
+  low later; LG's memory manager does that.
+- **Diagnostics:** the last 24 decisions (preloaded and what allowed it, skipped or waiting with
+  LG's numbers, came forward, policy and memory compression changes) are in `preload` in
+  `luma-diagnostics.json` and in `/tmp/luma-home.log`. Every 30 s while Luma runs, its preload
+  thread also polls LG's memory state and the running apps; `lg_memory` has the current level
+  and usable memory, the medium boundary, how often the level entered medium, low and critical
+  since Luma started, and how often each listed app disappeared from the running list without
+  Luma closing it (from Recents, or after it came forward). An app the user closed elsewhere
+  counts as disappeared too. Whether a hidden app holds audio or video
+  (`com.webos.media/getActivePipelines`) is not checked: its pipelines were not confirmed to name
+  their app.
 
 Measured on the TV this was designed with (LG OLED55B46LA, webOS 25, 1.7 GB RAM): VTM GO opened
 in 3.4 s cold and in 0.2 s preloaded, Stremio in 0.74 s preloaded. A background app held about
