@@ -33,6 +33,9 @@ struct Fixture {
     /// How many `getAppInfo` calls after a release still find no app (a rescan in progress).
     rescan_gap: Cell<usize>,
     missing: Cell<usize>,
+    /// LG's preload policy (`getPreloadPolicy`/`setPreloadPolicy`) and other running apps.
+    preload_policy: RefCell<BTreeMap<String, bool>>,
+    running_ids: RefCell<Vec<String>>,
 }
 impl Fixture {
     fn new() -> Self {
@@ -68,6 +71,8 @@ impl Fixture {
             dropped: Cell::new(false),
             rescan_gap: Cell::new(0),
             missing: Cell::new(0),
+            preload_policy: RefCell::new(BTreeMap::new()),
+            running_ids: RefCell::new(vec![]),
         };
         for dir in [
             "/var/lib/luma-home/app",
@@ -261,7 +266,43 @@ impl System for Fixture {
                 json!({"returnValue":true})
             }
             "running" => {
-                json!({"returnValue":true,"running":if self.normal.get(){vec![json!({"id":APP})]}else{vec![]}})
+                let mut running: Vec<Value> = self
+                    .running_ids
+                    .borrow()
+                    .iter()
+                    .map(|id| json!({"id": id}))
+                    .collect();
+                if self.normal.get() {
+                    running.push(json!({"id": APP}));
+                }
+                json!({"returnValue":true,"running":running})
+            }
+            "getPreloadPolicy" => {
+                let apps: Vec<Value> = self
+                    .preload_policy
+                    .borrow()
+                    .iter()
+                    .map(|(id, enabled)| json!({"id": id, "type": "partial", "isEnabled": enabled}))
+                    .collect();
+                json!({"returnValue":true,"policy":{"applications":apps}})
+            }
+            "setPreloadPolicy" => {
+                let id = payload["application"]["id"].as_str().unwrap().to_owned();
+                let mut policy = self.preload_policy.borrow_mut();
+                match policy.get_mut(&id) {
+                    Some(enabled) => {
+                        *enabled = payload["application"]["isEnabled"].as_bool().unwrap();
+                        json!({"returnValue":true})
+                    }
+                    None => json!({"returnValue":false,"errorText":format!("Cannot find {id}")}),
+                }
+            }
+            "closeByAppId" if payload["id"] != APP => {
+                let id = payload["id"].as_str().unwrap().to_owned();
+                self.running_ids
+                    .borrow_mut()
+                    .retain(|running| *running != id);
+                json!({"returnValue":true})
             }
             "closeByAppId" => {
                 if self.close_normal.get() {
@@ -1347,4 +1388,132 @@ fn an_invalid_staged_app_is_refused_before_sam_is_touched() {
     screensaver::validate(&f).unwrap();
     fs::remove_file(f.p(&format!("{}/index.html", screensaver::STAGE))).unwrap();
     assert!(screensaver::validate(&f).unwrap_err().contains("main"));
+}
+
+#[test]
+fn the_staged_home_is_kept_running_across_home_presses_without_a_spinner() {
+    let f = Fixture::new();
+    f.put("/etc/starfish-release", b"Rockhopper release 10.3.2-6");
+    home::dispatch(&f, "enable", Some(DIR), None).unwrap();
+    let staged = system::json(&f, "/var/lib/luma-home/app/appinfo.json").unwrap();
+    assert_eq!(staged["id"], home::HOME);
+    assert_eq!(staged["main"], "luma");
+    assert_eq!(staged["appCategory"], json!(["home"]));
+    assert_eq!(staged["visible"], false);
+    // Relaunches come from the registration; the stage adds no handlesRelaunch of its own.
+    assert!(staged.get("handlesRelaunch").is_none());
+    // A cold start shows the staged splash (the wallpaper) without LG's spinner.
+    assert_eq!(staged["spinnerOnLaunch"], false);
+    assert_eq!(staged["noSplashOnLaunch"], false);
+    // What SAM reads through the mount is the same manifest.
+    assert_eq!(
+        system::json(&f, "/usr/palm/applications/com.webos.app.home/appinfo.json").unwrap(),
+        staged
+    );
+}
+
+#[test]
+fn every_apply_refreshes_a_staged_manifest_from_an_older_install_and_sam_rereads_it() {
+    let f = Fixture::new();
+    f.put("/etc/starfish-release", b"Rockhopper release 10.3.2-6");
+    home::dispatch(&f, "enable", Some(DIR), None).unwrap();
+    // An install enabled by an earlier version: its stage still shows LG's spinner.
+    let mut old = system::json(&f, "/var/lib/luma-home/app/appinfo.json").unwrap();
+    old.as_object_mut().unwrap().remove("spinnerOnLaunch");
+    f.put_json("/var/lib/luma-home/app/appinfo.json", old);
+    let blocks = f
+        .calls()
+        .iter()
+        .filter(|c| c.contains("/blockSystemApp "))
+        .count();
+    // The cold-boot hook's apply (also run by the self-updater) brings it up to date.
+    home::dispatch(&f, "apply", None, None).unwrap();
+    let staged = system::json(&f, "/var/lib/luma-home/app/appinfo.json").unwrap();
+    assert_eq!(staged["spinnerOnLaunch"], false);
+    assert!(
+        f.calls()
+            .iter()
+            .filter(|c| c.contains("/blockSystemApp "))
+            .count()
+            > blocks,
+        "SAM rereads the refreshed manifest"
+    );
+    // An unchanged manifest is left alone.
+    let before = f.read("/var/lib/luma-home/app/appinfo.json");
+    home::dispatch(&f, "apply", None, None).unwrap();
+    assert_eq!(f.read("/var/lib/luma-home/app/appinfo.json"), before);
+    // Luma's lifecycle latch (a relaunch that never reached the front) lasts one boot at most:
+    // the next apply clears it, so Home registers again.
+    f.put(
+        home::LIFECYCLE_OFF,
+        b"2026-11-12 13:06:22: a relaunch did not reach the front\n",
+    );
+    home::dispatch(&f, "apply", None, None).unwrap();
+    assert!(!system::exists(&f, home::LIFECYCLE_OFF));
+    f.put(home::LIFECYCLE_OFF, b"");
+    home::dispatch(&f, "enable", Some(DIR), None).unwrap();
+    assert!(!system::exists(&f, home::LIFECYCLE_OFF));
+}
+
+#[test]
+fn lg_preloads_of_hidden_apps_go_off_and_only_those_come_back_on() {
+    let f = Fixture::new();
+    for (id, enabled) in [
+        ("com.webos.app.lgchannels", true),
+        ("com.webos.app.browser", true),
+        ("com.webos.app.livetv", false),
+        ("youtube.leanback.v4", true),
+    ] {
+        f.preload_policy.borrow_mut().insert(id.into(), enabled);
+    }
+    // LG already preloaded the browser hidden.
+    f.running_ids
+        .borrow_mut()
+        .push("com.webos.app.browser".into());
+    let request = json!({"disable": ["com.webos.app.lgchannels", "com.webos.app.browser",
+        "com.webos.app.livetv", "be.vtmgo.app"], "enable": []});
+    let reply = preload::dispatch(&f, &request.to_string()).unwrap();
+    // Switched off: the two that were on. Live TV, already off in LG's policy, is not Luma's
+    // to switch on later; the app LG's policy does not list is skipped.
+    assert_eq!(
+        reply["disabled"],
+        json!(["com.webos.app.lgchannels", "com.webos.app.browser"])
+    );
+    let policy = f.preload_policy.borrow().clone();
+    assert!(!policy["com.webos.app.lgchannels"]);
+    assert!(!policy["com.webos.app.browser"]);
+    // An entry for an app the user did not hide is untouched.
+    assert!(policy["youtube.leanback.v4"]);
+    // The hidden browser instance LG had preloaded is closed.
+    assert!(f.running_ids.borrow().is_empty());
+    assert!(
+        !f.calls()
+            .iter()
+            .any(|c| c.contains("setPreloadPolicy") && c.contains("be.vtmgo.app"))
+    );
+    // Shown again (or the setting off): back on.
+    let request = json!({"disable": [], "enable": ["com.webos.app.browser"]});
+    let reply = preload::dispatch(&f, &request.to_string()).unwrap();
+    assert_eq!(reply["disabled"], json!([]));
+    assert_eq!(reply["enabled"], json!(["com.webos.app.browser"]));
+    assert!(f.preload_policy.borrow()["com.webos.app.browser"]);
+    assert!(!f.preload_policy.borrow()["com.webos.app.lgchannels"]);
+    // Bad requests and non-root callers change nothing.
+    assert!(preload::dispatch(&f, r#"{"disable":["../x"],"enable":[]}"#).is_err());
+    assert!(preload::dispatch(&f, "not json").is_err());
+    f.uid.set(501);
+    assert!(preload::dispatch(&f, r#"{"disable":[],"enable":[]}"#).is_err());
+}
+
+#[test]
+fn preload_policy_entries_are_found_however_lg_nests_them() {
+    let reply = json!({"returnValue": true, "preloadPolicy": [
+        {"id": "netflix", "type": "partial", "isEnabled": true, "mode": {"periodic": true}},
+        {"group": {"apps": [{"id": "amazon", "isEnabled": false}]}},
+        {"id": "no-flag"}
+    ]});
+    let entries = preload::policy_entries(&reply);
+    assert_eq!(entries.len(), 2);
+    assert!(entries["netflix"]);
+    assert!(!entries["amazon"]);
 }

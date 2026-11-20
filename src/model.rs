@@ -39,6 +39,9 @@ pub struct App {
     /// The interface icon a shortcut tile shows; empty for real apps.
     #[serde(skip)]
     pub mark: &'static str,
+    /// A web app (`"type": "web"` in the TV's inventory): the only kind Luma preloads hidden.
+    #[serde(skip)]
+    pub web: bool,
 }
 
 impl App {
@@ -51,6 +54,7 @@ impl App {
                 category: "Utilities".into(),
                 icon: None,
                 mark: TILE_ICONS[0].0,
+                web: false,
             };
         }
         let identity = format!("{id} {title}").to_lowercase();
@@ -75,6 +79,7 @@ impl App {
             category: category.into(),
             icon: None,
             mark: "",
+            web: false,
         }
     }
 }
@@ -286,6 +291,15 @@ pub struct Preferences {
     pub show_inputs: bool,
     /// Minutes without input before the screensaver starts while Luma is in front; 0 is Off.
     pub screensaver_minutes: u32,
+    /// Settings › General › Preload apps: keep the most used web apps started hidden, and turn
+    /// off LG's own preloads of apps the user hid.
+    pub preload_apps: bool,
+    /// How often each app was launched from Luma, to choose what to preload.
+    pub launch_counts: BTreeMap<String, u32>,
+    /// Apps that came to the front when preloaded hidden; never preloaded again.
+    pub preload_blocked: Vec<String>,
+    /// LG preload entries Luma switched off (for hidden apps), so only those are switched on again.
+    pub preload_lg_disabled: Vec<String>,
     #[serde(deserialize_with = "deserialize_appearance")]
     pub appearance: Appearance,
     /// The 24-hour choice as earlier versions saved it: written with every preference file, so
@@ -326,6 +340,10 @@ impl Default for Preferences {
             show_app_names: true,
             show_inputs: false,
             screensaver_minutes: 10,
+            preload_apps: true,
+            launch_counts: BTreeMap::new(),
+            preload_blocked: vec![],
+            preload_lg_disabled: vec![],
             appearance: Appearance::Dark,
             hour_24: false,
             clock_24: None,

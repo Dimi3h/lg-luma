@@ -3,6 +3,7 @@
 pub mod files;
 pub mod home;
 pub mod input;
+pub mod preload;
 pub mod screensaver;
 pub mod system;
 pub mod uninstall;

@@ -661,6 +661,37 @@ impl State {
         pending
     }
 
+    /// SAM brought the running Luma back as Home (Home key, power on, Back out of an app): the
+    /// main screen, as a fresh start would show it, but the same process and its state. Settings,
+    /// overlays, Recents, move mode and the in-app screensaver close; on the main screen a
+    /// focused app card stays focused (and scrolled into view) as long as it still exists.
+    pub fn relaunch(&mut self) -> Vec<Effect> {
+        self.stop_screensaver();
+        // Under the context menu, the delete alert or Recents, the card they were opened from.
+        let focused = match &self.overlay {
+            None => Some(self.focus.clone()),
+            Some(
+                Overlay::Options { restore, .. }
+                | Overlay::Delete { restore, .. }
+                | Overlay::Recents { restore },
+            ) => Some(restore.clone()),
+            Some(_) => None,
+        };
+        let keep = focused
+            .filter(|_| self.page == Page::Home)
+            .filter(|focus| match focus {
+                Target::App(id) => self.apps().iter().any(|app| &app.id == id),
+                _ => false,
+            });
+        let scroll = self.scroll;
+        let pending = self.return_home();
+        if let Some(focus) = keep {
+            self.focus = focus;
+            self.scroll = scroll;
+        }
+        pending
+    }
+
     pub fn open(&mut self, page: Page) {
         self.weather.cancel_search();
         self.page = page;
@@ -2460,6 +2491,13 @@ impl State {
                         return vec![];
                     }
                     5 => return vec![Effect::Quit],
+                    // Preload apps: the main loop starts or stops preloading and puts LG's
+                    // preloads of hidden apps back when switched off.
+                    17 => {
+                        self.preferences.preload_apps = !self.preferences.preload_apps;
+                        self.dirty = true;
+                        return vec![Effect::Save];
+                    }
                     _ => return vec![Effect::Reload],
                 }
             }

@@ -262,6 +262,8 @@ pub const WRITE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6
 enum Message {
     Facts(serde_json::Value),
     Frames(FrameSummary),
+    /// The latest preload decisions (Settings › General › Preload apps).
+    Preload(serde_json::Value),
 }
 
 /// Writes `luma-diagnostics.json` on its own thread: the SDL thread only sends the startup
@@ -280,16 +282,19 @@ impl Writer {
             .spawn(move || {
                 let mut facts = serde_json::json!({});
                 let mut frames = None;
+                let mut preload = None;
                 while let Ok(message) = receiver.recv() {
                     match message {
                         Message::Facts(value) => facts = value,
                         Message::Frames(summary) => frames = Some(summary),
+                        Message::Preload(value) => preload = Some(value),
                     }
                     // Only the latest state matters: skip to it when messages queued up.
                     while let Ok(message) = receiver.try_recv() {
                         match message {
                             Message::Facts(value) => facts = value,
                             Message::Frames(summary) => frames = Some(summary),
+                            Message::Preload(value) => preload = Some(value),
                         }
                     }
                     let mut value = facts.clone();
@@ -298,6 +303,9 @@ impl Writer {
                             "frame_stats".into(),
                             serde_json::to_value(summary).unwrap_or_default(),
                         );
+                    }
+                    if let (Some(object), Some(decisions)) = (value.as_object_mut(), &preload) {
+                        object.insert("preload".into(), decisions.clone());
                     }
                     if let Err(error) = write_startup(&path, &value) {
                         eprintln!("Luma diagnostics file: {error}");
@@ -314,6 +322,12 @@ impl Writer {
     pub fn facts(&self, facts: serde_json::Value) {
         if let Some(sender) = &self.sender {
             let _ = sender.send(Message::Facts(facts));
+        }
+    }
+
+    pub fn preload(&self, decisions: serde_json::Value) {
+        if let Some(sender) = &self.sender {
+            let _ = sender.send(Message::Preload(decisions));
         }
     }
 

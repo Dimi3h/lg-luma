@@ -19,6 +19,7 @@ mod luna;
 mod model;
 mod motion;
 mod platform;
+mod preload;
 mod raster;
 mod recents;
 mod renderer;
@@ -334,6 +335,11 @@ fn effects(
                     if platform.webos {
                         state.launching = true;
                         state.notify(state.preferences.language.t("opening"));
+                        // The launch counts choose what to preload (Settings › Preload apps).
+                        preload::count_launch(&mut state.preferences.launch_counts, &id);
+                        if let Err(error) = storage::save(preferences, &state.preferences) {
+                            eprintln!("{error}");
+                        }
                         platform.send(Request::Launch(id));
                     } else {
                         let title = state
@@ -575,14 +581,24 @@ fn scripted_click(
 #[cfg(all(feature = "webos", unix))]
 fn log_home_output() {
     use std::os::unix::io::IntoRawFd;
+    // Appended, so a Home process started by SAM does not erase why the previous one ended;
+    // rotated once it grows past 256 KiB (/tmp starts empty at each boot).
+    const LOG: &str = "/tmp/luma-home.log";
+    if std::fs::metadata(LOG).is_ok_and(|meta| meta.len() > 256 * 1024) {
+        let _ = std::fs::rename(LOG, "/tmp/luma-home.log.1");
+    }
     if let Ok(file) = std::fs::OpenOptions::new()
         .create(true)
-        .write(true)
-        .truncate(true)
-        .open("/tmp/luma-home.log")
+        .append(true)
+        .open(LOG)
     {
         unsafe { libc::dup2(file.into_raw_fd(), 2) };
     }
+    eprintln!(
+        "Luma Home process {} started (version {})",
+        std::process::id(),
+        env!("CARGO_PKG_VERSION")
+    );
     unsafe { sdl2::sys::SDL_LogSetAllPriority(sdl2::sys::SDL_LogPriority::SDL_LOG_PRIORITY_INFO) };
 }
 
@@ -892,6 +908,15 @@ fn run() -> Result<(), String> {
     // not Luma running as Home), Luma closes itself while out of sight, once per version.
     let mut update_checked = Instant::now();
     let mut update_check_now = false;
+    // Preloading the user's apps and LG's preloads of hidden apps (see preload.rs). Decisions go
+    // to luma-diagnostics.json.
+    let preload_service = webos.then(preload::Service::spawn);
+    let mut preload_busy = false;
+    let mut preload_last: Option<Instant> = None;
+    let mut preload_tried: std::collections::HashSet<String> = Default::default();
+    let mut preload_log: std::collections::VecDeque<preload::Decision> = Default::default();
+    let mut policy_sent: Option<(Vec<String>, Vec<String>)> = None;
+    let mut policy_busy = false;
     let update_quit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     frame_stats.set_foreground(stats_written, true);
     let mut presented = 0usize;
@@ -902,105 +927,134 @@ fn run() -> Result<(), String> {
     // killing and restarting it, and "close" when it wants Luma to exit. `end_registration`
     // drops a staged Home's registration (webOS 10/11) if a relaunch did not reach the front.
     type EndRegistration = Box<dyn Fn()>;
+    // A relaunch the main loop never handles (a stuck loop) ends the process: see
+    // platform::RelaunchWatchdog. Only Home registers, so only Home relaunches.
+    let relaunch_watchdog =
+        platform::RelaunchWatchdog::new(platform::RelaunchWatchdog::LIMIT, || {
+            // SAFETY: _exit ends the process without running destructors or atexit handlers,
+            // which a stuck main loop could be holding locks for.
+            #[cfg(feature = "webos")]
+            unsafe {
+                libc::_exit(70)
+            }
+            #[cfg(not(feature = "webos"))]
+            std::process::exit(70)
+        });
     #[cfg(not(all(feature = "webos", target_os = "linux", target_arch = "arm")))]
     let (lifecycle_event, end_registration): (Option<u32>, Option<EndRegistration>) = (None, None);
     #[cfg(all(feature = "webos", target_os = "linux", target_arch = "arm"))]
-    let (lifecycle_event, end_registration): (Option<u32>, Option<EndRegistration>) =
-        if webos && options.webos_home {
-            let subsystem = sdl.event()?;
-            // SAFETY: registers one SDL user event type before any are pushed.
-            let event_type = unsafe { subsystem.register_event()? };
-            let pusher = move |sender: sdl2::event::EventSender| {
-                move |lifecycle: platform::Lifecycle| {
-                    let code = match lifecycle {
-                        platform::Lifecycle::Relaunch => 1,
-                        platform::Lifecycle::Close => 2,
-                    };
-                    let _ = sender.push_event(Event::User {
-                        timestamp: 0,
-                        window_id: 0,
-                        type_: event_type,
-                        code,
-                        data1: std::ptr::null_mut(),
-                        data2: std::ptr::null_mut(),
-                    });
-                }
-            };
-            // SAFETY: geteuid has no preconditions.
-            let as_root = unsafe { libc::geteuid() } == 0;
-            if platform::runs_as_lg_home() {
-                // In place of LG's Home executable (webOS 5/6), LG's role is bound to that path,
-                // so Luma registers through lifecycle v2 on its own connection.
-                let push = pusher(subsystem.event_sender());
-                luna::subscribe(
-                    Some(platform::home_id()),
-                    "luna://com.webos.applicationManager/registerApp",
-                    &serde_json::json!({"id": platform::home_id()}),
-                    // sam answers "registered" at once; without it sam would end Home later.
-                    Duration::from_secs(10),
-                    move |message| {
-                        eprintln!("Luma lifecycle: {message}");
-                        let refused = message
-                            .get("returnValue")
-                            .and_then(serde_json::Value::as_bool)
-                            == Some(false);
-                        match platform::Lifecycle::from_reply(&message) {
-                            Some(lifecycle) => push(lifecycle),
-                            // Registration lost (e.g. sam restarted): quit, so sam starts Home
-                            // afresh.
-                            None if refused => push(platform::Lifecycle::Close),
-                            None => {}
+    let (lifecycle_event, end_registration): (Option<u32>, Option<EndRegistration>) = if webos
+        && options.webos_home
+    {
+        let subsystem = sdl.event()?;
+        // SAFETY: registers one SDL user event type before any are pushed.
+        let event_type = unsafe { subsystem.register_event()? };
+        let pusher = move |sender: sdl2::event::EventSender| {
+            move |lifecycle: platform::Lifecycle| {
+                let code = match lifecycle {
+                    platform::Lifecycle::Relaunch => 1,
+                    platform::Lifecycle::Close => 2,
+                };
+                let _ = sender.push_event(Event::User {
+                    timestamp: 0,
+                    window_id: 0,
+                    type_: event_type,
+                    code,
+                    data1: std::ptr::null_mut(),
+                    data2: std::ptr::null_mut(),
+                });
+            }
+        };
+        // SAFETY: geteuid has no preconditions.
+        let as_root = unsafe { libc::geteuid() } == 0;
+        if platform::runs_as_lg_home() {
+            // In place of LG's Home executable (webOS 5/6), LG's role is bound to that path,
+            // so Luma registers through lifecycle v2 on its own connection.
+            let push = pusher(subsystem.event_sender());
+            let watchdog = relaunch_watchdog.clone();
+            luna::subscribe(
+                Some(platform::home_id()),
+                "luna://com.webos.applicationManager/registerApp",
+                &serde_json::json!({"id": platform::home_id()}),
+                // sam answers "registered" at once; without it sam would end Home later.
+                Duration::from_secs(10),
+                move |message| {
+                    eprintln!("Luma lifecycle: {message}");
+                    let refused = message
+                        .get("returnValue")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(false);
+                    match platform::Lifecycle::from_reply(&message) {
+                        Some(lifecycle) => {
+                            if matches!(lifecycle, platform::Lifecycle::Relaunch) {
+                                watchdog.received();
+                            }
+                            push(lifecycle)
                         }
-                    },
-                )?;
-                (Some(event_type), None)
-            } else if !as_root {
-                (None, None)
-            } else if std::path::Path::new(platform::HOME_LIFECYCLE_OFF).exists() {
-                eprintln!(
-                    "Luma lifecycle: {} exists; Home stays unregistered",
-                    platform::HOME_LIFECYCLE_OFF
-                );
-                (None, None)
-            } else {
-                // A staged Home manifest (webOS 10/11) runs Luma's own executable as root under
-                // LG's app-ID based Home role, which Luma's connection cannot claim. Hold the
-                // registration as that app through `luna-send -a`; sam then expects lifecycle v1.
-                // This does not wait for sam: until it answers, Home is simply unregistered.
-                let push = pusher(subsystem.event_sender());
-                let close = pusher(subsystem.event_sender());
-                match luna::subscribe_as_app(
-                    platform::home_id(),
-                    "luna://com.webos.applicationManager/registerNativeApp",
-                    &serde_json::json!({}),
-                    Duration::from_secs(10),
-                    move |message| {
-                        eprintln!("Luma lifecycle: {message}");
-                        if let Some(lifecycle) = platform::Lifecycle::from_reply(&message) {
-                            push(lifecycle);
-                        }
-                    },
-                    // A registration sam had accepted is gone: quit, so sam starts Home afresh.
-                    // Never accepted: stay, unregistered, as before.
-                    move |registered| {
-                        if registered {
-                            close(platform::Lifecycle::Close);
-                        }
-                    },
-                ) {
-                    Ok(subscription) => (
-                        Some(event_type),
-                        Some(Box::new(move || subscription.end()) as EndRegistration),
-                    ),
-                    Err(error) => {
-                        eprintln!("Luma lifecycle: {error}; Home stays unregistered");
-                        (None, None)
+                        // Registration lost (e.g. sam restarted): quit, so sam starts Home
+                        // afresh.
+                        None if refused => push(platform::Lifecycle::Close),
+                        None => {}
                     }
+                },
+            )?;
+            (Some(event_type), None)
+        } else if !as_root {
+            (None, None)
+        } else if std::path::Path::new(platform::HOME_LIFECYCLE_OFF).exists() {
+            eprintln!(
+                "Luma lifecycle: {} exists ({}); Home stays unregistered until the next cold boot or update",
+                platform::HOME_LIFECYCLE_OFF,
+                std::fs::read_to_string(platform::HOME_LIFECYCLE_OFF)
+                    .ok()
+                    .map(|why| why.trim().to_owned())
+                    .filter(|why| !why.is_empty())
+                    .unwrap_or_else(|| "set by an earlier version".into())
+            );
+            (None, None)
+        } else {
+            // A staged Home manifest (webOS 10/11) runs Luma's own executable as root under
+            // LG's app-ID based Home role, which Luma's connection cannot claim. Hold the
+            // registration as that app through `luna-send -a`; sam then expects lifecycle v1.
+            // This does not wait for sam: until it answers, Home is simply unregistered.
+            let push = pusher(subsystem.event_sender());
+            let close = pusher(subsystem.event_sender());
+            let watchdog = relaunch_watchdog.clone();
+            match luna::subscribe_as_app(
+                platform::home_id(),
+                "luna://com.webos.applicationManager/registerNativeApp",
+                &serde_json::json!({}),
+                Duration::from_secs(10),
+                move |message| {
+                    eprintln!("Luma lifecycle: {message}");
+                    if let Some(lifecycle) = platform::Lifecycle::from_reply(&message) {
+                        if matches!(lifecycle, platform::Lifecycle::Relaunch) {
+                            watchdog.received();
+                        }
+                        push(lifecycle);
+                    }
+                },
+                // A registration sam had accepted is gone: quit, so sam starts Home afresh.
+                // Never accepted: stay, unregistered, as before.
+                move |registered| {
+                    if registered {
+                        close(platform::Lifecycle::Close);
+                    }
+                },
+            ) {
+                Ok(subscription) => (
+                    Some(event_type),
+                    Some(Box::new(move || subscription.end()) as EndRegistration),
+                ),
+                Err(error) => {
+                    eprintln!("Luma lifecycle: {error}; Home stays unregistered");
+                    (None, None)
                 }
             }
-        } else {
-            (None, None)
-        };
+        }
+    } else {
+        (None, None)
+    };
     // Whether a staged Home's relaunch reached the front; see platform::ForegroundCheck.
     let mut foreground = platform::ForegroundCheck::default();
     let mut focused = true;
@@ -1337,9 +1391,14 @@ fn run() -> Result<(), String> {
                 Event::Quit { .. } => running = false,
                 Event::User { type_, code, .. } if Some(type_) == lifecycle_event => {
                     if code == 1 {
+                        relaunch_watchdog.handled();
                         press = None;
                         back_button.cancel();
-                        pending = state.return_home();
+                        // The same process comes back: the main screen, with the focused card
+                        // kept, drawn complete at once.
+                        pending = state.relaunch();
+                        damage_tracker.reset();
+                        renderer.complete_next_frame();
                         // A staged Home must come forward itself. If it does not, its
                         // registration would leave the Home key dead: check below.
                         if end_registration.is_some() {
@@ -1399,6 +1458,7 @@ fn run() -> Result<(), String> {
                         back_button.cancel();
                     }
                     WindowEvent::Shown | WindowEvent::Restored | WindowEvent::FocusGained => {
+                        let visible_before = visible && focused;
                         visible = true;
                         // Returning to Luma restarts the idle timer, unless the TV's own
                         // screensaver is Luma's clock (checked again: it can change any time).
@@ -1410,6 +1470,15 @@ fn run() -> Result<(), String> {
                         if matches!(win_event, WindowEvent::FocusGained) {
                             focused = true;
                             foreground.confirmed();
+                        }
+                        // After time out of sight (hours, or a standby) the first frame is
+                        // drawn complete: no partial damage against an old back buffer.
+                        if !visible_before {
+                            damage_tracker.reset();
+                            renderer.complete_next_frame();
+                            // Back in front: check the preloaded apps again (one may have been
+                            // used and closed, or ended for memory).
+                            preload_tried.clear();
                         }
                         state.dirty = true;
                         if webos {
@@ -2029,17 +2098,142 @@ fn run() -> Result<(), String> {
         if update_quit.load(std::sync::atomic::Ordering::SeqCst) {
             running = false;
         }
+        if let Some(service) = &preload_service {
+            let mut record = |id: &str, result: String| {
+                eprintln!("Luma preload: {id}: {result}");
+                preload_log.push_back(preload::Decision {
+                    at: OffsetDateTime::now_utc()
+                        .format(&time::format_description::well_known::Rfc3339)
+                        .unwrap_or_default(),
+                    id: id.to_owned(),
+                    result,
+                });
+                while preload_log.len() > preload::DECISIONS {
+                    preload_log.pop_front();
+                }
+                diagnostics_writer.preload(serde_json::to_value(&preload_log).unwrap_or_default());
+            };
+            while let Ok(reply) = service.receiver.try_recv() {
+                match reply {
+                    preload::Reply::Preloaded { id, outcome } => {
+                        preload_busy = false;
+                        if outcome == preload::Outcome::CameForward
+                            && !state.preferences.preload_blocked.contains(&id)
+                        {
+                            state.preferences.preload_blocked.push(id.clone());
+                            if let Err(error) = storage::save(&preferences_path, &state.preferences)
+                            {
+                                eprintln!("{error}");
+                            }
+                        }
+                        record(&id, outcome.describe());
+                    }
+                    preload::Reply::Policy(result) => {
+                        policy_busy = false;
+                        match result {
+                            Ok((off, on)) => {
+                                let lg = &mut state.preferences.preload_lg_disabled;
+                                lg.retain(|id| !on.contains(id));
+                                for id in &off {
+                                    if !lg.contains(id) {
+                                        lg.push(id.clone());
+                                    }
+                                }
+                                if !off.is_empty() || !on.is_empty() {
+                                    if let Err(error) =
+                                        storage::save(&preferences_path, &state.preferences)
+                                    {
+                                        eprintln!("{error}");
+                                    }
+                                    record(
+                                        "LG preload policy",
+                                        format!("switched off {off:?}, on {on:?}"),
+                                    );
+                                }
+                            }
+                            Err(error) => record("LG preload policy", format!("failed: {error}")),
+                        }
+                    }
+                }
+            }
+            // LG's own preloads of apps hidden in Luma: off; back on when shown again or with
+            // the setting off. Sent again after every start, as LG may restore them at boot.
+            if !policy_busy && !state.inventory.apps.is_empty() {
+                let wanted = preload::lg_policy_change(
+                    state.preferences.preload_apps,
+                    &state.preferences.hidden,
+                    &state.preferences.preload_lg_disabled,
+                );
+                if policy_sent.as_ref() != Some(&wanted)
+                    && !(wanted.0.is_empty() && wanted.1.is_empty())
+                {
+                    policy_busy = true;
+                    service.send(preload::Job::Policy {
+                        disable: wanted.0.clone(),
+                        enable: wanted.1.clone(),
+                    });
+                }
+                policy_sent = Some(wanted);
+            }
+            // One of the user's apps at a time, only while Luma is in front and idle, no launch
+            // is under way and neither screensaver shows.
+            if state.preferences.preload_apps
+                && visible
+                && focused
+                && !preload_busy
+                && !state.launching
+                && state.screensaver.is_none()
+                && !state.inventory.apps.is_empty()
+                && state.last_input.elapsed() >= preload::IDLE
+                && preload_last.is_none_or(|last| last.elapsed() >= preload::SPACING)
+                && let Some(id) = preload::next(
+                    &state.apps(),
+                    &state.preferences.launch_counts,
+                    &state.preferences.preload_blocked,
+                    &preload_tried,
+                )
+            {
+                preload_tried.insert(id.clone());
+                preload_busy = true;
+                preload_last = Some(Instant::now());
+                let own = if options.webos_home {
+                    platform::home_id()
+                } else {
+                    platform::APP_ID
+                };
+                service.send(preload::Job::Preload { id, own });
+            }
+        }
         if foreground.failed(Instant::now())
             && let Some(end_registration) = &end_registration
         {
             // Fall back to the restart sam does for an unregistered Home: remember that and
-            // end the registration, which quits Luma so sam starts it afresh.
-            eprintln!(
-                "Luma lifecycle: a relaunch did not bring Luma to the front; creating {}",
-                platform::HOME_LIFECYCLE_OFF
-            );
-            if let Err(error) = std::fs::write(platform::HOME_LIFECYCLE_OFF, b"") {
-                eprintln!("Luma lifecycle: {error}");
+            // end the registration, which quits Luma so sam starts it afresh. A process whose
+            // program an update replaced only ends: the new program registers normally (this
+            // is what set the latch for good once, on 12 November).
+            let exe = std::fs::read_link("/proc/self/exe")
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if platform::latch_after_failed_relaunch(&exe) {
+                eprintln!(
+                    "Luma lifecycle: a relaunch did not bring Luma to the front; creating {}",
+                    platform::HOME_LIFECYCLE_OFF
+                );
+                // A latch for this boot: the next home.sh apply (cold boot, update) clears it.
+                let why = format!(
+                    "{}: a relaunch did not bring Luma {} to the front within 3 s\n",
+                    OffsetDateTime::now_utc()
+                        .format(&time::format_description::well_known::Rfc3339)
+                        .unwrap_or_default(),
+                    env!("CARGO_PKG_VERSION")
+                );
+                if let Err(error) = std::fs::write(platform::HOME_LIFECYCLE_OFF, why) {
+                    eprintln!("Luma lifecycle: {error}");
+                }
+            } else {
+                eprintln!(
+                    "Luma lifecycle: a relaunch did not bring this replaced program to the front; ending without a latch so the installed one starts"
+                );
             }
             end_registration();
         }
@@ -2077,8 +2271,10 @@ fn run() -> Result<(), String> {
         // Block until input instead of polling at frame rate on idle screens.
         // VSync paces animation; holds, scripted checks and icons still being
         // decoded need short timed wakes.
+        // Out of sight nothing is drawn; a slow wake keeps worker replies, the update check
+        // and frame statistics moving at almost no cost over days in the background.
         let timeout = if !visible {
-            250
+            1000
         } else if state.animating() || options.profile_frames.is_some() {
             0
         } else if press.is_some()

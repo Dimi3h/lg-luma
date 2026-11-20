@@ -1032,6 +1032,51 @@ a cold boot. SDL's own registration logs `Failed to register app: Failed to get
 nativeLifeCycleInterfaceVersion` at startup there, without effect. That the compositor sends
 `FocusGained` after such a relaunch, which the watchdog relies on, shows in the `Luma window:` log.
 
+**One process across Home presses.** On an LG OLED55B46LA (webOS 25, 10.3.2) every Home key
+started a new Luma: a median 2.3 s from `NL_APP_LAUNCH_BEGIN` to a visible window (0.9–4.2 s over
+15 presses), against 0.1 s for an app that stays running. The cause was the lifecycle latch
+`/var/lib/luma-home/no-lifecycle`: it was created on 12 November when a test build was installed
+over the running Home (the old process could not come forward), and nothing ever removed it, so
+Luma stayed unregistered through cold boots, an update and a re-enable. Now:
+
+- the latch records when and why it was set, and every `home.sh apply` (cold-boot hook,
+  self-updater, enable) clears it and logs that, so registration is tried again after at most one
+  boot; while it exists, `/tmp/luma-home.log` says why;
+- `/tmp/luma-home.log` is appended (rotated at 256 KiB) with a start line per process, so a Home
+  that SAM restarted no longer erases why the previous one ended;
+- every `apply` writes the staged manifest from the installed package when it differs (SAM
+  rereads it in the same apply), so manifest changes reach existing installs at their next cold
+  boot or update without enabling again. The stage keeps Luma's `handlesRelaunch: false`
+  (relaunches come from the registration, as verified on webOS 26) and adds `spinnerOnLaunch:
+  false` with `noSplashOnLaunch: false`: a relaunch shows no splash at all, and a true cold start
+  (power on, after a crash or an update) shows only the staged splash, the user's wallpaper,
+  without LG's spinner over it, until Luma's first frame;
+- a relaunch keeps the process's state: `State::relaunch` closes Settings, overlays, Recents,
+  move mode and the in-app screensaver, but on the main screen the focused app card (or the card
+  a menu, delete alert or Recents was opened from) stays focused and scrolled into view; from
+  Settings it opens the main screen at its start. The frame after a relaunch, and the first after
+  any time out of sight, is drawn complete (no partial damage against an old back buffer).
+
+A long-lived Home replaces what a restart used to refresh:
+
+- the app inventory and inputs are read again whenever the window becomes visible or is
+  relaunched (apps installed, removed or hidden elsewhere);
+- weather follows its own staleness rules once Home is visible again;
+- the clock and date are taken from the current time at every redraw, so hours in the background
+  or a standby show the right time in the first frame;
+- caches stay bounded (glyph atlas and its CPU cache, 48 MiB textures, 16 MiB decoded artwork,
+  512 text runs) however long the process runs;
+- while hidden nothing is drawn and the loop wakes once a second (was four times) for worker
+  replies, the update check and frame statistics, which accumulate across foreground periods;
+- the self-restart after an update (below) still applies.
+
+**A stuck process.** The lifecycle thread counts every `relaunch` and the main loop acknowledges
+each one it handles (`platform::RelaunchWatchdog`). A relaunch still unacknowledged after 6 s
+means the main loop is stuck; the process then ends itself (`_exit`), the registration child dies
+with it (`PR_SET_PDEATHSIG`), and SAM starts Home afresh on that or the next press. The existing
+foreground check stays: a relaunch that does not bring Luma to the front within 3 s sets the latch
+for the rest of the boot and ends the registration, so SAM restarts Home per press until then.
+
 **After an update.** Homebrew Channel's installer closes the normal app (`com.ecklf.luma`)
 before replacing the package, but not Luma running as Home, which then keeps running the old,
 unlinked program (`/proc/self/exe` ends in " (deleted)"). Luma checks for that whenever it loses
@@ -1112,6 +1157,41 @@ would reach the page and close it; if instead the screensaver stays up after inp
 screensaver no longer starts at all (`getAppInfo` shows the web manifest but nothing appears
 after the timeout), the system does not treat the web app as its screensaver and the takeover
 should be disabled.
+
+### Preloading apps
+
+Settings › General › Preload apps (on by default; `preload_apps`) keeps the user's most used apps
+started hidden, so they open at once. LG's preload manager does this for the apps in its own
+policy (`getPreloadPolicy`), but `setPreloadPolicy` can only switch existing entries on or off
+("Cannot find …" for other apps), so Luma starts its own choice itself (`src/preload.rs`):
+
+- **Which:** up to three apps, ranked by launches from Luma (`launch_counts`, at most 64 kept) and
+  then grid order; web apps only (`"type": "web"` in the inventory), since only a web app was seen
+  to stay hidden; never an app in `preload_blocked`.
+- **How:** `launch` with `{"preload": "partial", "noSplash": true, "launchHidden": true}` from
+  Luma's own connection, as LG's preload script does from the preload manager's. 3 s later the
+  foreground is checked: an app that came forward is closed, Luma's running identity is launched
+  again, and the app joins `preload_blocked` for good.
+- **When:** one app at a time, at least 20 s apart, only while Luma is visible and focused (so
+  never over another app or while the TV's screensaver, Luma's clock included, is up), the
+  in-app screensaver is off, no launch is under way, and there was no input for 8 s. An app that
+  is already running is skipped. The tried list resets whenever Luma comes back to the front.
+- **Memory:** `MemAvailable` must be at least 350 MB (`preload::MEMORY_FLOOR_MB`) before each
+  preload.
+- **LG's preloads of hidden apps:** for every app hidden in Luma that LG's policy lists, the
+  elevated helper (`luma-helper preload-policy`, through Homebrew Channel's exec) switches the
+  entry off and closes an instance LG already preloaded hidden; it switches on again only entries
+  it switched off (`preload_lg_disabled`), when the app is shown again or the setting goes off.
+  Entries for apps the user did not hide are never touched. The change is sent again after every
+  start, since LG may restore its policy at boot (persistence is unverified).
+- **Diagnostics:** the last 24 decisions (preloaded, skipped and why, came forward, policy
+  changes) are in `preload` in `luma-diagnostics.json` and in `/tmp/luma-home.log`.
+
+On the TV this was designed with, a hidden preload of VTM GO (a web app) kept the foreground on
+Home, and its next launch was visible after 0.20 s against 3.4 s cold. Whether SAM accepts the
+hidden launch from Luma's own connection (rather than the preload manager's) is not verified yet;
+neither is that a preloaded app never plays sound or video in the background, which is why native
+apps are excluded.
 
 ## Manual extra-app preview
 

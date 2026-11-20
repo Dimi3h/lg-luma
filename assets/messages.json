@@ -962,5 +962,9 @@
   "storeApps": {
     "en": "Apps",
     "nl": "Apps"
+  },
+  "preloadApps": {
+    "en": "Preload apps",
+    "nl": "Apps voorladen"
   }
 }

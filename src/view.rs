@@ -2777,6 +2777,17 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                     Some(screensaver.as_str()),
                     true,
                 ),
+                (
+                    17,
+                    "preloadApps",
+                    "sparkles",
+                    Some(if state.preferences.preload_apps {
+                        language.t("stateOn")
+                    } else {
+                        language.t("stateOff")
+                    }),
+                    false,
+                ),
             ]
             .into_iter()
             .enumerate()
