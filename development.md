@@ -1199,16 +1199,23 @@ find …" for other apps), so Luma starts the others itself (`src/preload.rs`).
   Luma stays out of focus. An app found in front is closed, Luma's running identity is launched
   again, and the app joins `preload_blocked` ("Can't start hidden"; OK on it in Settings, or
   Preload in its menu, tries it again); the log says how many seconds after the launch it came
-  forward. An app the user opens from Luma (grid or Recents) is not watched further. The window
+  forward. An app the user opens from Luma (grid or Recents) is not watched further. Home is
+  brought back only when the user launched nothing from Luma since the hidden launch; otherwise
+  only the raised app is closed, so Home never covers the user's own app. The window
   is bounded because the remote's own app buttons open apps without passing through Luma: within
   90 s, a press on the button of the app just preloaded is indistinguishable from the app raising
   itself and is closed. No other preload starts while an app is watched. Whether an app takes
   audio focus while hidden is not checked yet.
-- **When:** one app at a time, at least 20 s apart, only while Luma is visible and focused (so
-  never over another app or while the TV's screensaver, Luma's clock included, is up), the
-  in-app screensaver is off, no launch is under way, and there was no input for 8 s. An app that
-  already runs is skipped first, before any memory check, so it never reports a memory skip and
-  never pauses the rest. The tried list resets whenever Luma comes back to the front.
+- **When:** one app at a time, at least 20 s between two launches, only while Luma is visible and
+  focused, the in-app screensaver is off, no launch is under way, and there was no input for
+  8 s. Never under the TV's screensaver (LG's, or Luma's clock): it takes Luma's focus without
+  minimising it, so no preload starts while it shows. On the TV, an app launched hidden by hand
+  under the screensaver came to the front 4 s later; it was closed, and seconds later the TV
+  cold-booted with power-on reason `cpuAbnormal`. The cause is not proven, but Luma does not
+  launch hidden in that state. An app that already runs is skipped first, before any memory
+  check, so it never reports a memory skip, never pauses the rest and does not cost the 20 s:
+  the next app is tried at once, as blocked apps and LG's periodic entries are passed over. The
+  tried list resets whenever Luma comes back to the front.
 - **Memory:** decided on LG's memory manager (`com.webos.memorymanager`), not on `MemAvailable`:
   with memory compression on, `MemAvailable` sat at 225–250 MB on an idle Home with seven apps
   warm while LG's `getCurrentMemState` reported level "normal" with 342 MB `usable`. A preload
@@ -1217,8 +1224,10 @@ find …" for other apps), so Luma starts the others itself (`src/preload.rs`).
   not answer does `MemAvailable` (350 MB) decide. At least a third of swap must be free either
   way. A level other than "normal" (it went to "medium" for about a minute while YouTube started)
   or memory pressure above 10 % ("some avg10" in `/proc/pressure/memory`) makes the app wait and
-  be tried again; a steady shortage, low swap or (with the automatic choice) three running apps
-  stop preloading until Luma comes back to the front. Luma never closes an app when memory runs
+  be tried again after 20 s. Less `usable` than needed is retried every 60 s while Luma stays
+  idle in front: on the TV it read 331 MB right after LG restarted its own preloads and 408 MB
+  two minutes later. Too little `MemAvailable` (the fallback), low swap or (with the automatic
+  choice) three running apps stop preloading until Luma comes back to the front. Luma never closes an app when memory runs
   low later; LG's memory manager does that.
 - **Diagnostics:** the last 24 decisions (preloaded and what allowed it, skipped or waiting with
   LG's numbers, came forward and after how many seconds, stayed hidden for the watch window,
@@ -1235,7 +1244,9 @@ find …" for other apps), so Luma starts the others itself (`src/preload.rs`).
 Measured on the TV this was designed with (LG OLED55B46LA, webOS 25, 1.7 GB RAM): VTM GO opened
 in 3.4 s cold and in 0.2 s preloaded, Stremio in 0.74 s preloaded. A background app held about
 3–4 MB in RAM and 17–30 MB in swap while only preloaded (GoPlay, VRT MAX), and 6–29 MB in RAM and
-45–99 MB in swap once used (Disney+, Netflix, YouTube, Stremio). That a preloaded app never plays
+45–99 MB in swap once used (Disney+, Netflix, YouTube, Stremio). Prime Video (`amazon`, a oneshot
+LG entry) preloaded by Luma stayed hidden through the 90 s watch; Apple TV came to the front 3 s
+after its hidden launch and was closed and blocked by Luma. That a preloaded app never plays
 sound or video in the background is not verified.
 
 ### Memory compression

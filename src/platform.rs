@@ -250,7 +250,7 @@ pub fn preload_app(
         return Outcome::Failed(error);
     }
     thread::sleep(crate::preload::FOREGROUND_CHECK);
-    if close_if_in_front(id, own) {
+    if close_if_in_front(id, Some(own)) {
         return Outcome::CameForward {
             after: crate::preload::FOREGROUND_CHECK.as_secs(),
         };
@@ -258,26 +258,32 @@ pub fn preload_app(
     Outcome::Preloaded { memory }
 }
 
-/// After a hidden launch: if `id` is in front (it raised itself), closes it and brings `own`
-/// (Luma's running identity) back. Returns whether it was in front.
-pub fn close_if_in_front(id: &str, own: &str) -> bool {
-    let front = call(
+/// The foreground app's id (SAM's `getForegroundAppInfo`).
+fn foreground() -> Option<String> {
+    call(
         "luna://com.webos.applicationManager/getForegroundAppInfo",
         json!({}),
     )
     .ok()
-    .and_then(|reply| reply["appId"].as_str().map(str::to_owned));
-    if front.as_deref() != Some(id) {
+    .and_then(|reply| reply["appId"].as_str().map(str::to_owned))
+}
+
+/// After a hidden launch: if `id` is in front (it raised itself), closes it and brings `own`
+/// (Luma's running identity) back, if given. Returns whether it was in front.
+pub fn close_if_in_front(id: &str, own: Option<&str>) -> bool {
+    if foreground().as_deref() != Some(id) {
         return false;
     }
     let _ = call(
         "luna://com.webos.applicationManager/closeByAppId",
         json!({ "id": id }),
     );
-    let _ = call(
-        "luna://com.webos.applicationManager/launch",
-        json!({ "id": own }),
-    );
+    if let Some(own) = own {
+        let _ = call(
+            "luna://com.webos.applicationManager/launch",
+            json!({ "id": own }),
+        );
+    }
     true
 }
 

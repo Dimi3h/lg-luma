@@ -27,6 +27,8 @@ pub const MEMORY_FLOOR_MB: u64 = 350;
 pub const IDLE: Duration = Duration::from_secs(8);
 /// At least this long between two preloads.
 pub const SPACING: Duration = Duration::from_secs(20);
+/// How soon a shortfall against LG's usable memory is tried again.
+pub const LG_LOW_RETRY: Duration = Duration::from_secs(60);
 /// How often LG's memory state and the running apps are polled for the diagnostics.
 pub const WATCH: Duration = Duration::from_secs(30);
 /// How long after a hidden launch the foreground is checked.
@@ -449,16 +451,27 @@ impl Outcome {
             self,
             Self::LowMemory(_)
                 | Self::LowSwap { .. }
-                | Self::LgLow { .. }
                 | Self::EnoughRunning(_)
                 | Self::MemoryUnknown
         )
     }
 
-    /// A passing condition (LG's level during an app start, pressure): the same app is tried
-    /// again after the usual spacing.
-    pub fn waits(&self) -> bool {
-        matches!(self, Self::LgLevel { .. } | Self::Pressure(_))
+    /// A passing condition: the same app is tried again after this long. LG's level during an
+    /// app start and memory pressure pass within the usual spacing; a shortfall against LG's
+    /// usable memory was seen to be a dip right after other apps started (331 MB, then 408 MB
+    /// two minutes later), so it is retried every minute instead of pausing.
+    pub fn retry_after(&self) -> Option<Duration> {
+        match self {
+            Self::LgLevel { .. } | Self::Pressure(_) => Some(SPACING),
+            Self::LgLow { .. } => Some(LG_LOW_RETRY),
+            _ => None,
+        }
+    }
+
+    /// A pass over an app without launching it: the next app is tried at once, without the
+    /// spacing between preloads.
+    pub fn passes_over(&self) -> bool {
+        matches!(self, Self::AlreadyRunning)
     }
 
     pub fn describe(&self) -> String {
@@ -468,7 +481,10 @@ impl Outcome {
                 format!("waiting: LG memory level {level} ({usable} MB usable)")
             }
             Self::LgLow { usable, needed } => {
-                format!("skipped: LG counts {usable} MB usable, {needed} MB needed")
+                format!(
+                    "waiting: LG counts {usable} MB usable, {needed} MB needed (retried in {} s)",
+                    LG_LOW_RETRY.as_secs()
+                )
             }
             Self::Pressure(avg10) => {
                 format!("waiting: memory pressure {avg10:.1}% (above {PRESSURE_WAIT:.0}%)")
@@ -498,6 +514,9 @@ impl Outcome {
 pub struct HiddenLaunch {
     pub id: String,
     pub at: Instant,
+    /// Whether Home comes back after closing the app that raised itself: Luma was in front (or
+    /// under the TV's screensaver) at the launch and the user launched nothing from Luma since.
+    pub home_back: bool,
     /// When the foreground is next checked; set when Luma loses focus.
     check: Option<Instant>,
 }
@@ -507,8 +526,18 @@ impl HiddenLaunch {
         Self {
             id,
             at,
+            home_back: true,
             check: None,
         }
+    }
+
+    /// The user launched an app from Luma: that app is theirs, so the watched app ends its
+    /// watch; another app keeps it watched, but Home no longer comes back over the user's app.
+    pub fn user_launched(self, id: &str) -> Option<Self> {
+        (self.id != id).then_some(Self {
+            home_back: false,
+            ..self
+        })
     }
 
     pub fn expired(&self, now: Instant) -> bool {
@@ -577,10 +606,10 @@ pub enum Job {
     /// A poll of LG's memory state and the running apps, for the diagnostics.
     Watch,
     /// Inside a hidden launch's watch window, Luma is out of focus: if `id` is in front, close
-    /// it and bring `own` back.
+    /// it and bring `own` back, if given.
     Check {
         id: String,
-        own: &'static str,
+        own: Option<&'static str>,
         after: u64,
     },
 }

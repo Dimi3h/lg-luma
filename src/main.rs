@@ -919,7 +919,8 @@ fn run() -> Result<(), String> {
     // Set by a skip for memory, swap or enough running apps: no more preloads until Luma
     // comes back to the front.
     let mut preload_paused = false;
-    let mut preload_last: Option<Instant> = None;
+    // The earliest next preload: the spacing after a launch, or a wait's retry.
+    let mut preload_next: Option<Instant> = None;
     let mut preload_tried: std::collections::HashSet<String> = Default::default();
     let mut preload_log: std::collections::VecDeque<preload::Decision> = Default::default();
     let mut policy_sent: Option<(Vec<String>, Vec<String>)> = None;
@@ -2185,8 +2186,13 @@ fn run() -> Result<(), String> {
                         preload_busy = false;
                         preload_paused |= outcome.pauses();
                         // A passing condition: the same app is tried again later.
-                        if outcome.waits() {
+                        if let Some(retry) = outcome.retry_after() {
                             preload_tried.remove(&id);
+                            preload_next = Some(Instant::now() + retry);
+                        }
+                        // Nothing was launched: the next app is tried at once.
+                        if outcome.passes_over() {
+                            preload_next = None;
                         }
                         // Only an app actually started hidden stays watched.
                         if !matches!(outcome, preload::Outcome::Preloaded { .. })
@@ -2274,10 +2280,10 @@ fn run() -> Result<(), String> {
             }
             // The watch after a hidden launch: an app the user opened from Luma is theirs; one
             // in front while Luma is out of focus inside the window raised itself.
-            if let Some(id) = state.launched_by_user.take()
-                && hidden_launch.as_ref().is_some_and(|launch| launch.id == id)
-            {
-                hidden_launch = None;
+            if let Some(id) = state.launched_by_user.take() {
+                hidden_launch = hidden_launch
+                    .take()
+                    .and_then(|launch| launch.user_launched(&id));
             }
             if !preload_busy && let Some(launch) = &mut hidden_launch {
                 let now = Instant::now();
@@ -2293,7 +2299,9 @@ fn run() -> Result<(), String> {
                 } else if launch.due(now, focused) {
                     service.send(preload::Job::Check {
                         id: launch.id.clone(),
-                        own,
+                        // Home comes back only if Luma was in front at the launch and nothing
+                        // was launched from it since: never over the user's own app.
+                        own: launch.home_back.then_some(own),
                         after: launch.after(now),
                     });
                 }
@@ -2333,7 +2341,8 @@ fn run() -> Result<(), String> {
                 policy_sent = Some(wanted);
             }
             // One of the user's apps at a time, only while Luma is in front and idle, no launch
-            // is under way and neither screensaver shows.
+            // is under way and neither screensaver shows. The TV's screensaver takes Luma's focus
+            // without minimising it, so `focused` keeps preloads from starting under it.
             if state.preferences.preload_apps
                 && visible
                 && focused
@@ -2344,7 +2353,7 @@ fn run() -> Result<(), String> {
                 && state.screensaver.is_none()
                 && !state.inventory.apps.is_empty()
                 && state.last_input.elapsed() >= preload::IDLE
-                && preload_last.is_none_or(|last| last.elapsed() >= preload::SPACING)
+                && preload_next.is_none_or(|next| Instant::now() >= next)
                 && let Some(listed) = &lg_listed
                 && let Some(id) = preload::next(
                     &state.apps(),
@@ -2357,7 +2366,7 @@ fn run() -> Result<(), String> {
             {
                 preload_tried.insert(id.clone());
                 preload_busy = true;
-                preload_last = Some(Instant::now());
+                preload_next = Some(Instant::now() + preload::SPACING);
                 hidden_launch = Some(preload::HiddenLaunch::new(id.clone(), Instant::now()));
                 let user_apps = state.apps().iter().map(|app| app.id.clone()).collect();
                 let limit = preload::running_limit(&state.preferences.preload_list);

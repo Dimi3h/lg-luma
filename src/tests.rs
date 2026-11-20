@@ -5052,6 +5052,30 @@ fn a_hidden_launch_is_watched_for_raising_itself_within_a_bounded_window() {
 }
 
 #[test]
+fn preloading_passes_over_running_apps_and_keeps_home_off_the_users_app() {
+    use crate::preload::{HiddenLaunch, Outcome};
+    use std::time::Instant;
+    // A running app is passed over at once; only a real launch (or a wait) keeps the spacing.
+    assert!(Outcome::AlreadyRunning.passes_over());
+    assert!(
+        !Outcome::Preloaded {
+            memory: String::new()
+        }
+        .passes_over()
+    );
+    assert!(!Outcome::CameForward { after: 3 }.passes_over());
+    assert!(Outcome::AlreadyRunning.retry_after().is_none());
+    // Home comes back after closing a raised app only while the user launched nothing from
+    // Luma since; the app the user opened from Luma ends its own watch.
+    let launch = HiddenLaunch::new("com.apple.appletv".into(), Instant::now());
+    assert!(launch.home_back);
+    assert_eq!(launch.clone().user_launched("com.apple.appletv"), None);
+    let launch = launch.user_launched("netflix").expect("still watched");
+    assert!(!launch.home_back);
+    assert_eq!(launch.id, "com.apple.appletv");
+}
+
+#[test]
 fn lg_preloads_follow_the_hidden_apps_the_users_list_and_the_setting() {
     use crate::preload::{lg_policy_change, record_policy_change};
     let ids = |list: &[&str]| list.iter().map(|id| id.to_string()).collect::<Vec<_>>();
@@ -5402,7 +5426,7 @@ fn preloading_decides_on_lg_memory_state_with_available_memory_only_as_fallback(
             usable: 282
         }
     );
-    assert!(medium.waits() && !medium.pauses());
+    assert!(medium.retry_after().is_some() && !medium.pauses());
     // Pressure above 10% waits too.
     let busy = memory_check(
         Some(&lg("normal", 400)),
@@ -5412,7 +5436,7 @@ fn preloading_decides_on_lg_memory_state_with_available_memory_only_as_fallback(
     )
     .unwrap_err();
     assert_eq!(busy, Outcome::Pressure(25.));
-    assert!(busy.waits() && !busy.pauses());
+    assert!(busy.retry_after().is_some() && !busy.pauses());
     // Swap a third free stays a rule.
     let swap_full = "MemAvailable: 600000 kB\nSwapTotal: 1415164 kB\nSwapFree: 300000 kB\n";
     assert!(matches!(
@@ -5430,14 +5454,24 @@ fn preloading_decides_on_lg_memory_state_with_available_memory_only_as_fallback(
             .unwrap()
             .contains("500 MB available")
     );
-    // A steady shortage pauses until Luma is in front again.
-    assert!(
-        Outcome::LgLow {
-            usable: 342,
-            needed: 350
-        }
-        .pauses()
+    // A shortfall against LG's usable memory was a dip right after other apps started on the
+    // TV (331 MB, then 408 MB): retried every minute, never a pause.
+    let low = Outcome::LgLow {
+        usable: 331,
+        needed: 350,
+    };
+    assert!(!low.pauses());
+    assert_eq!(low.retry_after(), Some(crate::preload::LG_LOW_RETRY));
+    assert_eq!(
+        crate::preload::LG_LOW_RETRY,
+        std::time::Duration::from_secs(60)
     );
+    assert_eq!(
+        Outcome::Pressure(12.).retry_after(),
+        Some(crate::preload::SPACING)
+    );
+    assert_eq!(Outcome::LowMemory(300).retry_after(), None);
+    assert!(Outcome::LowMemory(300).pauses());
     assert!(
         Outcome::LgLow {
             usable: 342,
