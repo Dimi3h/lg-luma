@@ -3001,7 +3001,11 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                     chevron: false,
                 },
             );
-            for (position, (index, title, icon, value, chevron)) in [
+            let gamepad_detail = language.t("gamepadRepairDetail");
+            let wifi_detail = language.t("wifiDirectOffDetail");
+            let pad_detail = language.t("padBridgeDetail");
+            let mut y = SETTINGS_TOP + 256. + ROW_GAP * 2.;
+            for (index, title, icon, value, description, chevron) in [
                 (
                     3,
                     language.t(if state.loading {
@@ -3010,6 +3014,7 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                         "refreshApps"
                     }),
                     "refresh",
+                    None,
                     None,
                     false,
                 ),
@@ -3022,35 +3027,68 @@ fn settings_content(out: &mut Scene, state: &State, assets: &Assets) {
                     } else {
                         language.t("stateOff")
                     }),
+                    None,
                     false,
                 ),
-                (5, language.t("quitApp"), "power", None, false),
-            ]
-            .into_iter()
-            .enumerate()
-            {
+                (
+                    19,
+                    language.t("gamepadRepair"),
+                    "gear",
+                    Some(if state.preferences.gamepad_repair {
+                        language.t("stateOn")
+                    } else {
+                        language.t("stateOff")
+                    }),
+                    Some(gamepad_detail),
+                    false,
+                ),
+                (
+                    20,
+                    language.t("wifiDirectOff"),
+                    "gear",
+                    Some(if state.preferences.wifi_direct_off {
+                        language.t("stateOn")
+                    } else {
+                        language.t("stateOff")
+                    }),
+                    Some(wifi_detail),
+                    false,
+                ),
+                (
+                    21,
+                    language.t("padBridge"),
+                    "gear",
+                    Some(if state.preferences.pad_bridge {
+                        language.t("stateOn")
+                    } else {
+                        language.t("stateOff")
+                    }),
+                    Some(pad_detail),
+                    false,
+                ),
+                (5, language.t("quitApp"), "power", None, None, false),
+            ] {
+                let height = if description.is_some() {
+                    DETAIL_ROW_H
+                } else {
+                    ROW_H
+                };
                 row(
                     out,
                     state,
                     assets,
                     Row {
                         target: Target::Setting(index),
-                        rect: settings_rect(
-                            SETTINGS_TOP
-                                + 256.
-                                + ROW_GAP * 2.
-                                + position as f32 * (ROW_H + ROW_GAP)
-                                - s,
-                            ROW_H,
-                        ),
+                        rect: settings_rect(y - s, height),
                         title,
                         icon: Some(icon),
                         value,
-                        description: None,
+                        description,
                         selected: false,
                         chevron,
                     },
                 );
+                y += height + ROW_GAP;
             }
         }
         _ => {}

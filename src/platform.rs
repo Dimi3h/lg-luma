@@ -377,6 +377,225 @@ pub fn memory_compression(on: bool) -> Result<String, String> {
     Ok(reply["result"].as_str().unwrap_or("done").to_owned())
 }
 
+/// Whether Luma runs as root (the staged Home does): it then does privileged work itself
+/// instead of through Homebrew Channel's elevated exec.
+fn as_root() -> bool {
+    #[cfg(all(feature = "webos", unix))]
+    {
+        // SAFETY: geteuid has no preconditions.
+        unsafe { libc::geteuid() == 0 }
+    }
+    #[cfg(not(all(feature = "webos", unix)))]
+    {
+        false
+    }
+}
+
+/// The Bluetooth gamepad repair's access to the TV (see gamepad.rs): as root directly (the
+/// device list over Luma's own connection, the cache file read itself, the repair through
+/// root `luna-send` as measured), otherwise through the elevated helper.
+pub struct BluetoothTv;
+
+impl crate::gamepad::Tv for BluetoothTv {
+    fn gamepads(&self) -> Result<Vec<(luma_tv_helper::bluetooth::Gamepad, Option<u128>)>, String> {
+        use luma_tv_helper::bluetooth;
+        if as_root() {
+            let system = luma_tv_helper::system::Tv;
+            let status = match call(
+                "luna://com.webos.service.bluetooth2/device/getStatus",
+                json!({}),
+            ) {
+                Ok(status) => bluetooth::gamepads(&status),
+                Err(_) => bluetooth_reply(bluetooth::dispatch(&system, "status", None)?)?,
+            };
+            return Ok(status
+                .into_iter()
+                .map(|pad| {
+                    let mtime = bluetooth::cache_mtime(&system, &pad.address);
+                    (pad, mtime)
+                })
+                .collect());
+        }
+        let envelope = call(
+            "luna://org.webosbrew.hbchannel.service/exec",
+            json!({"command": helper_command("bluetooth", &["status".to_owned()])?}),
+        )?;
+        let reply = command_reply(&envelope)?;
+        Ok(reply["gamepads"]
+            .as_array()
+            .map(|pads| {
+                pads.iter()
+                    .filter_map(|pad| {
+                        Some((
+                            luma_tv_helper::bluetooth::Gamepad {
+                                address: pad["address"].as_str()?.to_owned(),
+                                name: pad["name"].as_str().unwrap_or("").to_owned(),
+                            },
+                            pad["cache_mtime"].as_u64().map(u128::from),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    fn cache_mtime(&self, address: &str) -> Option<u128> {
+        as_root()
+            .then(|| luma_tv_helper::bluetooth::cache_mtime(&luma_tv_helper::system::Tv, address))
+            .flatten()
+    }
+
+    fn direct(&self) -> bool {
+        as_root()
+    }
+
+    fn pad_bridge(&self) -> Value {
+        pad_bridge_status()
+    }
+
+    fn repair(&self, address: &str) -> Result<String, String> {
+        let reply = if as_root() {
+            luma_tv_helper::bluetooth::repair(&luma_tv_helper::system::Tv, address)?
+        } else {
+            // Up to about 20 s of waiting inside the helper.
+            let envelope = raw_call_with_timeout(
+                "luna://org.webosbrew.hbchannel.service/exec",
+                &json!({"command": helper_command(
+                    "bluetooth",
+                    &["repair".to_owned(), address.to_owned()],
+                )?}),
+                std::time::Duration::from_secs(40),
+            )
+            .and_then(checked_response)?;
+            command_reply(&envelope)?
+        };
+        Ok(format!(
+            "{} ({} s)",
+            reply["outcome"].as_str().unwrap_or("done"),
+            reply["seconds"].as_u64().unwrap_or(0)
+        ))
+    }
+}
+
+/// Wi-Fi Direct listening (see wifi_direct.rs): over Luma's own connection, else through the
+/// elevated helper (as root directly, through root `luna-send` as measured).
+pub struct WifiTv;
+
+impl WifiTv {
+    fn helper(command: &str) -> Result<Value, String> {
+        if as_root() {
+            return luma_tv_helper::wifi::dispatch(&luma_tv_helper::system::Tv, command);
+        }
+        let envelope = call(
+            "luna://org.webosbrew.hbchannel.service/exec",
+            json!({"command": helper_command("wifi-direct", &[command.to_owned()])?}),
+        )?;
+        command_reply(&envelope)
+    }
+
+    fn listen_state(reply: &Value) -> Result<String, String> {
+        luma_tv_helper::wifi::listen_state(reply)
+            .map(str::to_owned)
+            .ok_or_else(|| "p2p/getstate has no listenState".to_owned())
+    }
+}
+
+impl crate::wifi_direct::P2p for WifiTv {
+    fn state(&self) -> Result<String, String> {
+        let reply = call("luna://com.webos.service.wifi/p2p/getstate", json!({}))
+            .or_else(|_| Self::helper("state"))?;
+        Self::listen_state(&reply)
+    }
+
+    fn set(&self, listen: bool) -> Result<String, String> {
+        let state = if listen { "enabled" } else { "disabled" };
+        let reply = match call(
+            "luna://com.webos.service.wifi/p2p/setstate",
+            json!({"listenState": state}),
+        ) {
+            Ok(_) => call("luna://com.webos.service.wifi/p2p/getstate", json!({}))?,
+            Err(_) => Self::helper(if listen { "enable" } else { "disable" })?,
+        };
+        Self::listen_state(&reply)
+    }
+
+    fn foreground(&self) -> Option<String> {
+        foreground()
+    }
+}
+
+/// A subscription to `p2p/getstate` (each reply's `listenState` and `subscribed`); not
+/// verified that the TV accepts one, so the caller also polls.
+pub fn subscribe_wifi_direct(
+    mut on_state: Box<dyn FnMut(Option<String>, Option<bool>) + Send>,
+) -> Result<(), String> {
+    #[cfg(all(feature = "webos", target_os = "linux", target_arch = "arm"))]
+    {
+        crate::luna::subscribe(
+            None,
+            "luna://com.webos.service.wifi/p2p/getstate",
+            &json!({"subscribe": true}),
+            std::time::Duration::from_secs(5),
+            move |reply: Value| {
+                on_state(
+                    luma_tv_helper::wifi::listen_state(&reply).map(str::to_owned),
+                    reply["subscribed"].as_bool(),
+                )
+            },
+        )
+    }
+    #[cfg(not(all(feature = "webos", target_os = "linux", target_arch = "arm")))]
+    {
+        let _ = &mut on_state;
+        Err("Native Luna services are only available in an ARM webOS build".into())
+    }
+}
+
+/// Switches the Stadia pad bridge on (started now and at every cold boot) or off (stopped now
+/// and at boot) through the elevated helper.
+pub fn pad_bridge(on: bool) -> Result<String, String> {
+    let command = if on { "on" } else { "off" };
+    let helper = install_dir()?.join("luma-helper");
+    let reply = if as_root() {
+        luma_tv_helper::pad::dispatch(&luma_tv_helper::system::Tv, command, &helper)?
+    } else {
+        let envelope = call(
+            "luna://org.webosbrew.hbchannel.service/exec",
+            json!({"command": helper_command("pad-bridge", &[command.to_owned()])?}),
+        )?;
+        command_reply(&envelope)?
+    };
+    Ok(reply["result"].as_str().unwrap_or("done").to_owned())
+}
+
+/// The running pad bridge's status file, with whether its process is still alive.
+pub fn pad_bridge_status() -> Value {
+    let Ok(text) = std::fs::read_to_string(luma_tv_helper::pad::STATUS) else {
+        return json!({"running": false});
+    };
+    let mut status: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({}));
+    let alive = status["pid"]
+        .as_u64()
+        .is_some_and(|pid| std::path::Path::new(&format!("/proc/{pid}")).exists());
+    status["running"] = json!(alive);
+    status
+}
+
+/// The gamepads in the helper's `bluetooth status` reply (without their cache times).
+fn bluetooth_reply(reply: Value) -> Result<Vec<luma_tv_helper::bluetooth::Gamepad>, String> {
+    Ok(reply["gamepads"]
+        .as_array()
+        .ok_or("Invalid Bluetooth status")?
+        .iter()
+        .filter_map(|pad| {
+            Some(luma_tv_helper::bluetooth::Gamepad {
+                address: pad["address"].as_str()?.to_owned(),
+                name: pad["name"].as_str().unwrap_or("").to_owned(),
+            })
+        })
+        .collect())
+}
+
 /// Written before Luma closes itself after an update replaced its executable, with the version
 /// that closed. /tmp starts empty at each boot.
 pub const UPDATE_RESTART_MARKER: &str = "/tmp/luma-update-restart";
@@ -829,6 +1048,21 @@ fn raw_call(uri: &str, payload: &Value) -> Result<Value, String> {
     #[cfg(not(all(feature = "webos", target_os = "linux", target_arch = "arm")))]
     let response: Result<Value, String> = {
         let _ = (uri, payload);
+        Err("Native Luna services are only available in an ARM webOS build".into())
+    };
+    response
+}
+
+fn raw_call_with_timeout(
+    uri: &str,
+    payload: &Value,
+    timeout: std::time::Duration,
+) -> Result<Value, String> {
+    #[cfg(all(feature = "webos", target_os = "linux", target_arch = "arm"))]
+    let response = crate::luna::call_with_timeout(uri, payload, timeout);
+    #[cfg(not(all(feature = "webos", target_os = "linux", target_arch = "arm")))]
+    let response: Result<Value, String> = {
+        let _ = (uri, payload, timeout);
         Err("Native Luna services are only available in an ARM webOS build".into())
     };
     response

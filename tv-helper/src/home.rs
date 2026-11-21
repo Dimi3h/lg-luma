@@ -295,6 +295,12 @@ impl<'a, S: System> Home<'a, S> {
             Ok(done) => steps.log(&format!("memory compression: {done}")),
             Err(error) => steps.log(&format!("memory compression not applied: {error}")),
         }
+        // The Stadia pad bridge (Settings › System) must run before a game starts: from here,
+        // at every cold boot and enable.
+        match crate::pad::start(self.system, &Path::new(STATE).join("luma-helper")) {
+            Ok(done) => steps.log(&format!("pad bridge: {done}")),
+            Err(error) => steps.log(&format!("pad bridge not started: {error}")),
+        }
         result
     }
     fn apply_now(&self, config: &Config, open: bool, steps: &Steps<'_, S>) -> Result<()> {
@@ -829,6 +835,7 @@ pub fn dispatch(
             if command == "apply" && config.enabled {
                 home.apply(&config, false)?;
             } else {
+                crate::pad::stop(system);
                 config.enabled = false;
                 system::write_json(system, CONFIG, &config)?;
                 home.restore(&config)?;

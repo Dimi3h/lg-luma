@@ -36,6 +36,14 @@ struct Fixture {
     /// LG's preload policy (`getPreloadPolicy`/`setPreloadPolicy`) and other running apps.
     preload_policy: RefCell<BTreeMap<String, bool>>,
     running_ids: RefCell<Vec<String>>,
+    /// The Stadia controller's connected profiles in LG's Bluetooth service.
+    bt_profiles: RefCell<Vec<String>>,
+    /// Whether `hid/connect` brings the HID profile back.
+    bt_reconnects: Cell<bool>,
+    /// Wi-Fi Direct `listenState`.
+    listen_state: RefCell<String>,
+    /// systemd-run without `ExecStopPost` support.
+    refuse_stop_post: Cell<bool>,
 }
 impl Fixture {
     fn new() -> Self {
@@ -73,6 +81,10 @@ impl Fixture {
             missing: Cell::new(0),
             preload_policy: RefCell::new(BTreeMap::new()),
             running_ids: RefCell::new(vec![]),
+            bt_profiles: RefCell::new(vec!["gatt".into(), "hid".into()]),
+            bt_reconnects: Cell::new(true),
+            listen_state: RefCell::new("enabled".into()),
+            refuse_stop_post: Cell::new(false),
         };
         for dir in [
             "/var/lib/luma-home/app",
@@ -221,7 +233,21 @@ impl System for Fixture {
             self.unmount(args.last().unwrap());
             return Ok(ok(json!({})));
         }
-        if program == "/sbin/mkswap" {
+        if program == "systemd-run"
+            && self.refuse_stop_post.get()
+            && args.iter().any(|arg| arg.contains("ExecStopPost"))
+        {
+            return Ok(Output {
+                stdout: vec![],
+                stderr: b"Unknown assignment".to_vec(),
+                success: false,
+            });
+        }
+        if program == "/sbin/mkswap"
+            || program == "systemd-run"
+            || program == "systemctl"
+            || program == "udevadm"
+        {
             return Ok(ok(json!({})));
         }
         if program == "/sbin/swapon" {
@@ -256,6 +282,49 @@ impl System for Fixture {
             .and_then(VecDeque::pop_front)
         {
             return reply.map(ok);
+        }
+        if uri.starts_with("luna://com.webos.service.wifi/p2p/") {
+            if uri.ends_with("/setstate") {
+                *self.listen_state.borrow_mut() = payload["listenState"].as_str().unwrap().into();
+            }
+            return Ok(ok(json!({"subscribed":false,"returnValue":true,
+                "persistentMode":"enabled","P2P":"enabled",
+                "listenState":*self.listen_state.borrow()})));
+        }
+        if uri.starts_with("luna://com.webos.service.bluetooth2/") {
+            let mut profiles = self.bt_profiles.borrow_mut();
+            let mut set = |profile: &str, on: bool| {
+                profiles.retain(|other| other != profile);
+                if on {
+                    profiles.push(profile.into());
+                }
+            };
+            let path = uri.trim_start_matches("luna://com.webos.service.bluetooth2/");
+            let reply = match path {
+                "gatt/connect" => {
+                    set("gatt", true);
+                    json!({"returnValue":true,"subscribed":false,"clientId":"008"})
+                }
+                "hid/disconnect" => {
+                    set("hid", false);
+                    json!({"returnValue":true})
+                }
+                "hid/connect" => {
+                    if self.bt_reconnects.get() {
+                        set("hid", true);
+                    }
+                    json!({"returnValue":true})
+                }
+                "device/getStatus" => json!({"returnValue":true,"devices":[
+                    {"classOfDevice":1288,"blocked":false,"connectedProfiles":*profiles,
+                     "paired":true,"name":"StadiaQRQW-9c36","typeOfDevice":"ble",
+                     "address":"fb:ff:bc:f7:9c:36"},
+                    {"classOfDevice":1288,"connectedProfiles":["hid"],"paired":true,
+                     "name":"LGE MR24","typeOfDevice":"ble","address":"aa:bb:cc:dd:ee:ff"}
+                ]}),
+                other => panic!("Unexpected Bluetooth call: {other}"),
+            };
+            return Ok(ok(reply));
         }
         let screensaver = payload["id"] == screensaver::ID;
         let unknown = json!({"returnValue":false,"errorCode":1,"errorText":"Invalid appId specified OR Unsupported Application Type: com.webos.app.screensaver"});
@@ -1664,4 +1733,432 @@ fn the_cold_boot_apply_also_sets_up_memory_compression() {
             .iter()
             .any(|c| c.contains("/sbin/swapon -p 100 /dev/zram0"))
     );
+}
+
+const STADIA: &str = "fb:ff:bc:f7:9c:36";
+const STADIA_CACHE: &str =
+    "/mnt/lg/cmn_data/btsvc/fluoride-mtk/rec/bluetooth/gatt_cache_fbffbcf79c36";
+
+#[test]
+fn bluetooth_gamepads_are_ble_hid_gamepads_never_lgs_remote() {
+    use crate::bluetooth::{Gamepad, gamepads, has_profile, valid_address};
+    let entry = |name: &str, address: &str, class: u64, kind: &str, profiles: &[&str]| {
+        json!({"classOfDevice": class, "blocked": false, "connectedProfiles": profiles,
+               "paired": true, "name": name, "typeOfDevice": kind, "address": address})
+    };
+    // As measured on the TV, plus what must never count.
+    let status = json!({"returnValue": true, "adapters": [{"address": "3c:f0:83:43:c0:71",
+    "devices": [
+        entry("StadiaQRQW-9c36", STADIA, 1288, "ble", &["gatt", "hid"]),
+        entry("LGE MR24", "aa:bb:cc:dd:ee:ff", 1288, "ble", &["hid"]),
+        entry("Pad without HID", "11:22:33:44:55:66", 1288, "ble", &["gatt"]),
+        entry("Keyboard", "11:22:33:44:55:77", 1344, "ble", &["hid"]),
+        entry("Classic pad", "11:22:33:44:55:88", 1288, "classic", &["hid"]),
+        entry("Bad", "fb:ff:bc:f7:9c", 1288, "ble", &["hid"]),
+    ]}]});
+    assert_eq!(
+        gamepads(&status),
+        vec![Gamepad {
+            address: STADIA.into(),
+            name: "StadiaQRQW-9c36".into()
+        }]
+    );
+    assert!(has_profile(&status, STADIA, "hid"));
+    assert!(!has_profile(&status, "11:22:33:44:55:66", "hid"));
+    assert!(valid_address(STADIA));
+    assert!(!valid_address("fb:ff:bc:f7:9c:3g"));
+    assert!(!valid_address("fb:ff:bc:f7:9c:36:00"));
+}
+
+#[test]
+fn bluetooth_cache_file_follows_the_vendor_and_is_absent_without_a_tree() {
+    use crate::bluetooth::{cache_mtime, cache_path};
+    let f = Fixture::new();
+    // No btsvc tree: the feature is inactive.
+    assert_eq!(cache_path(&f, STADIA), None);
+    assert_eq!(cache_mtime(&f, STADIA), None);
+    f.put("/mnt/lg/cmn_data/btsvc/module.conf", b"vendor=mtk\n");
+    f.put(STADIA_CACHE, b"cache");
+    assert_eq!(cache_path(&f, STADIA), Some(PathBuf::from(STADIA_CACHE)));
+    assert!(cache_mtime(&f, STADIA).is_some());
+    // The other chip's tree, with or without module.conf.
+    let g = Fixture::new();
+    let rtk = "/mnt/lg/cmn_data/btsvc/fluoride-rtk/rec/bluetooth/gatt_cache_fbffbcf79c36";
+    g.put(rtk, b"cache");
+    assert_eq!(
+        cache_path(&g, "FB:FF:BC:F7:9C:36"),
+        Some(PathBuf::from(rtk))
+    );
+    assert_eq!(cache_path(&g, "../etc/passwd"), None);
+}
+
+#[test]
+fn bluetooth_repair_follows_every_cache_rewrite_while_hid_stays_connected() {
+    use crate::bluetooth::{Decision, MAX_REPAIRS, REPAIR_WINDOW, Watch};
+    use std::time::Instant;
+    let start = Instant::now();
+    let at = |seconds: u64| start + Duration::from_secs(seconds);
+    let mut watch = Watch::default();
+    let pad = |mtime: Option<u128>| vec![(STADIA.to_owned(), mtime)];
+    let repair = vec![Decision::Repair(STADIA.to_owned())];
+    // A new connection only takes a baseline (a plain connect does not rewrite the cache).
+    assert!(watch.observe(&pad(Some(100)), at(0)).is_empty());
+    assert!(watch.observe(&pad(Some(100)), at(1)).is_empty());
+    assert_eq!(watch.watching(), vec![STADIA.to_owned()]);
+    // The first press: the stack rewrites the cache after Service Changed.
+    assert_eq!(watch.observe(&pad(Some(200)), at(14)), repair);
+    assert!(watch.observe(&pad(Some(200)), at(15)).is_empty());
+    // Idle on the same link, then Service Changed again (17 minutes later on the TV): repaired
+    // again, with no connection event between.
+    assert_eq!(watch.observe(&pad(Some(300)), at(1020)), repair);
+    // A rewrite during or right after a repair (it dropped the link and the controller sent
+    // Service Changed again) is repaired too: no repair is final.
+    assert_eq!(watch.observe(&pad(Some(301)), at(1026)), repair);
+    // An unreadable read never triggers, and keeps the baseline.
+    assert!(watch.observe(&pad(None), at(1027)).is_empty());
+    assert!(watch.observe(&pad(Some(301)), at(1028)).is_empty());
+    // A stack that keeps rewriting is never fought in a loop: at most MAX_REPAIRS per window,
+    // counted across reconnects.
+    for index in 0..MAX_REPAIRS as u128 - 2 {
+        assert_eq!(watch.observe(&pad(Some(400 + index)), at(1030)), repair);
+    }
+    let held = vec![Decision::Held(STADIA.to_owned())];
+    assert_eq!(watch.observe(&pad(Some(500)), at(1031)), held);
+    assert!(watch.observe(&[], at(1032)).is_empty());
+    assert!(watch.observe(&pad(Some(500)), at(1033)).is_empty());
+    assert_eq!(watch.observe(&pad(Some(501)), at(1034)), held);
+    // Once the oldest repair is out of the window, repairs run again.
+    let later = 1020 + REPAIR_WINDOW.as_secs() + 1;
+    assert_eq!(watch.observe(&pad(Some(502)), at(later)), repair);
+    // Switched off and on: a new baseline; a cache file that only appears is one too.
+    let next = later + REPAIR_WINDOW.as_secs();
+    assert!(watch.observe(&[], at(next)).is_empty());
+    assert!(watch.watching().is_empty());
+    assert!(watch.observe(&pad(None), at(next + 1)).is_empty());
+    assert!(watch.observe(&pad(Some(600)), at(next + 2)).is_empty());
+    assert_eq!(watch.observe(&pad(Some(700)), at(next + 3)), repair);
+}
+
+#[test]
+fn bluetooth_repair_keeps_the_le_link_and_restarts_only_hid() {
+    use crate::bluetooth::{DROP_SECONDS, RECONNECT_SECONDS, dispatch};
+    let f = Fixture::new();
+    let reply = dispatch(&f, "repair", Some(STADIA)).unwrap();
+    assert_eq!(reply["outcome"], "repaired: HID connected again");
+    assert_eq!(reply["repaired"], true);
+    let bluetooth: Vec<String> = f
+        .calls()
+        .into_iter()
+        .filter(|call| call.contains("bluetooth2/"))
+        .filter(|call| !call.contains("getStatus"))
+        .map(|call| {
+            call.split_whitespace()
+                .find(|part| part.starts_with("luna://"))
+                .unwrap()
+                .trim_start_matches("luna://com.webos.service.bluetooth2/")
+                .to_owned()
+        })
+        .collect();
+    // A second GATT client keeps the LE link up; gatt/disconnect never answered on the TV.
+    assert_eq!(bluetooth, ["gatt/connect", "hid/disconnect", "hid/connect"]);
+    assert!(
+        !f.calls()
+            .iter()
+            .any(|call| call.contains("gatt/disconnect"))
+    );
+    assert_eq!(*f.bt_profiles.borrow(), ["gatt", "hid"]);
+    // About 3 s between the disconnect and the connect, as measured.
+    assert_eq!(f.pauses.get(), 3);
+    // HID that never returns is reported, bounded by the waits.
+    let g = Fixture::new();
+    g.bt_reconnects.set(false);
+    let reply = dispatch(&g, "repair", Some(STADIA)).unwrap();
+    assert_eq!(reply["outcome"], "failed: HID did not come back");
+    assert_eq!(reply["repaired"], false);
+    assert!(g.pauses.get() as u32 <= DROP_SECONDS + RECONNECT_SECONDS + 3);
+    // Status lists the gamepad with its cache time, never LG's remote.
+    let h = Fixture::new();
+    h.put(STADIA_CACHE, b"cache");
+    let status = dispatch(&h, "status", None).unwrap();
+    let pads = status["gamepads"].as_array().unwrap();
+    assert_eq!(pads.len(), 1);
+    assert_eq!(pads[0]["address"], STADIA);
+    assert!(pads[0]["cache_mtime"].is_u64());
+    // Bad input and non-root callers change nothing.
+    assert!(dispatch(&f, "repair", Some("not-an-address")).is_err());
+    assert!(dispatch(&f, "repair", None).is_err());
+    assert!(dispatch(&f, "unpair", Some(STADIA)).is_err());
+    let calls = f.calls().len();
+    f.uid.set(501);
+    assert!(dispatch(&f, "repair", Some(STADIA)).is_err());
+    assert_eq!(f.calls().len(), calls);
+}
+
+#[test]
+fn wifi_direct_listening_is_read_and_switched_through_the_wifi_service() {
+    use crate::wifi::{dispatch, listen_state};
+    let f = Fixture::new();
+    assert_eq!(
+        listen_state(&dispatch(&f, "state").unwrap()),
+        Some("enabled")
+    );
+    assert_eq!(
+        listen_state(&dispatch(&f, "disable").unwrap()),
+        Some("disabled")
+    );
+    assert!(f.calls().iter().any(
+        |call| call.contains("p2p/setstate") && call.contains(r#"{"listenState":"disabled"}"#)
+    ));
+    assert_eq!(
+        listen_state(&dispatch(&f, "enable").unwrap()),
+        Some("enabled")
+    );
+    assert!(dispatch(&f, "persistent-off").is_err());
+    f.uid.set(501);
+    let calls = f.calls().len();
+    assert!(dispatch(&f, "disable").is_err());
+    assert_eq!(f.calls().len(), calls);
+}
+
+#[test]
+fn the_stadia_pad_bridge_translates_like_an_xbox_360_pad() {
+    use crate::pad::*;
+    // Sticks: 0..255 with rest 128 on -32768..32767 with rest 0.
+    assert_eq!(stick(128), 0);
+    assert_eq!(stick(0), -32768);
+    assert_eq!(stick(255), 32767);
+    assert_eq!(stick(1), -32766);
+    assert_eq!(stick(254), 32508);
+    // Left stick unchanged in place; right stick from ABS_Z/RZ to ABS_RX/RY.
+    assert_eq!(translate(EV_ABS, ABS_X, 255), Some((EV_ABS, ABS_X, 32767)));
+    assert_eq!(translate(EV_ABS, ABS_Y, 0), Some((EV_ABS, ABS_Y, -32768)));
+    assert_eq!(translate(EV_ABS, ABS_Z, 128), Some((EV_ABS, ABS_RX, 0)));
+    assert_eq!(
+        translate(EV_ABS, ABS_RZ, 255),
+        Some((EV_ABS, ABS_RY, 32767))
+    );
+    // Triggers: brake (left) and gas (right) on ABS_Z/RZ, 0..255 unchanged.
+    assert_eq!(
+        translate(EV_ABS, ABS_BRAKE, 200),
+        Some((EV_ABS, ABS_Z, 200))
+    );
+    assert_eq!(translate(EV_ABS, ABS_GAS, 255), Some((EV_ABS, ABS_RZ, 255)));
+    // D-pad hat unchanged.
+    assert_eq!(
+        translate(EV_ABS, ABS_HAT0X, -1),
+        Some((EV_ABS, ABS_HAT0X, -1))
+    );
+    assert_eq!(
+        translate(EV_ABS, ABS_HAT0Y, 1),
+        Some((EV_ABS, ABS_HAT0Y, 1))
+    );
+    // The eleven buttons pass; BTN_TRIGGER_HAPPY and other events do not.
+    for key in KEYS {
+        assert_eq!(translate(EV_KEY, key, 1), Some((EV_KEY, key, 1)));
+    }
+    assert_eq!(translate(EV_KEY, 0x2c0, 1), None);
+    assert_eq!(translate(EV_ABS, 0x28, 3), None);
+    assert_eq!(translate(0x04, 4, 9), None);
+    assert_eq!(translate(EV_SYN, 0, 0), Some((EV_SYN, 0, 0)));
+    // At rest when the controller goes away: every button up, every axis centred, one sync.
+    let rest = rest();
+    assert_eq!(rest.len(), KEYS.len() + 8 + 1);
+    assert!(rest.iter().all(|(_, _, value)| *value == 0));
+    assert_eq!(rest.last(), Some(&(EV_SYN, 0, 0)));
+    // Only the Stadia controller over Bluetooth is bridged.
+    assert!(is_stadia("0005\n", "18d1\n", "9400\n"));
+    assert!(!is_stadia("0003", "18d1", "9400"));
+    assert!(!is_stadia("0005", "045e", "028e"));
+    assert_eq!(PAD_ID, (0x03, 0x045e, 0x028e, 0x0114));
+    assert_eq!(PAD_NAME, "Microsoft X-Box 360 pad");
+}
+
+#[test]
+fn the_pad_bridge_starts_with_home_and_follows_the_setting() {
+    use crate::pad::{OFF, UNIT, dispatch, start};
+    let f = Fixture::new();
+    let helper = Path::new("/var/lib/luma-home/luma-helper");
+    assert!(start(&f, helper).unwrap().starts_with("started"));
+    let calls = f.calls();
+    let run = calls
+        .iter()
+        .find(|call| call.starts_with("systemd-run"))
+        .unwrap();
+    assert_eq!(
+        run,
+        &format!(
+            "systemd-run --unit={UNIT} --collect --property=ExecStopPost=/var/lib/luma-home/luma-helper pad-bridge show /var/lib/luma-home/luma-helper pad-bridge run"
+        )
+    );
+    // A running bridge is replaced, never doubled.
+    assert!(
+        calls
+            .iter()
+            .any(|call| call == &format!("systemctl stop {UNIT}"))
+    );
+    // Off: stopped, and not started again (cold boot) until switched on.
+    dispatch(&f, "off", helper).unwrap();
+    assert!(system::exists(&f, OFF));
+    let before = f.calls().len();
+    assert!(start(&f, helper).unwrap().starts_with("off"));
+    assert!(
+        !f.calls()[before..]
+            .iter()
+            .any(|call| call.starts_with("systemd-run"))
+    );
+    dispatch(&f, "on", helper).unwrap();
+    assert!(!system::exists(&f, OFF));
+    assert!(f.calls().last().unwrap().starts_with("systemd-run"));
+    // Status without a running bridge.
+    assert_eq!(dispatch(&f, "status", helper).unwrap()["running"], false);
+    assert!(dispatch(&f, "fly", helper).is_err());
+    f.uid.set(501);
+    assert!(dispatch(&f, "on", helper).is_err());
+}
+
+#[test]
+fn the_real_stadia_controller_is_hidden_from_apps_while_the_bridge_runs() {
+    use crate::pad::{HIDE_RULE, HIDE_RULE_TEXT, dispatch, start};
+    let f = Fixture::new();
+    fs::create_dir_all(f.root.join("run")).unwrap();
+    // The real controller (event9, js6), the virtual pad (event10, js7) and another device.
+    for (name, ids) in [
+        ("event9", ("0005", "18d1", "9400")),
+        ("js6", ("0005", "18d1", "9400")),
+        ("event10", ("0003", "045e", "028e")),
+        ("js7", ("0003", "045e", "028e")),
+        ("event3", ("0005", "04e8", "0001")),
+    ] {
+        for (field, value) in [("bustype", ids.0), ("vendor", ids.1), ("product", ids.2)] {
+            f.put(
+                &format!("/sys/class/input/{name}/device/id/{field}"),
+                format!("{value}\n").as_bytes(),
+            );
+        }
+    }
+    let helper = Path::new("/var/lib/luma-home/luma-helper");
+    let result = start(&f, helper).unwrap();
+    assert!(
+        result.contains("controller hidden from apps (event9, js6)"),
+        "{result}"
+    );
+    // The rule as applied by hand on the TV, written to /run (not persistent) at every start.
+    assert_eq!(
+        String::from_utf8(system::read(&f, HIDE_RULE, 4096).unwrap()).unwrap(),
+        HIDE_RULE_TEXT
+    );
+    assert!(HIDE_RULE_TEXT.contains(r#"ATTRS{id/vendor}=="18d1", ATTRS{id/product}=="9400""#));
+    assert!(HIDE_RULE_TEXT.contains(r#"ENV{ID_INPUT_JOYSTICK}="""#));
+    assert!(HIDE_RULE_TEXT.contains(r#"MODE="0600""#));
+    let calls = f.calls();
+    let reload = calls
+        .iter()
+        .position(|call| call == "udevadm control --reload")
+        .unwrap();
+    let triggers: Vec<&String> = calls[reload..]
+        .iter()
+        .filter(|call| call.starts_with("udevadm trigger"))
+        .collect();
+    assert_eq!(
+        triggers,
+        [
+            "udevadm trigger --action=change /sys/class/input/event9",
+            "udevadm trigger --action=change /sys/class/input/js6"
+        ]
+    );
+    // Off: the rule goes and the controller is re-evaluated, so apps get it back.
+    dispatch(&f, "off", helper).unwrap();
+    assert!(!system::exists(&f, HIDE_RULE));
+    assert!(f.calls().last().unwrap().ends_with("/sys/class/input/js6"));
+    // The unit's ExecStopPost gives it back however the bridge ends.
+    dispatch(&f, "on", helper).unwrap();
+    assert!(system::exists(&f, HIDE_RULE));
+    assert_eq!(
+        dispatch(&f, "show", helper).unwrap()["shown"],
+        json!(["event9", "js6"])
+    );
+    assert!(!system::exists(&f, HIDE_RULE));
+    // A systemd without ExecStopPost for transient units: started anyway, and said so.
+    let g = Fixture::new();
+    fs::create_dir_all(g.root.join("run")).unwrap();
+    g.refuse_stop_post.set(true);
+    let result = start(&g, helper).unwrap();
+    assert!(result.contains("ExecStopPost refused"));
+    let plain = format!(
+        "systemd-run --unit=luma-pad-bridge --collect {} pad-bridge run",
+        helper.display()
+    );
+    assert!(g.calls().contains(&plain));
+}
+
+#[test]
+fn rumble_reports_follow_the_stadia_layout() {
+    use crate::pad::rumble_report;
+    // Report id 5, strong then weak, little-endian: the browser's writes on the TV, such as
+    // 006e0000 (strong 0x6e00) and 00000022 (weak 0x2200), fit this layout.
+    assert_eq!(rumble_report(0x6e00, 0), [0x05, 0x00, 0x6e, 0x00, 0x00]);
+    assert_eq!(rumble_report(0, 0x2200), [0x05, 0x00, 0x00, 0x00, 0x22]);
+    assert_eq!(
+        rumble_report(0xffff, 0xffff),
+        [0x05, 0xff, 0xff, 0xff, 0xff]
+    );
+    assert_eq!(rumble_report(0, 0), [0x05, 0, 0, 0, 0]);
+}
+
+#[test]
+fn rumble_effects_are_uploaded_played_timed_and_stopped() {
+    use crate::pad::{FF_GAIN, FF_RUMBLE, Rumble, rumble_report};
+    use std::time::Instant;
+    let start = Instant::now();
+    let ms = |value: u64| start + Duration::from_millis(value);
+    let mut rumble = Rumble::default();
+    // Only rumble effects are accepted.
+    assert!(!rumble.upload(0, 0x51, 100, 100, 0));
+    assert!(rumble.upload(0, FF_RUMBLE, 0x8000, 0x2000, 500));
+    assert!(rumble.upload(1, FF_RUMBLE, 0x1000, 0xc000, 0));
+    assert_eq!(rumble.uploaded, 2);
+    // Play effect 0: its magnitudes go out, and it ends by itself after its replay length.
+    assert_eq!(
+        rumble.event(0, 1, ms(0)),
+        Some(rumble_report(0x8000, 0x2000))
+    );
+    assert_eq!(rumble.played, 1);
+    assert_eq!(rumble.next_end(), Some(ms(500)));
+    assert_eq!(rumble.tick(ms(499)), None);
+    assert_eq!(rumble.tick(ms(500)), Some(rumble_report(0, 0)));
+    // Two effects at once play their strongest magnitudes; stopping one leaves the other.
+    rumble.event(0, 1, ms(1000));
+    assert_eq!(
+        rumble.event(1, 1, ms(1000)),
+        Some(rumble_report(0x8000, 0xc000))
+    );
+    assert_eq!(
+        rumble.event(0, 0, ms(1100)),
+        Some(rumble_report(0x1000, 0xc000))
+    );
+    // No replay length: plays until stopped.
+    assert_eq!(rumble.tick(ms(60_000)), None);
+    // The gain scales what plays, at once.
+    assert_eq!(
+        rumble.event(FF_GAIN, 0x8000, ms(60_000)),
+        Some(rumble_report(0x0800, 0x6000))
+    );
+    // Erasing a playing effect stops it.
+    assert_eq!(rumble.erase(1), Some(rumble_report(0, 0)));
+    assert_eq!(rumble.event(1, 1, ms(60_001)), None);
+    // A changed upload in place takes effect at the next play.
+    rumble.event(FF_GAIN, 0xffff, ms(60_002));
+    assert!(rumble.upload(0, FF_RUMBLE, 0x4000, 0, 0));
+    assert_eq!(
+        rumble.event(0, 1, ms(60_003)),
+        Some(rumble_report(0x4000, 0))
+    );
+    // The controller reconnects: what plays is sent again; it goes away or the bridge ends:
+    // zeros, once.
+    assert_eq!(rumble.resend(), rumble_report(0x4000, 0));
+    assert_eq!(rumble.stop_all(), Some(rumble_report(0, 0)));
+    assert_eq!(rumble.stop_all(), None);
+    // Nothing is sent when nothing changes, and unknown effects never play.
+    assert_eq!(rumble.event(7, 1, ms(60_004)), None);
+    assert_eq!(rumble.event(7, 0, ms(60_005)), None);
 }

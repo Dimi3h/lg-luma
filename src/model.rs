@@ -309,6 +309,18 @@ pub struct Preferences {
     /// Settings › System › Memory compression: a compressed swap in RAM (zram), applied by the
     /// Home takeover's boot hook. Off only stops applying it at the next cold boot.
     pub memory_compression: bool,
+    /// Settings › System › Repair Bluetooth controller: restarts the HID layer of a BLE gamepad
+    /// whose input LG's Bluetooth stack stopped delivering (gamepad.rs).
+    pub gamepad_repair: bool,
+    /// Settings › System › Screen Share listening off: keeps the TV's Wi-Fi Direct listening
+    /// disabled (wifi_direct.rs).
+    pub wifi_direct_off: bool,
+    /// Settings › System › Stadia controller as Xbox controller: the elevated helper's pad
+    /// bridge (started with the Home takeover at every cold boot).
+    pub pad_bridge: bool,
+    /// Whether Luma disabled Wi-Fi Direct listening, so switching the setting off only enables
+    /// it again in that case.
+    pub wifi_direct_disabled_by_luma: bool,
     #[serde(deserialize_with = "deserialize_appearance")]
     pub appearance: Appearance,
     /// The 24-hour choice as earlier versions saved it: written with every preference file, so
@@ -356,6 +368,10 @@ impl Default for Preferences {
             preload_list: vec![],
             preload_lg_enabled: vec![],
             memory_compression: true,
+            gamepad_repair: true,
+            wifi_direct_off: true,
+            pad_bridge: true,
+            wifi_direct_disabled_by_luma: false,
             appearance: Appearance::Dark,
             hour_24: false,
             clock_24: None,

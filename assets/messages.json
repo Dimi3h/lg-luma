@@ -994,5 +994,29 @@
   "memoryCompression": {
     "en": "Memory compression",
     "nl": "Geheugencompressie"
+  },
+  "gamepadRepair": {
+    "en": "Repair Bluetooth controller",
+    "nl": "Bluetooth-controller herstellen"
+  },
+  "gamepadRepairDetail": {
+    "en": "Restores a controller's buttons when the TV stops passing them on",
+    "nl": "Herstelt de knoppen van een controller als de tv ze niet meer doorgeeft"
+  },
+  "wifiDirectOff": {
+    "en": "Screen Share listening off",
+    "nl": "Screen Share-luistermodus uit"
+  },
+  "padBridge": {
+    "en": "Stadia controller as Xbox controller",
+    "nl": "Stadia-controller als Xbox-controller"
+  },
+  "padBridgeDetail": {
+    "en": "Makes its triggers work in the browser (GeForce NOW) and passes on vibration",
+    "nl": "Laat de triggers werken in de browser (GeForce NOW) en geeft trillen door"
+  },
+  "wifiDirectOffDetail": {
+    "en": "Keeps Wi-Fi on your network (less stutter); Miracast may not work, AirPlay does",
+    "nl": "Wifi blijft op je netwerk (minder haperen); Miracast werkt mogelijk niet, AirPlay wel"
   }
 }

@@ -2529,6 +2529,24 @@ impl State {
                         self.dirty = true;
                         return vec![Effect::Save];
                     }
+                    // Repair Bluetooth controller: the main loop tells the watcher thread.
+                    19 => {
+                        self.preferences.gamepad_repair = !self.preferences.gamepad_repair;
+                        self.dirty = true;
+                        return vec![Effect::Save];
+                    }
+                    // Screen Share listening off: the main loop tells the Wi-Fi Direct thread.
+                    20 => {
+                        self.preferences.wifi_direct_off = !self.preferences.wifi_direct_off;
+                        self.dirty = true;
+                        return vec![Effect::Save];
+                    }
+                    // Stadia controller as Xbox controller: the main loop tells the helper.
+                    21 => {
+                        self.preferences.pad_bridge = !self.preferences.pad_bridge;
+                        self.dirty = true;
+                        return vec![Effect::Save];
+                    }
                     17 => {
                         self.subpage = Some(Subpage::Preload);
                         self.scroll = 0.;

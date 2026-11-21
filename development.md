@@ -1275,6 +1275,175 @@ whose cold-boot hook runs it. Measured during a manual trial on the TV (512 MB z
 `watermark_scale_factor` 150 there had been 2791 allocation stalls in 13.6 awake hours with 19 %
 of reclaim done directly. Whether 768 MB is the best size is not measured.
 
+### Bluetooth controller repair
+
+Settings › System › Repair Bluetooth controller (`gamepad_repair`, on by default) is a workaround
+for BLE gamepads that send a GATT Service Changed indication. It was measured with a Stadia
+controller (BLE HID, class of device 1288) on an LG OLED55B46LA (webOS 25, MediaTek Fluoride
+stack) only; other controllers, the Realtek tree, and behaviour across a TV suspend are not
+verified.
+
+- **Cause (HCI snoop on the TV):** at its first button press after every new LE connection, and
+  again after being idle on the same link, the controller sends Service Changed (handle 0x0003, range 0x0001–0xffff). LG's stack rediscovers
+  the services, clears the HID notification registration and never restores it: input
+  notifications (handle 0x0040) keep arriving at HCI, but nothing reaches `/dev/uhid`. A plain HID
+  disconnect and connect does not help: it makes a new LE connection, and the next press sends
+  the indication again.
+- **Trigger:** right after the indication the stack rewrites the device's GATT cache file,
+  `/mnt/lg/cmn_data/btsvc/fluoride-<vendor>/rec/bluetooth/gatt_cache_<address in lowercase hex
+  without colons>` (`vendor=mtk` in `btsvc/module.conf` on that TV; a `fluoride-rtk` tree has the
+  same layout). A plain connect and the repair itself were not seen to rewrite it. Measured with
+  the controller switched off and on: HID connected at 22:27:53, cache rewritten at 22:28:07.59
+  (the first press), repair started at 22:28:09, HID connected again at 22:28:10.
+- **Watcher (`src/gamepad.rs`, its own thread, also while Luma is in the background):** every 3 s
+  it reads `com.webos.service.bluetooth2/device/getStatus` and watches BLE devices with class of
+  device 1288 and `hid` in `connectedProfiles`; LG's remote ("LGE MR…") never counts. While one is
+  connected, its cache file's time is checked every second (Luma running as root reads it
+  itself; otherwise the elevated helper, `luma-helper bluetooth status`, reads both every 3 s,
+  and every 10 s while no gamepad is connected).
+  The first reading of a connection is its baseline; every later rewrite repairs again. The
+  controller also sent Service Changed after being idle on the same link (21:28:07 and again at
+  21:45:06 UTC, no connection event between), and a repair can drop the link itself: at
+  21:45:10.972, 2 s after `hid/disconnect`, HCI reported disconnect reason 0x08 (connection
+  timeout), a new LE connection followed at 21:45:11.088 and the controller sent the indication
+  again at 21:45:14.552; a second repair held. So no repair is final, and the baseline is never
+  re-read after a repair: a rewrite during it is repaired next. At most 5 repairs of one gamepad
+  run within 5 minutes (counted across reconnects); further rewrites are logged as not repaired,
+  so a stack that rewrites the cache because of the repair itself cannot loop. Without the
+  cache file or tree the feature is simply inactive.
+- **Repair (`tv-helper/src/bluetooth.rs`, as root through `luna-send`, otherwise through
+  `luma-helper bluetooth repair ADDRESS`):** `gatt/connect` (a second GATT client keeps the LE link
+  up; idempotent), `hid/disconnect`, up to 6 s for HID to drop and about 3 s in all,
+  `hid/connect`, up to 10 s for HID to return. `gatt/disconnect` is never called: on the TV it did
+  not answer. With no new LE connection there is no new indication, and the HID host registers
+  for notifications again: on the TV the D-pad then moved the selection in GeForce NOW, and rumble
+  writes went out.
+- **Side effects:** the first button press after each connection is lost (it is what triggers the
+  indication), and LG shows its own disconnected and connected notices during the repair.
+- **Diagnostics:** a UTC-timestamped `Luma gamepad:` line at the start and end of each repair in
+  `/tmp/luma-home.log`, and `gamepad_repair` in `luma-diagnostics.json`: the number of repairs, the
+  last one's time, address, name and outcome, the gamepads watched, and why the watcher is
+  inactive if it is.
+
+### Screen Share listening off
+
+Settings › System › Screen Share listening off (`wifi_direct_off`, on by default) keeps the TV's
+Wi-Fi Direct listening (`listenState` of `com.webos.service.wifi/p2p`) disabled. Measured on one
+TV only, an LG OLED55B46LA (webOS 25), while GeForce NOW lagged:
+
+- `p2p/getstate` reported `"P2P":"enabled","listenState":"enabled"`, and `iw event -t` showed
+  `p2p0` remain on 2437 MHz for 100 ms every 500 ms while the TV was connected at 5300 MHz
+  (-34 dBm, 866 Mbit/s): the radio left the access point's channel twice a second. Router pings
+  (50 at 200 ms): median 4.92 ms, p90 63.0 ms, max 76.2 ms (132 ms in a longer run).
+- After `p2p/setstate {"listenState":"disabled"}`: no remain-on-channel events in 5 s, median
+  4.2 ms, p90 7.1 ms, max 8.7 ms, the same again 40 s later with GeForce NOW in front.
+
+How it works (`src/wifi_direct.rs`, its own thread, also while Luma is in the background):
+
+- The state is read when Luma starts (cold boot, enable, update), on every reply of a
+  `p2p/getstate` subscription when the TV accepts one, and once a minute in any case. While the
+  setting is on and `listenState` is "enabled", Luma sets it to "disabled", except while LG's
+  Screen Share app (`com.webos.app.miracast`) is the foreground app. At least 10 s pass between
+  two changes by Luma, so a TV that switches listening straight back on is never fought in a
+  tight loop.
+- Switching the setting off sets "enabled" again only when Luma disabled it
+  (`wifi_direct_disabled_by_luma` in the preferences); a state someone else changed is left
+  alone.
+- Calls go over Luma's own connection, else through the elevated helper (`luma-helper
+  wifi-direct state|enable|disable`; as root through `luna-send`, as measured).
+- While listening is off, Miracast devices may not find the TV; AirPlay is not affected.
+- Diagnostics: a UTC-timestamped `Luma Wi-Fi Direct:` line per change in `/tmp/luma-home.log`,
+  and `wifi_direct` in `luma-diagnostics.json`: the current `listenState`, the one at Luma's
+  start, whether Luma disabled it, how often it had to disable it again, the last change, whether
+  the subscription was accepted, and the last error.
+
+Not verified: whether the disabled state survives a reboot or a suspend (`listen_state_at_start`
+shows it), whether LG's miracast daemon (`/usr/sbin/miracast`) enables it again by itself
+(`disabled_again` counts it), whether `p2p/getstate` accepts a subscription, and whether Luma's
+own identity may call `p2p/*`.
+
+### Stadia controller as Xbox controller
+
+Settings › System › Stadia controller as Xbox controller (`pad_bridge`, on by default) presents
+the Stadia controller as a virtual Xbox 360 pad. In LG's browser (Chromium 120, where GeForce NOW
+runs) the controller's buttons, sticks and D-pad worked but its analog triggers did not. The
+kernel reports them as `ABS_GAS` (right) and `ABS_BRAKE` (left), with the right stick on
+`ABS_Z`/`ABS_RZ` (capabilities abs=30627, 15 keys of which four are `BTN_TRIGGER_HAPPY`); that the
+browser's mapping is the cause is an inference. Measured on an LG OLED55B46LA (webOS 25): with the
+virtual pad the user could accelerate in a game in GeForce NOW.
+
+- **Bridge (`tv-helper/src/pad.rs`, `luma-helper pad-bridge run`):** a uinput device named
+  "Microsoft X-Box 360 pad" (USB, 045e:028e, version 0x0114) with BTN_A, B, X, Y, TL, TR, SELECT,
+  START, MODE, THUMBL and THUMBR, sticks on ABS_X/Y/RX/RY (-32768..32767, fuzz 16, flat 128),
+  triggers on ABS_Z/RZ (0..255) and the hat on ABS_HAT0X/Y. It reads the controller (Bluetooth,
+  18d1:9400 only; other controllers are untested) with `EVIOCGRAB` and translates: sticks from
+  0..255 to the Xbox range, ABS_Z/RZ to ABS_RX/RY, ABS_BRAKE/GAS to ABS_Z/RZ, the hat and the
+  eleven buttons unchanged.
+- **Lifetime:** the virtual pad is created when the controller is first seen and kept until a
+  reboot or until the setting goes off, through the controller's reconnects (every Bluetooth
+  repair recreates the controller's input device); when the controller goes away the pad is set
+  to rest and the bridge looks for it again.
+- **Started before a game:** if the browser already knew the real controller, the virtual pad
+  became a second player and the game ignored it, while the grabbed real one was silent. So the
+  bridge runs as its own systemd unit (`luma-pad-bridge`) started by the Home takeover's apply,
+  at every cold boot and on enable, and stopped on disable. Switching the setting writes or
+  removes `/var/lib/luma-home/pad-bridge.off` and starts or stops the unit.
+- **TV workarounds from the prototype:** the controller is opened through a node of the bridge's
+  own made from `/sys/class/input/eventN/dev` (the static `/dev/input/eventN` could point at a
+  dead earlier instance after a reconnect, ENODEV); one second after creating the pad it writes
+  "add" to the pad's `jsN/uevent` again (the browser sometimes lost the race with the node's
+  permissions on the first event and never opened `jsN`); and it never blocks in `read()`: one
+  single-threaded `poll()` covers the virtual pad and the controller, so the unit's SIGTERM
+  (whose handler only sets a flag; the prototype's handler left it blocked in `read()`) ends it
+  within the wait, after it sends zeros to the controller's motors, and the kernel removes the
+  pad.
+- **The real controller is hidden from apps:** the bridge grabs it, so its joystick node only
+  shows its untouched start state; on the TV `/dev/input/js6` read -32767 on axes 0–5 (both
+  sticks pinned in a corner) and the browser, which had both pads open, treated that as a second
+  live pad ("the controller does very strange things"). At every start (after `systemd-run`) the
+  helper writes the runtime udev rule `/run/udev/rules.d/99-luma-stadia-hide.rules`
+  (`SUBSYSTEM=="input", ATTRS{id/vendor}=="18d1", ATTRS{id/product}=="9400"` clears `ID_INPUT`,
+  `ID_INPUT_JOYSTICK` and `ID_INPUT_KEY` and sets mode 0600), runs `udevadm control --reload` and
+  triggers a change for the controller's present `eventN`/`jsN`. /run is not persistent, so this
+  repeats at every start; the rule also applies to the input device each repair recreates.
+  Applied by hand on the TV, the browser then opened only the virtual pad (`event10`, `js7`) and
+  `hidraw0`, and its home screen stayed still. Stopping the bridge or switching the setting off
+  removes the rule, reloads and triggers the controller again so apps get it back; the unit also
+  does that when it ends for any other reason (`ExecStopPost`, where the TV's systemd accepts it
+  for a transient unit; otherwise only on stop, and the boot log says so). An app that was already
+  running when the rule changed keeps its old view until it is restarted. The controller's
+  `hidraw` node is not hidden (the browser opens it for rumble; hiding it was not needed).
+- **Rumble:** the virtual pad offers force feedback like xpad (`EV_FF` with `FF_RUMBLE` and
+  `FF_GAIN`, 16 effects). The bridge serves the uinput force-feedback protocol on the pad's
+  descriptor (upload and erase answered at once, also while the controller is away during a
+  repair, so an app's ioctl never waits) and plays effects on the controller as its rumble
+  output report: id 5, then the strong and the weak magnitude as little-endian 16-bit values, as
+  the kernel's hid-google-stadiaff sends it. The browser's own writes to the controller (ATT
+  handle 0x0044, e.g. `006e0000`, `00000022`) fit that layout, and on the TV writing
+  `05 ff ff ff ff` to the controller's hidraw node made it vibrate until `05 00 00 00 00`
+  followed a second later. Several effects at once
+  play their strongest magnitudes, scaled by the gain; an effect's replay length is honoured with
+  the poll's timeout (its delay is not). The hidraw node belongs to the same uhid device as the
+  controller's input device and is found from it in sysfs (`eventN/device/device/hidraw`), opened
+  through a node of the bridge's own and reopened with the controller after every repair. Zeros
+  are sent when an effect stops or ends, is erased while playing, when the controller goes away
+  and when the bridge stops; whatever plays is sent again when the controller returns.
+- **Diagnostics:** the bridge writes `/var/run/luma-pad-bridge.json`, shown as
+  `gamepad_repair.pad_bridge` in `luma-diagnostics.json`: whether it runs, the controller's node
+  (`source`), the virtual pad (`pad`) and its nodes, how often the controller connected, whether
+  rumble is available (`rumble`, the `hidraw` node open) and how many effects apps uploaded and
+  played (`effects_uploaded`, `effects_played`, written at most every 2 s). `boot.log` gets
+  `pad bridge: …` from the apply.
+
+Measured on the TV: LG's browser does send force feedback to the 360-style pad through evdev.
+After a GeForce NOW session (Star Wars Galactic Racer) the status showed 23 effects uploaded and
+23 played, the user felt the controller vibrate, and the browser had only the virtual pad's
+`event10`/`js7` and the controller's `hidraw0` open. The pad reported ff capabilities
+`1 10000 0 0` (FF_RUMBLE, FF_GAIN) and ev `20000b`.
+
+Not verified: which of the two magnitudes drives which motor, behaviour across a TV suspend, a
+second controller, and whether LG shows anything for the extra input device (none was seen).
+
 ## Manual extra-app preview
 
 ```sh

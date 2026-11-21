@@ -10,6 +10,7 @@ mod damage;
 mod diagnostics;
 mod egl_damage;
 mod font;
+mod gamepad;
 mod glyph_atlas;
 mod i18n;
 #[path = "input-refresh.rs"]
@@ -41,6 +42,7 @@ mod webhook;
 #[cfg(all(feature = "webos", any(target_os = "linux", test)))]
 #[path = "webos-compat.rs"]
 mod webos_compat;
+mod wifi_direct;
 
 #[cfg(test)]
 mod tests;
@@ -915,6 +917,24 @@ fn run() -> Result<(), String> {
     // Preloading the user's apps and LG's preloads of hidden apps (see preload.rs). Decisions go
     // to luma-diagnostics.json.
     let preload_service = webos.then(preload::Service::spawn);
+    // Repairing a Bluetooth gamepad whose input LG's stack stopped delivering (gamepad.rs): its
+    // own thread, also while Luma is in the background.
+    let gamepad_service = webos
+        .then(|| gamepad::Service::spawn(state.preferences.gamepad_repair, platform::BluetoothTv));
+    let mut gamepad_evidence = gamepad::Evidence::default();
+    // Keeping the TV's Wi-Fi Direct listening off (wifi_direct.rs): its own thread.
+    let wifi_direct_service = webos.then(|| {
+        wifi_direct::Service::spawn(
+            state.preferences.wifi_direct_off,
+            state.preferences.wifi_direct_disabled_by_luma,
+            platform::WifiTv,
+            platform::subscribe_wifi_direct,
+        )
+    });
+    let mut wifi_direct_sent = state.preferences.wifi_direct_off;
+    // The Stadia pad bridge runs as the helper's own unit, started by the Home takeover's
+    // apply; Luma only tells the helper when the setting changes.
+    let mut pad_bridge_sent = state.preferences.pad_bridge;
     let mut preload_busy = false;
     // Set by a skip for memory, swap or enough running apps: no more preloads until Luma
     // comes back to the front.
@@ -2145,6 +2165,60 @@ fn run() -> Result<(), String> {
         }
         if update_quit.load(std::sync::atomic::Ordering::SeqCst) {
             running = false;
+        }
+        if webos && pad_bridge_sent != state.preferences.pad_bridge {
+            pad_bridge_sent = state.preferences.pad_bridge;
+            let on = pad_bridge_sent;
+            let _ = std::thread::Builder::new()
+                .name("luma-pad-bridge".into())
+                .spawn(move || {
+                    let at = OffsetDateTime::now_utc()
+                        .format(&time::format_description::well_known::Rfc3339)
+                        .unwrap_or_default();
+                    match platform::pad_bridge(on) {
+                        Ok(result) => eprintln!("Luma pad bridge: {at} switched {on}: {result}"),
+                        Err(error) => {
+                            eprintln!("Luma pad bridge: {at} switch {on} failed: {error}")
+                        }
+                    }
+                });
+        }
+        if let Some(service) = &wifi_direct_service {
+            if wifi_direct_sent != state.preferences.wifi_direct_off {
+                wifi_direct_sent = state.preferences.wifi_direct_off;
+                service.set_enabled(wifi_direct_sent);
+            }
+            let mut latest = None;
+            while let Ok(evidence) = service.receiver.try_recv() {
+                latest = Some(evidence);
+            }
+            if let Some(evidence) = latest {
+                if state.preferences.wifi_direct_disabled_by_luma != evidence.disabled_by_luma {
+                    state.preferences.wifi_direct_disabled_by_luma = evidence.disabled_by_luma;
+                    if let Err(error) = storage::save(&preferences_path, &state.preferences) {
+                        eprintln!("{error}");
+                    }
+                }
+                diagnostics_writer.section(
+                    "wifi_direct",
+                    serde_json::to_value(&evidence).unwrap_or_default(),
+                );
+            }
+        }
+        if let Some(service) = &gamepad_service {
+            service.set_enabled(state.preferences.gamepad_repair);
+            let mut changed = false;
+            while let Ok(reply) = service.receiver.try_recv() {
+                let before = gamepad_evidence.clone();
+                gamepad_evidence.apply(reply);
+                changed |= gamepad_evidence != before;
+            }
+            if changed {
+                diagnostics_writer.section(
+                    "gamepad_repair",
+                    serde_json::to_value(&gamepad_evidence).unwrap_or_default(),
+                );
+            }
         }
         if let Some(service) = &preload_service {
             let mut record = |id: &str, result: String| {
